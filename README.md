@@ -153,7 +153,7 @@ Worth reading before installing, because these are properties of the approach ra
 ```bash
 npm install          # Node 22+ (wrangler 4 requires 22.12+)
 npm run typecheck    # tsc --noEmit
-npm test             # 56 tests: unit + end-to-end through the Worker entry point
+npm test             # 58 tests: unit + end-to-end through the Worker entry point
 TIDB_LIVE=1 TIDB_API_KEY=<key> npm test   # the 2 live tests hit api.theintrodb.org
 npm run dev          # wrangler dev on http://127.0.0.1:8787 (put the key in .dev.vars)
 ```
