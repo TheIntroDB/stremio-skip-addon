@@ -45,10 +45,6 @@ export interface AddonConfig {
 
 /** Bindings and vars this Worker reads. See `wrangler.jsonc`. */
 export interface Env {
-  /** Public, read-only TheIntroDB API. Defaults to `https://api.theintrodb.org`. */
-  INTRODB_API_BASE?: string;
-  /** Public site, used for links in the config page. */
-  SITE_URL?: string;
   /** Deployment-wide TheIntroDB API key. */
   TIDB_API_KEY?: string;
   /**

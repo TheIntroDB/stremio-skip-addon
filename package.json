@@ -24,7 +24,7 @@
   "cloudflare": {
     "bindings": {
       "TIDB_API_KEY": {
-        "description": "Optional [TheIntroDB API key](https://theintrodb.org/docs). Anonymous lookups are rate limited per IP on the shared Cloudflare egress addresses, so a key is strongly recommended for a deployed Worker. Leave empty to run anonymously."
+        "description": "**Required.** Your [TheIntroDB API key](https://theintrodb.org/docs). Anonymous lookups are rate limited per IP, and every Worker shares Cloudflare's egress addresses, so the addon refuses to look anything up without a key of its own."
       }
     }
   },

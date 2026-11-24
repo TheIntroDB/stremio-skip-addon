@@ -15,6 +15,7 @@ import { after, before, beforeEach, test } from "node:test";
 
 import { resetMemoryCache } from "../src/cache.js";
 import { encodeConfig } from "../src/config.js";
+import { INTRODB_API_BASE } from "../src/constants.js";
 import { handleRequest } from "../src/index.js";
 import type { Env, SegmentType } from "../src/types.js";
 
@@ -187,6 +188,20 @@ before(async () => {
   const address = server.address() as AddressInfo;
   base = `http://127.0.0.1:${address.port}`;
 
+  // The API host is a constant in src/constants.ts, not a binding, so the only way
+  // to answer it deterministically is to stand in front of the network: requests to
+  // the real API base are redirected to the stub, everything else is untouched.
+  const realFetch = globalThis.fetch;
+  type FetchInput = Parameters<typeof fetch>[0];
+  globalThis.fetch = ((input: FetchInput, init?: RequestInit) => {
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    if (url.startsWith(INTRODB_API_BASE)) {
+      return realFetch(url.replace(INTRODB_API_BASE, `${base}/api`), init);
+    }
+    return realFetch(input, init);
+  }) as typeof fetch;
+
   // Built once the stub is listening: the config is packed into the URL, so the
   // source base has to be the real port.
   const config = { src: [`${base}/upstream`], types: ["intro", "recap", "credits"] as SegmentType[] };
@@ -204,7 +219,7 @@ beforeEach(() => {
 });
 
 const testEnv = (overrides: Partial<Env> = {}): Env => ({
-  INTRODB_API_BASE: `${base}/api`,
+  TIDB_API_KEY: "test-key",
   ALLOW_PRIVATE_HOSTS: "1",
   CACHE_MODE: "memory",
   ...overrides,
@@ -240,9 +255,15 @@ test("the Worker serves a config page, a health check and a bare manifest", asyn
     status: "ok",
     name: "TheIntroDB Skip",
     version: "1.0.0",
-    api: `${base}/api`,
+    api: "https://api.theintrodb.org/v4/media",
     site: "https://theintrodb.org",
+    apiKeyConfigured: true,
   });
+
+  // The page knows whether this deployment has a key, and says so.
+  assert.ok(body.includes('"serverKeyConfigured":true'));
+  const keylessPage = await call("/", testEnv({ TIDB_API_KEY: "" }));
+  assert.ok((await keylessPage.text()).includes('"serverKeyConfigured":false'));
 
   const bare = await call("/manifest.json");
   const manifest = (await bare.json()) as { behaviorHints: Record<string, unknown>; id: string };
@@ -466,6 +487,22 @@ test("a private target is refused unless the deployment allows it", async () => 
 
   const allowed = await call(playPath(`${base}/hls/media.m3u8`, "tt0903747:1:1"), testEnv());
   assert.equal(allowed.status, 200);
+});
+
+test("a deployment with no API key refuses to look anything up", async () => {
+  const keyless = testEnv({ TIDB_API_KEY: "" });
+
+  const refused = await call(`/${amplified}/stream/series/tt0903747:1:1.json`, keyless);
+  assert.equal(refused.status, 403);
+  const body = (await refused.json()) as { code: string; error: string };
+  assert.equal(body.code, "missing_api_key");
+  assert.match(body.error, /TIDB_API_KEY/);
+
+  // With a key in the install config it works again.
+  const withKey = encodeConfig({ src: [`${base}/upstream`], types: ["intro"], key: "from-url" });
+  const ok = await call(`/${withKey}/stream/series/tt0903747:1:1.json`, keyless);
+  assert.equal(ok.status, 200);
+  assert.equal(ok.headers.get("x-tidb-lookup"), "fresh");
 });
 
 test("bad ids, bad configs and unknown routes are refused with a reason", async () => {

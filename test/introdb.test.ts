@@ -8,7 +8,7 @@ import { buildApiUrl, lookupSkipWindows, mediaToWindows } from "../src/introdb.j
 import { MemoryHttpCache } from "../src/cache.js";
 import type { Env, IntroDbMediaResponse } from "../src/types.js";
 
-const env: Env = { INTRODB_API_BASE: "https://api.test" };
+const env: Env = { TIDB_API_KEY: "unit-test-key" };
 
 test("a null end runs to the end of the file, a null start is 0:00", () => {
   const media: IntroDbMediaResponse = {
@@ -79,17 +79,41 @@ test("degenerate and malformed entries are ignored", () => {
 
 test("the request URL carries the id, and season/episode only for episodes", () => {
   assert.equal(
-    buildApiUrl(env, { imdbId: "tt0111161", season: null, episode: null }),
-    "https://api.test/v4/media?imdb_id=tt0111161",
-  );
-  assert.equal(
-    buildApiUrl(env, { imdbId: "tt0903747", season: 1, episode: 2 }),
-    "https://api.test/v4/media?imdb_id=tt0903747&season=1&episode=2",
-  );
-  assert.equal(
-    buildApiUrl({}, { imdbId: "tt0111161", season: null, episode: null }),
+    buildApiUrl({ imdbId: "tt0111161", season: null, episode: null }),
     "https://api.theintrodb.org/v4/media?imdb_id=tt0111161",
   );
+  assert.equal(
+    buildApiUrl({ imdbId: "tt0903747", season: 1, episode: 2 }),
+    "https://api.theintrodb.org/v4/media?imdb_id=tt0903747&season=1&episode=2",
+  );
+});
+
+test("without a key nothing is looked up, and no request is made", async () => {
+  const fetchImpl: typeof fetch = async () => {
+    throw new Error("should not be called");
+  };
+  const cache = new MemoryHttpCache();
+
+  const fromNowhere = await lookupSkipWindows({}, { types: ["intro"] }, "tt0903747:1:1", {
+    cache,
+    fetchImpl,
+  });
+  assert.equal(fromNowhere.status, "unavailable");
+  assert.equal(fromNowhere.reason, "missing_api_key");
+
+  // Also when a key is present but blank.
+  const blank = await lookupSkipWindows({ TIDB_API_KEY: "   " }, { types: ["intro"] }, "tt0903747:1:1", {
+    cache,
+    fetchImpl,
+  });
+  assert.equal(blank.reason, "missing_api_key");
+
+  // A key in the install config counts as configured.
+  const configured = await lookupSkipWindows({}, { types: ["intro"], key: "from-url" }, "tt0903747:1:1", {
+    cache,
+    fetchImpl: async () => new Response(JSON.stringify({ intro: [{ start_ms: 1, end_ms: 2 }] }), { status: 200 }),
+  });
+  assert.equal(configured.status, "ok");
 });
 
 test("a fresh lookup parses the body, and the second one is served from cache", async () => {
@@ -125,13 +149,10 @@ test("the API key is sent when the config or the Worker provides one", async () 
   const cache = new MemoryHttpCache();
 
   await lookupSkipWindows(env, { types: ["intro"], key: "from-config" }, "tt0000001:1:1", { cache, fetchImpl });
-  await lookupSkipWindows({ ...env, TIDB_API_KEY: "from-worker" }, { types: ["intro"] }, "tt0000002:1:1", {
-    cache,
-    fetchImpl,
-  });
-  await lookupSkipWindows(env, { types: ["intro"] }, "tt0000003:1:1", { cache, fetchImpl });
+  await lookupSkipWindows(env, { types: ["intro"] }, "tt0000002:1:1", { cache, fetchImpl });
 
-  assert.deepEqual(seen, ["Bearer from-config", "Bearer from-worker", ""]);
+  // The config wins over the deployment secret, so a user can bring their own key.
+  assert.deepEqual(seen, ["Bearer from-config", "Bearer unit-test-key"]);
 });
 
 test("a 404 is a clean miss, and is cached as one", async () => {

@@ -14,7 +14,6 @@ import { ADDON_VERSION } from "./manifest.js";
 export interface PageOptions {
   origin: string;
   siteUrl: string;
-  apiBase: string;
   serverKeyConfigured: boolean;
   /** Served over plain http on a local address: installation from another device will not work. */
   insecure: boolean;
@@ -26,7 +25,6 @@ export function renderConfigPage(options: PageOptions): string {
   const data = JSON.stringify({
     origin: options.origin,
     siteUrl: options.siteUrl,
-    apiBase: options.apiBase,
     serverKeyConfigured: options.serverKeyConfigured,
     version: ADDON_VERSION,
     repo: REPO,
@@ -156,8 +154,8 @@ export function renderConfigPage(options: PageOptions): string {
     </div>
 
     <div class="field">
-      <label for="key">TheIntroDB API key <span class="badge">optional</span></label>
-      <input type="password" id="key" spellcheck="false" autocomplete="off" placeholder="leave empty to look up anonymously">
+      <label for="key">TheIntroDB API key <span class="badge">required</span></label>
+      <input type="password" id="key" spellcheck="false" autocomplete="off" placeholder="set TIDB_API_KEY as a Worker secret, or paste a key here">
       <p class="hint" id="key-hint"></p>
     </div>
 
@@ -247,11 +245,14 @@ export function renderConfigPage(options: PageOptions): string {
     for (var i = 0; i < sources.length; i++) {
       if (!/^https?:\\/\\//i.test(sources[i])) return showError("Source URLs must start with http:// or https://");
     }
+    var key = document.getElementById("key").value.trim();
+    if (!key && !data.serverKeyConfigured) {
+      return showError("This Worker has no TheIntroDB API key. Set TIDB_API_KEY as a Worker secret (npx wrangler secret put TIDB_API_KEY), or paste a key above.");
+    }
     var types = SEGMENTS.filter(function (type) {
       return document.getElementById("type-" + type).checked;
     });
     var config = { src: sources, types: types };
-    var key = document.getElementById("key").value.trim();
     if (key) config.key = key;
     if (document.getElementById("proxy").checked) config.proxy = true;
     var name = document.getElementById("name").value.trim();
@@ -278,9 +279,9 @@ export function renderConfigPage(options: PageOptions): string {
   document.getElementById("version").textContent = "v" + data.version;
   var keyHint = document.getElementById("key-hint");
   if (data.serverKeyConfigured) {
-    keyHint.textContent = "This Worker already has a key configured as a secret, so you can leave this empty. A key in the URL is embedded in your install link and stored by Stremio.";
+    keyHint.textContent = "This Worker already has a key configured as a secret, so you can leave this empty. A key pasted here is embedded in your install link and stored by Stremio.";
   } else {
-    keyHint.textContent = "Anonymous lookups are limited per IP, and every Worker shares Cloudflare's IPs, so a key is worth adding for a deployed instance. Better still: set TIDB_API_KEY as a Worker secret and leave this empty.";
+    keyHint.textContent = "This Worker has no key yet, and TheIntroDB lookups need one: anonymous lookups are limited per IP and every Worker shares Cloudflare's addresses. Set TIDB_API_KEY as a Worker secret (npx wrangler secret put TIDB_API_KEY), or paste a key here.";
   }
   if (data.insecure) {
     showError("This instance is served over plain http on a local address; Stremio will only install a worker it can reach.");

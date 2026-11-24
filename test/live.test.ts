@@ -2,9 +2,10 @@
 // Copyright (C) 2026 TheIntroDB
 
 /**
- * Live smoke test against the real API. Opt-in, because CI must not depend on it:
+ * Live smoke test against the real API. Opt-in, because CI must not depend on it,
+ * and it needs a key because the addon refuses to look anything up without one:
  *
- *   TIDB_LIVE=1 npm test
+ *   TIDB_LIVE=1 TIDB_API_KEY=<key> npm test
  *
  * It asserts the shape and the plumbing, never the community figures, so a new
  * submission to TheIntroDB cannot turn it red. The expected cut is recomputed from
@@ -16,15 +17,17 @@ import test from "node:test";
 
 import { spliceMediaPlaylist, type UriRewriters } from "../src/hls.js";
 import { lookupSkipWindows } from "../src/introdb.js";
-import type { SkipWindow } from "../src/types.js";
+import type { Env, SkipWindow } from "../src/types.js";
 
-const live = process.env.TIDB_LIVE === "1";
+const apiKey = (process.env.TIDB_API_KEY ?? "").trim();
+const live = process.env.TIDB_LIVE === "1" && apiKey.length > 0;
+const liveEnv: Env = { TIDB_API_KEY: apiKey };
 
 const identity: UriRewriters = { playlistUri: (uri) => uri, resourceUri: (uri) => uri };
 
 test("the live API answers for a known episode, and the answer cuts that episode", { skip: !live }, async () => {
   const result = await lookupSkipWindows(
-    {},
+    liveEnv,
     { types: ["intro", "recap", "credits", "preview"] },
     "tt0903747:1:1",
   );
@@ -76,7 +79,7 @@ test("the live API answers for a known episode, and the answer cuts that episode
 });
 
 test("the live API has no timings for a title that does not exist", { skip: !live }, async () => {
-  const result = await lookupSkipWindows({}, { types: ["intro"] }, "tt99999999:1:1");
+  const result = await lookupSkipWindows(liveEnv, { types: ["intro"] }, "tt99999999:1:1");
   assert.equal(result.status, "not_found");
   assert.deepEqual(result.windows, []);
 });

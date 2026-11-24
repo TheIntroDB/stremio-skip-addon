@@ -6,13 +6,12 @@
   "compatibility_date": "2026-11-24",
   "observability": {
     "enabled": true
-  },
-  "vars": {
-    // Public, read-only TheIntroDB API. Override to point at a mirror.
-    "INTRODB_API_BASE": "https://api.theintrodb.org",
-    "SITE_URL": "https://theintrodb.org",
-    // Optional shared key for this deployment. Prefer `wrangler secret put TIDB_API_KEY`
-    // (or the deploy form) over a value in this file: anything here is in your git repo.
-    "TIDB_API_KEY": ""
   }
+  // No vars here on purpose. The API host is fixed in src/constants.ts, and the
+  // TheIntroDB API key is required and belongs in a secret, not in a git file:
+  //
+  //   npx wrangler secret put TIDB_API_KEY
+  //
+  // The Deploy to Cloudflare flow asks for it (it is declared in package.json and
+  // in .dev.vars.example); for `npm run dev`, put it in .dev.vars.
 }

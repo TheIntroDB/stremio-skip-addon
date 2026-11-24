@@ -20,9 +20,10 @@
  */
 
 import { decodeConfig, parseStremioId } from "./config.js";
+import { INTRODB_API_BASE, INTRODB_API_VERSION, INTRODB_SITE } from "./constants.js";
 import { describeCuts } from "./format.js";
 import { corsPreflight, errorResponse, html, json, text } from "./http.js";
-import { DEFAULT_API_BASE, lookupSkipWindows } from "./introdb.js";
+import { lookupSkipWindows } from "./introdb.js";
 import { ADDON_VERSION, buildManifest } from "./manifest.js";
 import { renderConfigPage } from "./page.js";
 import { handlePlay, handleSegment } from "./play.js";
@@ -57,8 +58,9 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       status: "ok",
       name: "TheIntroDB Skip",
       version: ADDON_VERSION,
-      api: env.INTRODB_API_BASE || DEFAULT_API_BASE,
-      site: env.SITE_URL || "https://theintrodb.org",
+      api: `${INTRODB_API_BASE}/${INTRODB_API_VERSION}/media`,
+      site: INTRODB_SITE,
+      apiKeyConfigured: Boolean(env.TIDB_API_KEY && env.TIDB_API_KEY.trim()),
     });
   }
   if (path === "/robots.txt") return text("User-agent: *\nDisallow: /\n");
@@ -133,6 +135,19 @@ async function handleStreams(
   // One lookup decides whether any of this is worth doing. It is cached, and it is
   // what makes the "no timings" case a pure pass-through with no wrapping at all.
   const lookup = await lookupSkipWindows(env, config, id);
+
+  // The key is required, so a deployment without one gets a loud answer rather than
+  // a silent pass-through that looks like "TheIntroDB has no timings for this".
+  if (lookup.reason === "missing_api_key") {
+    return errorResponse(
+      403,
+      "missing_api_key",
+      "This deployment has no TheIntroDB API key, so it cannot look up timings. " +
+        "Set TIDB_API_KEY as a Worker secret (npx wrangler secret put TIDB_API_KEY) " +
+        "or add a key on the addon's configuration page, then reinstall.",
+    );
+  }
+
   const upstream = await fetchStreams(env, config, type, id);
 
   const label = `TheIntroDB Skip · ${sourceLabel(upstream.used ?? config.src[0] ?? "")}`;
@@ -170,9 +185,8 @@ function configPage(env: Env, origin: string): Response {
   return html(
     renderConfigPage({
       origin,
-      siteUrl: env.SITE_URL || "https://theintrodb.org",
-      apiBase: env.INTRODB_API_BASE || DEFAULT_API_BASE,
-      serverKeyConfigured: Boolean(env.TIDB_API_KEY),
+      siteUrl: INTRODB_SITE,
+      serverKeyConfigured: Boolean(env.TIDB_API_KEY && env.TIDB_API_KEY.trim()),
       insecure: url.protocol === "http:" && local,
     }),
   );

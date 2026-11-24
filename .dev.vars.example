@@ -1,9 +1,11 @@
-# Copy to `.dev.vars` for `npm run dev`, or set the same name in the Cloudflare
-# dashboard (Workers & Pages -> your Worker -> Settings -> Variables and Secrets)
-# after deploying.
+# Copy to `.dev.vars` for `npm run dev`, or let the Deploy to Cloudflare flow ask
+# for it (Workers & Pages -> your Worker -> Settings -> Variables and Secrets after
+# deploying).
 #
-# Optional. Without it, lookups to api.theintrodb.org are anonymous, which is
-# rate limited per IP -- and every Cloudflare Worker shares Cloudflare's egress
-# addresses, so a deployed Worker is much safer with a key of its own.
-# Get one at https://theintrodb.org/docs
-# TIDB_API_KEY=
+# Required, not optional: lookups to api.theintrodb.org are rate limited per IP,
+# and every Cloudflare Worker shares Cloudflare's egress addresses, so a Worker
+# without its own key is limited by everyone else's traffic. Without a key the
+# addon does no lookups at all and passes streams through untouched.
+#
+# Get a key at https://theintrodb.org/docs
+TIDB_API_KEY=

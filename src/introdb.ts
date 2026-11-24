@@ -26,6 +26,7 @@
 
 import { getHttpCache, type HttpCache } from "./cache.js";
 import { parseStremioId } from "./config.js";
+import { INTRODB_API_BASE, INTRODB_API_VERSION } from "./constants.js";
 import type {
   Env,
   IntroDbMediaResponse,
@@ -33,8 +34,6 @@ import type {
   SegmentType,
   SkipWindow,
 } from "./types.js";
-
-export const DEFAULT_API_BASE = "https://api.theintrodb.org";
 
 /** Read-path cache lifetimes. Community timings move on the order of days. */
 const TTL_FOUND_SECONDS = 6 * 60 * 60;
@@ -58,7 +57,14 @@ export interface LookupOptions {
   fetchImpl?: typeof fetch;
 }
 
-/** Look up the timings for one Stremio id and reduce them to skip windows. */
+/**
+ * Look up the timings for one Stremio id and reduce them to skip windows.
+ *
+ * An API key is required, not optional: anonymous lookups are rate limited per IP,
+ * and every Cloudflare Worker shares Cloudflare's egress addresses, so a deployment
+ * without its own key would be limited by everyone else's traffic. Without a key
+ * this returns `missing_api_key` and the caller passes streams through untouched.
+ */
 export async function lookupSkipWindows(
   env: Env,
   config: { key?: string; types: SegmentType[] },
@@ -72,20 +78,27 @@ export async function lookupSkipWindows(
   if (!parsed) {
     return { status: "unavailable", windows: [], reason: "unsupported_id", cached: false };
   }
+
+  const apiKey = (config.key || env.TIDB_API_KEY || "").trim();
+  if (!apiKey) {
+    return { status: "unavailable", windows: [], reason: "missing_api_key", cached: false };
+  }
+
   if (config.types.length === 0) {
     return { status: "ok", windows: [], reason: "no_segment_types_enabled", cached: false };
   }
 
-  const apiUrl = buildApiUrl(env, parsed);
+  const apiUrl = buildApiUrl(parsed);
   const cacheKey = `introdb:${apiUrl}`;
   const hit = await cache.match(cacheKey);
   if (hit) {
     return toResult(hit.status, hit.body, config.types, "cache_hit", true);
   }
 
-  const apiKey = config.key || env.TIDB_API_KEY || "";
-  const headers: Record<string, string> = { accept: "application/json" };
-  if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+  const headers: Record<string, string> = {
+    accept: "application/json",
+    authorization: `Bearer ${apiKey}`,
+  };
 
   let response: Response;
   try {
@@ -211,12 +224,12 @@ export function mergeWindows(windows: readonly SkipWindow[]): SkipWindow[] {
 }
 
 /** The `/v4/media` URL for one id, including the season/episode an episode needs. */
-export function buildApiUrl(
-  env: Pick<Env, "INTRODB_API_BASE">,
-  parsed: { imdbId: string; season: number | null; episode: number | null },
-): string {
-  const base = (env.INTRODB_API_BASE || DEFAULT_API_BASE).replace(/\/+$/, "");
-  const url = new URL(`${base}/v4/media`);
+export function buildApiUrl(parsed: {
+  imdbId: string;
+  season: number | null;
+  episode: number | null;
+}): string {
+  const url = new URL(`${INTRODB_API_BASE}/${INTRODB_API_VERSION}/media`);
   url.searchParams.set("imdb_id", parsed.imdbId);
   if (parsed.season !== null && parsed.episode !== null) {
     url.searchParams.set("season", String(parsed.season));

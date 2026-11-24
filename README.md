@@ -28,7 +28,7 @@ Nobody hosts this for you: the addon runs on your Cloudflare account, on the fre
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/TheIntroDB/stremio-skip-addon)
 
-Cloudflare clones the repository into your GitHub account, builds it with Workers Builds and deploys it. It will ask for one optional secret, `TIDB_API_KEY` — see [API key](#api-key) below.
+Cloudflare clones the repository into your GitHub account, builds it with Workers Builds and deploys it. It will ask for one secret, `TIDB_API_KEY`, which is **required** — see [API key](#api-key) below.
 
 > **The button needs a public repository.** That is a Cloudflare limitation, not a setting: *"Repositories must be public in order for others to successfully use your Deploy to Cloudflare button."* While this repository is private, use Option B.
 
@@ -38,7 +38,9 @@ Cloudflare clones the repository into your GitHub account, builds it with Worker
 git clone https://github.com/TheIntroDB/stremio-skip-addon.git
 cd stremio-skip-addon
 npm install
-npx wrangler deploy   # needs Node 22+ and `wrangler login` once
+npx wrangler login
+npx wrangler secret put TIDB_API_KEY   # required, see below
+npx wrangler deploy
 ```
 
 That prints your Worker URL, for example `https://tidb-stremio-skip.<your-subdomain>.workers.dev`.
@@ -51,22 +53,24 @@ Open the Worker URL in a browser. The page builds your install link:
 
 1. **Paste your stream addon URL** — AIOStreams, Torrentio, Comet, MediaFusion, anything that serves Stremio streams (the `manifest.json` URL). One per line; they are tried in order and the first that answers with streams is used, so a second URL is a fallback.
 2. **Pick the segments to cut.** Intro, recap and credits are on; previews are off. Credits and previews run to the end of the file when TheIntroDB does not close them, so they are the destructive ones.
-3. **Add your TheIntroDB API key** (optional, recommended) — see below.
+3. **The API key** is already handled if you set the Worker secret; paste one here only if you would rather carry it in the install URL. See [API key](#api-key).
 4. **Install** — the `stremio://` link opens the desktop or mobile app; *Open in Stremio Web* handles the browser player.
 
 Your settings live in the install URL itself (base64url of a small JSON object), which is the only place a Stremio addon can keep per-user settings. **Keep that URL private:** anyone who has it can use your Worker.
 
 ### API key
 
-Lookups are anonymous by default, and anonymous lookups are rate limited *per IP* — but every Cloudflare Worker shares Cloudflare's egress addresses, so a deployed Worker is much safer with a key of its own. Get one at [theintrodb.org/docs](https://theintrodb.org/docs).
+A TheIntroDB API key is **required**, not optional. Lookups are rate limited *per IP*, and every Cloudflare Worker shares Cloudflare's egress addresses — so a Worker without a key of its own is limited by everyone else's traffic, and it would look like an add-on that silently never cuts anything. Without a key this addon does no lookups at all: the config page will not give you an install link, and a stream request answers `403 missing_api_key` instead of pretending.
 
-Set it as a Worker secret so it stays out of your install URL:
+Get a key at [theintrodb.org/docs](https://theintrodb.org/docs), then set it as a Worker secret so it stays out of your install URL:
 
 ```bash
 npx wrangler secret put TIDB_API_KEY
 ```
 
-The deploy form asks for it too. A key can also be pasted into the config page, in which case it is embedded in the install URL and stored by Stremio.
+The Deploy to Cloudflare flow asks for it too. A key can also be pasted into the config page, in which case it is embedded in the install URL and stored by Stremio — useful if you want a different key than the deployment's own, or if someone else is borrowing your Worker.
+
+`GET /health` reports `apiKeyConfigured`, so it is one request to check.
 
 ---
 
@@ -121,11 +125,11 @@ Every `/play` response says what it did, which is the fastest way to see whether
 | Header | Meaning |
 | --- | --- |
 | `x-tidb-play` | `spliced`, `master`, `unchanged`, `rewritten_uris` (proxy mode), `not_hls`, `not_a_playlist`, `degenerate_windows`, `pass_through`, `upstream_<status>` |
-| `x-tidb-lookup` | `fresh`, `cache_hit`, `media_not_found`, `episode_not_found`, `rate_limited…`, `request_failed…` |
+| `x-tidb-lookup` | `fresh`, `cache_hit`, `media_not_found`, `episode_not_found`, `missing_api_key`, `rate_limited…`, `request_failed…` |
 | `x-tidb-cuts` | The windows that applied, e.g. `intro 3:48-4:06, credits 57:12-end` |
 | `x-tidb-dropped-segments`, `x-tidb-dropped-ms`, `x-tidb-duration-ms` | What was removed, and the playlist's length |
 
-`/health` reports the version and which API it talks to.
+`/health` reports the version, which API it talks to, and whether the deployment has a key.
 
 ---
 
@@ -150,27 +154,28 @@ Worth reading before installing, because these are properties of the approach ra
 npm install          # Node 22+ (wrangler 4 requires 22.12+)
 npm run typecheck    # tsc --noEmit
 npm test             # 56 tests: unit + end-to-end through the Worker entry point
-TIDB_LIVE=1 npm test # the 2 live tests hit api.theintrodb.org instead of skipping
-npm run dev          # wrangler dev on http://127.0.0.1:8787
+TIDB_LIVE=1 TIDB_API_KEY=<key> npm test   # the 2 live tests hit api.theintrodb.org
+npm run dev          # wrangler dev on http://127.0.0.1:8787 (put the key in .dev.vars)
 ```
 
-The end-to-end tests drive the real `fetch` handler over HTTP against a stub source addon, a stub HLS origin and a stub TheIntroDB API whose answers are the figures measured from the live API (Breaking Bad S1E1: intro `228665-246498`, credits `3432884` to end of file). The live tests assert shape only — they recompute the expected cut from whatever the API returns, so a new community submission cannot turn them red.
+The end-to-end tests drive the real `fetch` handler over HTTP against a stub source addon, a stub HLS origin and a stub TheIntroDB API whose answers are the figures measured from the live API (Breaking Bad S1E1: intro `228665-246498`, credits `3432884` to end of file). The API host is a constant, so the suite stands in front of `fetch` to answer it — nothing in `src/` has a test hook. The live tests assert shape only: they recompute the expected cut from whatever the API returns, so a new community submission cannot turn them red.
 
 ```
 src/
-  index.ts    the Worker entry point and router
-  config.ts   the install config packed into the URL
-  manifest.ts the addon manifest
-  introdb.ts  the /v4/media lookup, and timings -> skip windows
-  hls.ts      playlist parsing and splicing
-  play.ts     /play and /seg
-  upstream.ts the source addon relay
-  page.ts     the configuration page
-  http.ts     responses and CORS
-  format.ts   time formatting
+  index.ts     the Worker entry point and router
+  constants.ts the fixed API host, site and API version
+  config.ts    the install config packed into the URL
+  manifest.ts  the addon manifest
+  introdb.ts   the /v4/media lookup, and timings -> skip windows
+  hls.ts       playlist parsing and splicing
+  play.ts      /play and /seg
+  upstream.ts  the source addon relay
+  page.ts      the configuration page
+  http.ts      responses and CORS
+  format.ts    time formatting
 ```
 
-Configuration lives in `wrangler.jsonc`: `INTRODB_API_BASE`, `SITE_URL`, and the optional `TIDB_API_KEY`.
+There are no tunables in `wrangler.jsonc`: the API host is fixed in `src/constants.ts`, and the API key is a secret (`wrangler secret put TIDB_API_KEY`), never a value in the repo.
 
 ---
 
