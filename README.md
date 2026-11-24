@@ -30,7 +30,7 @@ Nobody hosts this for you: the addon runs on your Cloudflare account, on the fre
 
 Cloudflare clones the repository into your GitHub account, builds it with Workers Builds and deploys it. It will ask for one secret, `TIDB_API_KEY`, which is **required** — see [API key](#api-key) below.
 
-> **The button needs a public repository.** That is a Cloudflare limitation, not a setting: *"Repositories must be public in order for others to successfully use your Deploy to Cloudflare button."* While this repository is private, use Option B.
+> **The button needs a public repository** — a Cloudflare limitation, not a setting: *"Repositories must be public in order for others to successfully use your Deploy to Cloudflare button."* While this repository is private, use Option B; making it public is what a shareable button needs anyway.
 
 ### Option B: from a clone
 
