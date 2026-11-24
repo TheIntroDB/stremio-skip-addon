@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # wrangler 4 needs Node 22; the tests themselves run on 20 too.
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      # Proves the Worker bundles and the wrangler config is valid, without deploying.
+      - run: npx wrangler deploy --dry-run --outdir dist

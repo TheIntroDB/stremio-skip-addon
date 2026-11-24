@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tidb-stremio-skip",
+  "main": "src/index.ts",
+  // Kept current on purpose: the Deploy to Cloudflare flow reads this file first.
+  "compatibility_date": "2026-11-24",
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    // Public, read-only TheIntroDB API. Override to point at a mirror.
+    "INTRODB_API_BASE": "https://api.theintrodb.org",
+    "SITE_URL": "https://theintrodb.org",
+    // Optional shared key for this deployment. Prefer `wrangler secret put TIDB_API_KEY`
+    // (or the deploy form) over a value in this file: anything here is in your git repo.
+    "TIDB_API_KEY": ""
+  }
+}

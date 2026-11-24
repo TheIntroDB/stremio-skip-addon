@@ -1,0 +1,37 @@
+{
+  "name": "stremio-skip-addon",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A self-hosted Stremio stream addon that cuts intro, recap, credits and preview segments out of HLS streams using TheIntroDB timings.",
+  "license": "GPL-3.0-or-later",
+  "author": "TheIntroDB",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TheIntroDB/stremio-skip-addon.git"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "deploy": "wrangler deploy",
+    "dev": "wrangler dev",
+    "start": "wrangler dev",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "check": "npm run typecheck && npm test"
+  },
+  "cloudflare": {
+    "bindings": {
+      "TIDB_API_KEY": {
+        "description": "Optional [TheIntroDB API key](https://theintrodb.org/docs). Anonymous lookups are rate limited per IP on the shared Cloudflare egress addresses, so a key is strongly recommended for a deployed Worker. Leave empty to run anonymously."
+      }
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "wrangler": "^4.168.0"
+  }
+}
