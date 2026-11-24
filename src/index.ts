@@ -70,8 +70,11 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
   const match = CONFIG_ROUTE_RE.exec(path);
   if (match) {
-    const encoded = match[1]!;
-    const route = match[2]!;
+    // Stremio percent-encodes every path component, so an episode arrives as
+    // `tt0903747%3A1%3A1.json` (Stremio Core: utf8_percent_encode with
+    // URI_COMPONENT_ENCODE_SET). Decode before anything looks at the id.
+    const encoded = decodePathComponent(match[1]!);
+    const route = decodePathComponent(match[2]!);
     const config = decodeConfig(encoded);
     if (!config) {
       return errorResponse(
@@ -176,6 +179,16 @@ async function handleStreams(
       },
     },
   );
+}
+
+function decodePathComponent(value: string): string {
+  if (!value.includes("%")) return value;
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    // A malformed escape is not worth a 500: hand it back and let the id check fail.
+    return value;
+  }
 }
 
 function configPage(env: Env, origin: string): Response {

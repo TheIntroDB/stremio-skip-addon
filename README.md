@@ -118,13 +118,20 @@ x-tidb-duration-ms: 600000
 
 When TheIntroDB has no timings for a title, or answers `429`, **the stream is returned exactly as your source addon sent it**: no wrapping, no relay, no cost.
 
+A source that turns out not to be a playlist is also cheap: the verdict is remembered for an hour, and a byte-range request (what a player sends on every seek) is handed straight to the origin. So a progressive `.mkv` costs one sniff per file, not one relayed request per seek.
+
+Two request shapes are worth knowing about, because both are things Stremio does that a naive addon gets wrong:
+
+- Stremio percent-encodes every path component, so a series request arrives as `/stream/series/tt0903747%3A1%3A1.json`. The id is decoded before it is parsed.
+- Sources are asked with the plain id first, and retried with the percent-encoded form when that is refused — some addons only route the encoded shape.
+
 ### Response headers
 
 Every `/play` response says what it did, which is the fastest way to see whether a title is being cut:
 
 | Header | Meaning |
 | --- | --- |
-| `x-tidb-play` | `spliced`, `master`, `unchanged`, `rewritten_uris` (proxy mode), `not_hls`, `not_a_playlist`, `degenerate_windows`, `pass_through`, `upstream_<status>` |
+| `x-tidb-play` | `spliced`, `master`, `unchanged`, `rewritten_uris` (proxy mode), `not_hls`, `not_a_playlist`, `not_a_playlist_cached`, `range_request`, `degenerate_windows`, `pass_through`, `upstream_<status>` |
 | `x-tidb-lookup` | `fresh`, `cache_hit`, `media_not_found`, `episode_not_found`, `missing_api_key`, `rate_limited…`, `request_failed…` |
 | `x-tidb-cuts` | The windows that applied, e.g. `intro 3:48-4:06, credits 57:12-end` |
 | `x-tidb-dropped-segments`, `x-tidb-dropped-ms`, `x-tidb-duration-ms` | What was removed, and the playlist's length |

@@ -24,6 +24,8 @@ let base = "";
 let amplified = "";
 let proxyConfig = "";
 const apiCalls = new Map<string, number>();
+/** Every path the stub was asked for, so a test can prove nothing was fetched. */
+const hits = new Map<string, number>();
 
 const SEGMENT_SECONDS = 6;
 const LONG_PLAYLIST_SEGMENTS = 600; // 3600s, long enough for both real windows
@@ -118,6 +120,7 @@ before(async () => {
   server = createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     const path = url.pathname;
+    hits.set(path, (hits.get(path) ?? 0) + 1);
 
     if (path === "/api/v4/media") {
       const id = url.searchParams.get("imdb_id") ?? "";
@@ -158,6 +161,12 @@ before(async () => {
 
     if (path.startsWith("/upstream/stream/")) {
       return send(response, 200, streamsBody(), "application/json");
+    }
+
+    // A source that only routes the percent-encoded episode id, like Stremio sends.
+    if (path.startsWith("/upstream-encoded/stream/")) {
+      if (path.includes("%3A")) return send(response, 200, streamsBody(), "application/json");
+      return send(response, 400, JSON.stringify({ error: "id must be encoded" }), "application/json");
     }
 
     if (path === "/hls/master.m3u8") {
@@ -216,6 +225,7 @@ after(async () => {
 beforeEach(() => {
   resetMemoryCache();
   apiCalls.clear();
+  hits.clear();
 });
 
 const testEnv = (overrides: Partial<Env> = {}): Env => ({
@@ -286,6 +296,33 @@ test("a configured manifest is a stream addon keyed by config", async () => {
   assert.ok(String(manifest.id).startsWith("org.theintrodb.stremio.skip."));
   assert.ok(String(manifest.description).includes("intro, recap, credits"));
   assert.ok(String(manifest.description).includes("127.0.0.1"));
+});
+
+test("an episode id percent-encoded the way Stremio sends it is understood", async () => {
+  // Stremio Core encodes every path component (URI_COMPONENT_ENCODE_SET), so a
+  // series request arrives as tt0903747%3A1%3A1.json. A router that only matches
+  // the raw form answers 400 for every episode while movies keep working.
+  const encoded = await call(`/${amplified}/stream/series/tt0903747%3A1%3A1.json`);
+  const plain = await call(`/${amplified}/stream/series/tt0903747:1:1.json`);
+  const encodedBody = (await encoded.json()) as { streams: Array<Record<string, unknown>> };
+
+  assert.equal(encoded.status, 200);
+  assert.equal(encoded.headers.get("x-tidb-windows"), "2");
+  assert.deepEqual(encodedBody, await plain.json());
+  assert.equal(encodedBody.streams.length, 4);
+  assert.ok(String(encodedBody.streams[0]!.url).startsWith("https://worker.example/"));
+});
+
+test("a source that only routes the percent-encoded id is retried", async () => {
+  const encodedConfig = encodeConfig({
+    src: [`${base}/upstream-encoded`],
+    types: ["intro", "recap", "credits"] as SegmentType[],
+  });
+  const response = await call(`/${encodedConfig}/stream/series/tt0903747%3A1%3A1.json`);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-tidb-upstream-streams"), "4");
+  const body = (await response.json()) as { streams: unknown[] };
+  assert.equal(body.streams.length, 4);
 });
 
 test("a stream list relays the source addon and says what will be cut", async () => {
@@ -457,6 +494,26 @@ test("a body that is not a playlist is not served as one", async () => {
   assert.equal(response.status, 302);
   assert.equal(response.headers.get("x-tidb-play"), "not_a_playlist");
   assert.equal(response.headers.get("location"), `${base}/blob`);
+});
+
+test("a target that is not a playlist is sniffed once, then remembered", async () => {
+  // Players re-request a progressive file constantly (seeks, ranges), so the
+  // verdict is cached instead of re-sniffing the origin each time.
+  const first = await call(playPath(`${base}/blob`, "tt0903747:1:1"));
+  const second = await call(playPath(`${base}/blob`, "tt0903747:1:1"));
+  assert.equal(first.headers.get("x-tidb-play"), "not_a_playlist");
+  assert.equal(second.headers.get("x-tidb-play"), "not_a_playlist_cached");
+  assert.equal(hits.get("/blob"), 1, "the origin was only asked once");
+});
+
+test("a range request goes straight to the origin, without a sniff", async () => {
+  const response = await call(playPath(`${base}/hls/media.m3u8`, "tt0903747:1:1"), testEnv(), {
+    headers: { range: "bytes=0-1023" },
+  });
+  assert.equal(response.status, 302);
+  assert.equal(response.headers.get("x-tidb-play"), "range_request");
+  assert.equal(response.headers.get("location"), `${base}/hls/media.m3u8`);
+  assert.equal(hits.get("/hls/media.m3u8"), undefined, "the playlist was not fetched");
 });
 
 test("with segment proxying on, the segments point at the Worker", async () => {

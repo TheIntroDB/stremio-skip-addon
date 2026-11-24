@@ -41,14 +41,23 @@ export async function fetchStreams(
 
   for (const base of config.src) {
     const requestUrl = `${base}/stream/${encodeURIComponent(type)}/${id}.json`;
-    let response: Response;
-    try {
-      response = await fetchImpl(requestUrl, {
-        headers: { accept: "application/json" },
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-      });
-    } catch (error) {
-      sources.push({ base, ok: false, count: 0, error: errorName(error) });
+    let response = await fetchResource(fetchImpl, requestUrl);
+
+    // Some addons only route the percent-encoded form of an episode id (which is
+    // what Stremio itself sends); retry that way when the plain one is refused.
+    if (response && response.status >= 400) {
+      const encodedId = encodeURIComponent(id);
+      if (encodedId !== id) {
+        const retry = await fetchResource(
+          fetchImpl,
+          `${base}/stream/${encodeURIComponent(type)}/${encodedId}.json`,
+        );
+        if (retry && retry.ok) response = retry;
+      }
+    }
+
+    if (!response) {
+      sources.push({ base, ok: false, count: 0, error: "request_failed" });
       continue;
     }
 
@@ -73,6 +82,20 @@ export async function fetchStreams(
   }
 
   return { streams: [], sources };
+}
+
+async function fetchResource(
+  fetchImpl: typeof fetch,
+  url: string,
+): Promise<Response | null> {
+  try {
+    return await fetchImpl(url, {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch {
+    return null;
+  }
 }
 
 function extractStreams(payload: unknown): UpstreamStream[] {

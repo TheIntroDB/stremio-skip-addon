@@ -17,6 +17,7 @@
  */
 
 import { describeWindows } from "./format.js";
+import { getHttpCache } from "./cache.js";
 import { isMasterPlaylist, isPlaylist, rewriteMasterPlaylist, spliceMediaPlaylist, type UriRewriters } from "./hls.js";
 import { playlist, redirectTo, text } from "./http.js";
 import { lookupSkipWindows } from "./introdb.js";
@@ -29,6 +30,8 @@ const MAX_PLAYLIST_BYTES = 4 * 1024 * 1024;
 const SNIFF_BYTES = 8192;
 const UPSTREAM_TIMEOUT_MS = 10000;
 const SEGMENT_TIMEOUT_MS = 30000;
+/** How long a "this target is not a playlist" verdict is remembered. */
+const NOT_PLAYLIST_TTL_SECONDS = 60 * 60;
 
 /** Extensions that are never a playlist, so a sniff can be skipped entirely. */
 const MEDIA_EXTENSIONS = [
@@ -54,12 +57,24 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
   if (blocked) return text(blocked, { status: 400 });
 
   // The player asked for a byte range of a file it already knows, or a HEAD probe:
-  // nothing to rewrite, hand it straight to the origin.
+  // nothing to rewrite, hand it straight to the origin. A progressive file is
+  // range-requested on every seek, so this shortcut is what keeps a source that
+  // cannot be cut from costing a relayed request per seek.
   if (context.request.method === "HEAD" || requestUrl.searchParams.has("whole")) {
     return redirectTo(target, "pass_through");
   }
+  if (context.request.headers.has("range")) {
+    return redirectTo(target, "range_request");
+  }
   if (looksLikeProgressiveFile(target)) {
     return redirectTo(target, "not_hls");
+  }
+
+  // A target already known not to be a playlist is not sniffed again.
+  const httpCache = getHttpCache(context.env);
+  const verdictKey = `play:verdict:${target}`;
+  if (await httpCache.match(verdictKey)) {
+    return redirectTo(target, "not_a_playlist_cached");
   }
 
   const rewriters: UriRewriters = {
@@ -89,8 +104,14 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
   const contentType = upstream.headers.get("content-type") ?? "";
   const sniffed = await readPlaylist(upstream, target, contentType);
 
-  if (sniffed === null) return redirectTo(target, "not_a_playlist");
-  if (!isPlaylist(sniffed.text)) return redirectTo(target, "not_a_playlist");
+  if (sniffed === null || !isPlaylist(sniffed.text)) {
+    await httpCache.put(
+      verdictKey,
+      { status: 302, body: "not_a_playlist", contentType: "text/plain" },
+      NOT_PLAYLIST_TTL_SECONDS,
+    );
+    return redirectTo(target, "not_a_playlist");
+  }
 
   if (isMasterPlaylist(sniffed.text)) {
     const rewritten = rewriteMasterPlaylist(sniffed.text, target, rewriters);
