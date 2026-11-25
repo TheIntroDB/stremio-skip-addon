@@ -85,15 +85,6 @@ export class SubtitleEngine {
     if (episodeId) this.byEpisode.set(episodeId, key);
   }
 
-  /** The track an episode should be offered, if one is ready. */
-  async trackForEpisode(episodeId: string): Promise<{ key: string; path: string; cues: number } | null> {
-    const key = this.byEpisode.get(episodeId);
-    if (!key) return null;
-    const path0 = await this.track(key);
-    if (!path0) return null;
-    return { key, path: path0, cues: this.jobs.get(key)?.cues ?? 0 };
-  }
-
   /**
    * Start the track for a package, if one is wanted and the configuration allows it.
    *
@@ -134,16 +125,11 @@ export class SubtitleEngine {
     return job;
   }
 
-  /** The finished track's path, or null while there is not one. */
-  async track(key: string): Promise<string | null> {
+  /** Whether a track exists for this key at all (used by /health and the tests). */
+  async has(key: string): Promise<boolean> {
     const job = this.jobs.get(key);
-    if (job && !job.ready) return null;
-    const file = path.join(this.dirFor(key), "track.vtt");
-    try {
-      return (await stat(file)).size > 0 ? file : null;
-    } catch {
-      return null;
-    }
+    if (!job) return false;
+    return this.written(path.join(this.dirFor(job.key), `${this.chunkName(0)}.vtt`));
   }
 
   /** What /health reports. */
@@ -249,13 +235,13 @@ export class SubtitleEngine {
         const wav = path.join(dir, `${name}.wav`);
         const vtt = path.join(dir, `${name}.vtt`);
         index += 1;
-        if (await this.hasTrackChunk(vtt)) {
+        if (await this.written(vtt)) {
           // Already done by an earlier run of this job; the file is the record.
           job.done += 1;
           job.lastAt = Date.now();
           continue;
         }
-        const cues = await this.chunkCues(job, chunk, wav, language);
+        const cues = await this.chunkCues(chunk, wav, language, job);
         if (cues) {
           try {
             await writeFile(vtt, toVtt(cues));
@@ -275,15 +261,17 @@ export class SubtitleEngine {
       const missed = job.chunks - job.done;
       job.error = job.error ?? `${missed} of ${job.chunks} chunks could not be recognised`;
     }
-    await this.assemble(job);
+    // Ready means every chunk is on disk: the playlist can be closed and a player may keep it.
+    // A track with a hole in it is not ready -- the playlist stops at the hole (see `playlist`).
+    job.ready = job.chunks > 0 && job.done >= job.chunks;
   }
 
   /** One chunk's cues, with one retry: a chunk that fails is skipped, not fatal. */
   private async chunkCues(
-    job: Job,
     chunk: ChunkJob,
     wav: string,
     language: string,
+    job: Job,
   ): Promise<Cue[] | null> {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
@@ -306,10 +294,9 @@ export class SubtitleEngine {
         const transcript = await this.transcriber.transcribe(wav, language);
         if (transcript.realtimeFactor > 0) job.realtimeFactor = transcript.realtimeFactor;
         const words = await this.transcriber.refine(wav, transcript.words, language);
-        return shiftCues(buildCues(words), {
-          editedStartSeconds: chunk.editedStartMs / 1000,
-          durationSeconds: seconds,
-        });
+        // Times are relative to this chunk, which is what an HLS subtitle segment must hold:
+        // the player places the segment itself, from its position in the playlist.
+        return buildCues(words);
       } catch (error) {
         if (attempt === 0) continue; // the source may have been mid-rotation, or briefly unavailable
         // Say which side failed: the audio could not be fetched (the source, a range request, a
@@ -324,35 +311,81 @@ export class SubtitleEngine {
     return null;
   }
 
-  /** Join the chunks into the one file a player is given. */
-  private async assemble(job: Job): Promise<void> {
+  /**
+   * The subtitle playlist a player reads, which grows as the chunks are made.
+   *
+   * This is the mechanism that makes subtitles appear at all: a player loads it with the video
+   * and re-reads it as playback goes (that is what `#EXT-X-PLAYLIST-TYPE:EVENT` means), so
+   * segments that are written *during* playback get shown -- where a single subtitle *file*
+   * fetched once can never arrive late enough to be noticed.
+   *
+   * Segment positions come from the `#EXTINF` durations, and each chunk's cues are relative to
+   * it, so the accumulated durations have to match the video's timeline exactly. They do: a
+   * chunk covers the same stretch of source the packager copies, in the same order, and the
+   * processing card is the first entry because it is the first thing in the video.
+   *
+   * The list stops at the first chunk that is not written yet, so a player is never given a
+   * position that is one chunk out: a hole in the track is a hole, not a shift.
+   */
+  async playlist(key: string, cardMs: number): Promise<{ body: string; complete: boolean } | null> {
+    const job = this.jobs.get(key);
+    if (!job || job.stretches.length === 0) return null;
     const dir = this.dirFor(job.key);
-    const lines: string[] = [
-      "WEBVTT",
-      "",
-      "NOTE TheIntroDB: generated for the cut video, so the times match what is playing",
-      "",
-    ];
-    for (let index = 0; index < job.chunks; index += 1) {
+    const entries: Array<{ uri: string; seconds: number }> = [];
+
+    const card = Math.max(0, Math.round(cardMs / 1000));
+    if (card > 0) {
+      // The card is the start of the video, so the track needs a segment covering it -- empty of
+      // cues, which is exactly what a subtitle segment with nothing to say looks like.
       try {
-        const body = await readFile(path.join(dir, `${this.chunkName(index)}.vtt`), "utf8");
-        // Drop each chunk's own header and keep its cues.
-        const cues = body.replace(/^WEBVTT[^\n]*\n+/, "").trim();
-        if (cues) lines.push(cues, "");
+        await mkdir(dir, { recursive: true });
+        await writeFile(path.join(dir, "chunk-card.vtt"), "WEBVTT\n");
+        entries.push({ uri: `vtt?f=${encodeURIComponent(key)}&c=card`, seconds: card });
       } catch {
-        // A missing chunk is a gap in the track, which is what was decided above: better than none.
+        // Without it every cue would be a card's length early. Better no track than a wrong one.
+        return null;
       }
     }
-    const out = `${lines.join("\n")}\n`;
-    try {
-      await writeFile(path.join(dir, "track.vtt"), out);
-      job.ready = out.length > "WEBVTT".length + 40;
-    } catch (error) {
-      job.error = `cannot write the track: ${describe(error)}`;
+
+    let index = 0;
+    let longest = card;
+    for (const stretch of job.stretches) {
+      for (const chunk of stretch.chunks) {
+        const name = this.chunkName(index);
+        if (!(await this.written(path.join(dir, `${name}.vtt`)))) break;
+        const seconds = (chunk.sourceEndMs - chunk.sourceStartMs) / 1000;
+        longest = Math.max(longest, seconds);
+        entries.push({ uri: `vtt?f=${encodeURIComponent(key)}&c=${index}`, seconds });
+        index += 1;
+      }
     }
+    if (entries.length === 0) return null;
+
+    const lines = [
+      "#EXTM3U",
+      "#EXT-X-VERSION:7",
+      `#EXT-X-TARGETDURATION:${Math.max(1, Math.ceil(longest))}`,
+      `#EXT-X-PLAYLIST-TYPE:${job.ready ? "VOD" : "EVENT"}`,
+      "#EXT-X-MEDIA-SEQUENCE:0",
+    ];
+    for (const entry of entries) {
+      lines.push(`#EXTINF:${entry.seconds.toFixed(3)},`, entry.uri);
+    }
+    if (job.ready) lines.push("#EXT-X-ENDLIST");
+    return { body: `${lines.join("\n")}\n`, complete: job.ready };
   }
 
-  private async hasTrackChunk(file: string): Promise<boolean> {
+  /** A chunk of the track, as a player fetches it. */
+  async chunkFile(key: string, index: string): Promise<string | null> {
+    const job = this.jobs.get(key);
+    const name = index === "card" ? "chunk-card" : /^\d+$/.test(index) ? this.chunkName(Number(index)) : "";
+    if (name === "" || (!job && index !== "card")) return null;
+    const file = path.join(this.dirFor(key), `${name}.vtt`);
+    return (await this.written(file)) ? file : null;
+  }
+
+  /** Whether a file exists and has something in it. */
+  private async written(file: string): Promise<boolean> {
     try {
       return (await stat(file)).size > 0;
     } catch {
@@ -370,27 +403,47 @@ export interface TrackRequest {
   settings: Settings;
   subtitles: SubtitleEngine | null;
   request: Request;
-  encodedConfig: string;
-  origin?: string;
 }
 
 /**
- * The track itself.
+ * The subtitle playlist.
  *
- * A finished track never changes, and it is small -- a WebVTT file for a 45-minute episode is
- * under 100 KB, and the audio it was made from is already gone -- so a player may keep it for a
- * day, which is how long this deployment keeps it too (see `subtitlesTtlHours`).
+ * Never cached: it is read again and again while a track is being made, and a cached answer is a
+ * player that never sees the chunks that arrived after it first asked.
  */
-export async function handleTrack(context: TrackRequest): Promise<Response> {
+export async function handleSubtitlePlaylist(context: TrackRequest, cardMs: number): Promise<Response> {
   const url = new URL(context.request.url);
   const key = url.searchParams.get("f") ?? "";
-  const file = context.subtitles ? await context.subtitles.track(key) : null;
-  if (!file) return new Response("No generated subtitles for that title\n", { status: 404 });
+  const playlist = context.subtitles ? await context.subtitles.playlist(key, cardMs) : null;
+  if (!playlist) return new Response("#EXTM3U\n", { status: 404 });
+  return new Response(playlist.body, {
+    status: 200,
+    headers: {
+      "content-type": "application/vnd.apple.mpegurl",
+      "cache-control": "no-cache",
+      ...CORS_HEADERS,
+    },
+  });
+}
+
+/**
+ * One chunk of the track.
+ *
+ * Immutable once written, so it is cached for as long as the deployment keeps tracks -- the same
+ * day as the playlist's TTL, and the same day the `no-cache` playlist may point at it again.
+ */
+export async function handleSubtitleChunk(
+  context: TrackRequest,
+  key: string,
+  index: string,
+): Promise<Response> {
+  const file = context.subtitles ? await context.subtitles.chunkFile(key, index) : null;
+  if (!file) return new Response("", { status: 404 });
   let body: string;
   try {
     body = await readFile(file, "utf8");
   } catch {
-    return new Response("That track is no longer cached\n", { status: 404 });
+    return new Response("", { status: 404 });
   }
   return new Response(body, {
     status: 200,
@@ -399,30 +452,5 @@ export async function handleTrack(context: TrackRequest): Promise<Response> {
       "cache-control": `public, max-age=${context.settings.subtitlesTtlHours * 3600}`,
       ...CORS_HEADERS,
     },
-  });
-}
-
-/**
- * Stremio's subtitles menu asks for an episode, and gets this install's generated track for it.
- *
- * Empty until the track is finished: a player offered a half-written file shows a track that
- * stops in the middle, while a player offered nothing simply has no track until it asks again.
- */
-export async function handleSubtitles(context: TrackRequest, episodeId: string): Promise<Response> {
-  const found = context.subtitles ? await context.subtitles.trackForEpisode(episodeId) : null;
-  const origin = (context.origin ?? "").replace(/\/+$/, "");
-  const subtitles = found
-    ? [
-        {
-          id: "tidb-generated",
-          // Named for what it is: the timings are the cut video's, not the source's.
-          url: `${origin}/${context.encodedConfig}/vtt?f=${encodeURIComponent(found.key)}`,
-          lang: context.settings.subtitlesLanguage || "en",
-        },
-      ]
-    : [];
-  return new Response(JSON.stringify({ subtitles }), {
-    status: 200,
-    headers: { "content-type": "application/json; charset=utf-8", ...CORS_HEADERS },
   });
 }

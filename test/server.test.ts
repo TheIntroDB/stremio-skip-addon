@@ -91,11 +91,7 @@ test("a bare manifest is served with CORS", async () => {
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("access-control-allow-origin"), "*");
   const manifest = (await response.json()) as Record<string, unknown>;
-  assert.deepEqual(
-    manifest.resources,
-    ["stream", "subtitles"],
-    "streams, and the generated track an install can turn on",
-  );
+  assert.deepEqual(manifest.resources, ["stream"], "a stream addon, and nothing else");
   assert.ok(String(manifest.logo).includes("theintrodb-assets"));
 });
 

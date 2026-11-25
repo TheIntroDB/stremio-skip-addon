@@ -57,7 +57,13 @@ export interface Settings extends Env {
   subtitles: boolean;
   /** The language to recognise and refine. Alignment falls back to the recogniser's own timings. */
   subtitlesLanguage: string;
-  /** How much audio is transcribed in one go; smaller means finer progress and more retries. */
+  /**
+   * How much audio is transcribed in one go, and therefore how long each subtitle segment is.
+   *
+   * Small on purpose: a player can only show the subtitles in segments it has, so this is how
+   * soon after playback the first ones appear and how finely progress advances. 30s is also one
+   * window of the recogniser, so there is nothing to be gained by going larger.
+   */
   subtitlesChunkSeconds: number;
   /**
    * How long a generated track is kept, in hours.
@@ -109,7 +115,7 @@ export function loadSettings(): Settings {
     cuts: cutMode(),
     subtitles: !/^(off|false|0|no)$/i.test((process.env.SUBTITLES ?? "").trim()),
     subtitlesLanguage: (process.env.SUBTITLES_LANGUAGE ?? "en").trim(),
-    subtitlesChunkSeconds: Math.min(900, Math.max(60, Math.round(numberFrom("SUBTITLES_CHUNK_SECONDS", 300)))),
+    subtitlesChunkSeconds: Math.min(900, Math.max(60, Math.round(numberFrom("SUBTITLES_CHUNK_SECONDS", 30)))),
     subtitlesTtlHours: Math.min(720, Math.max(1, Math.round(numberFrom("SUBTITLES_TTL_HOURS", 24)))),
     // Off only when it is explicitly turned off: the sources people actually use are debrid.
     proxy: !/^(off|false|0|no)$/i.test((process.env.PROXY ?? "").trim()),

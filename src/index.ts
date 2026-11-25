@@ -32,7 +32,8 @@ import { lastLookupFailure, lookupSkipWindows } from "./introdb.js";
 import { ADDON_VERSION, buildManifest } from "./manifest.js";
 import { renderConfigPage } from "./page.js";
 import { handlePlay, handleSegment } from "./play.js";
-import { handleSubtitles, handleTrack, SubtitleEngine } from "./subtitles.js";
+import { handleSubtitleChunk, handleSubtitlePlaylist, SubtitleEngine } from "./subtitles.js";
+import { cardSeconds } from "./splash.js";
 import { Transcriber } from "./transcribe.js";
 import type { AddonConfig } from "./types.js";
 import {
@@ -143,14 +144,21 @@ export async function handleRequest(
     // The generated track itself, and the answer Stremio's subtitles menu asks for. Only a
     // finished track is offered: a half-written file reads as a broken one, and Stremio asks
     // again when the player opens its menu, so the entry appears when it is worth choosing.
-    if (route === "vtt") {
-      return handleTrack({ settings, subtitles: engine, request, encodedConfig: encoded });
+    // The subtitle rendition a master playlist points a player at, and its chunks. The playlist
+    // is read again and again while a track is being made (hence never cached); the chunks are
+    // written once and never change.
+    if (route === "subs.m3u8") {
+      return handleSubtitlePlaylist(
+        { settings, subtitles: engine, request },
+        settings.splash ? cardSeconds(settings) * 1000 : 0,
+      );
     }
-    const subtitleMatch = /^subtitles\/([^/]+)\/(.+)\.json$/.exec(route);
-    if (subtitleMatch) {
-      return handleSubtitles(
-        { settings, subtitles: engine, request, encodedConfig: encoded, origin },
-        decodePathComponent(subtitleMatch[2]!),
+    if (route === "vtt") {
+      const query = new URL(request.url).searchParams;
+      return handleSubtitleChunk(
+        { settings, subtitles: engine, request },
+        query.get("f") ?? "",
+        query.get("c") ?? "",
       );
     }
 

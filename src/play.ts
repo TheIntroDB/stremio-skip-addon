@@ -101,9 +101,9 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
   // the target is known to be a file.
   if (cutKey) {
     const card = await context.packages.advanceCard(cutKey);
-    if (card) return manifestResponse(card, cutKey, lookup?.reason ?? "");
+    if (card) return packageResponse(context, card, cutKey, lookup?.reason ?? "");
     const ready = await context.packages.manifest(cutKey);
-    if (ready) return manifestResponse(ready, cutKey, lookup?.reason ?? "");
+    if (ready) return packageResponse(context, ready, cutKey, lookup?.reason ?? "");
   }
 
   const proxyOn = context.settings.proxy === true;
@@ -299,7 +299,7 @@ async function packageOrProxy(
 ): Promise<Response> {
   const key = context.packages.keyFor(target, windows, streamKey);
   const ready = await context.packages.manifest(key);
-  if (ready) return manifestResponse(ready, key, lookupReason);
+  if (ready) return packageResponse(context, ready, key, lookupReason);
 
   // Generated subtitles are wanted for this install, and planning them needs the source's own
   // length (see below), so ask for it either way.
@@ -330,17 +330,59 @@ async function packageOrProxy(
   // where a player handed nothing shows a spinner and then gives up on the stream. The
   // card's pieces form the start of the same playlist the episode is appended to.
   const card = await context.packages.splashView(key, windows, wantsSubtitles);
-  if (card) return manifestResponse(card, key, lookupReason);
+  if (card) return packageResponse(context, card, key, lookupReason);
 
   const waited = await context.packages.waitForFirstSegment(
     key,
     context.settings.cutWaitSeconds * 1000,
   );
-  if (waited) return manifestResponse(waited, key, lookupReason);
+  if (waited) return packageResponse(context, waited, key, lookupReason);
   return passThrough(context, target, "package_slow", lookupReason);
 }
 
-function manifestResponse(view: ManifestView, key: string, lookupReason: string): Response {
+/**
+ * A package's playlist: the master that carries the subtitle rendition, or the media playlist.
+ *
+ * A subtitle rendition can only be declared in a master (`#EXT-X-MEDIA` + `SUBTITLES="subs"` on
+ * a variant), so when an install wants subtitles the film is offered as a one-variant master
+ * whose subtitle track is the growing playlist the engine serves. The variant is this same URL
+ * with `m=1`, which asks for the media playlist itself.
+ */
+function packageResponse(
+  context: PlayContext,
+  view: ManifestView,
+  key: string,
+  lookupReason: string,
+): Response {
+  const url = new URL(context.request.url);
+  const wants =
+    context.subtitles?.enabled(context.config) === true && url.searchParams.get("m") !== "1";
+  if (!wants) return mediaResponse(view, key, lookupReason);
+
+  const media = new URL(url.toString());
+  media.searchParams.set("m", "1");
+  const language = context.settings.subtitlesLanguage || "en";
+  const master = [
+    "#EXTM3U",
+    "#EXT-X-VERSION:7",
+    `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="TheIntroDB",LANGUAGE=${language},` +
+      `DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,URI="subs.m3u8?f=${encodeURIComponent(key)}"`,
+    '#EXT-X-STREAM-INF:BANDWIDTH=10000000,SUBTITLES="subs"',
+    `${media.pathname}${media.search}`,
+    "",
+  ].join("\n");
+  return new Response(master, {
+    status: 200,
+    headers: {
+      "content-type": "application/vnd.apple.mpegurl",
+      // It carries the key of a track that is still being made, so it must not be cached.
+      "cache-control": "no-cache",
+      ...CORS_HEADERS,
+    },
+  });
+}
+
+function mediaResponse(view: ManifestView, key: string, lookupReason: string): Response {
   return playlist(
     view.body,
     {

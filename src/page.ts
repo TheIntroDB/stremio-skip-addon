@@ -196,7 +196,7 @@ export function renderConfigPage(options: PageOptions): string {
 
     <div class="field">
       <label class="check" style="max-width:560px"><input type="checkbox" id="subtitles"> Generate subtitles for the cut video</label>
-      <p class="hint">Cutting removes stretches, so a subtitle track recorded against the original timeline drifts behind the picture. With this on, the audio of the parts that are kept is transcribed on this server, and the track is re-timed to what is playing, so it lines up. The speech models run here — nothing is sent anywhere — the first play of a title is what pays for it — a few minutes of CPU, once per title, measured at
+      <p class="hint">Cutting removes stretches, so a subtitle track recorded against the original timeline drifts behind the picture. With this on, the audio of the parts that are kept is transcribed on this server, and the track is re-timed to what is playing, so it lines up. It is delivered inside the stream — the player shows them as the video's own subtitle track, no menu involved — and appears as it is made, a chunk at a time. The speech models run here — nothing is sent anywhere — the first play of a title is what pays for it — a few minutes of CPU, once per title, measured at
         5–12× faster than realtime on CPU — and the finished track is then cached for a day.</p>
     </div>
 

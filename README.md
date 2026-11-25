@@ -338,11 +338,22 @@ and then the track is cached for a day. What is used:
   boundaries onto the waveform (word timings are the difference between a caption that lights up on
   the word and one that is a beat behind it).
 - The audio is extracted per *kept* stretch with a fast seek, so the deleted parts are never read,
-  in five-minute chunks: a chunk that cannot be recognised is retried once and skipped rather than
-  failing the job, and each chunk's file is the record, so a restart resumes where it stopped.
-- The track is a WebVTT file served at `/<config>/vtt?f=<key>` and offered through the addon's
-  `subtitles` resource, so it appears in Stremio's subtitle menu once it is *finished* — a
-  half-written file would read as a track that stops in the middle.
+  in **30-second chunks** — one window of the recogniser, small enough that the first subtitles
+  arrive seconds after playback starts. A chunk that cannot be recognised is retried once and
+  skipped rather than failing the job, and each chunk's file is the record, so a restart resumes
+  where it stopped.
+- **The track is delivered inside the stream**, not as a file. `/play` answers with a one-variant
+  *master* playlist that declares a subtitle rendition (`#EXT-X-MEDIA:TYPE=SUBTITLES`), and that
+  rendition is a subtitle playlist listing every chunk written so far
+  (`#EXT-X-PLAYLIST-TYPE:EVENT`) — so a player loads it with the video and re-reads it as playback
+  goes, and subtitles appear for chunks that were written *during* playback. Cue times are
+  relative to each chunk, which is what an HLS subtitle segment must contain, and the segments'
+  positions (the card first, then the kept stretches in order) are the video's own timeline.
+  Offering a finished file instead — through the addon's subtitle menu — cannot work: a client
+  asks for that list once per playback, so a track that arrives minutes later is never seen.
+- `/subs.m3u8?f=<key>` answers that subtitle playlist and is never cached (it is read again as
+  chunks arrive); `/<config>/vtt?f=<key>&c=<n>` serves one chunk, which never changes and is
+  cacheable for the day the track is kept.
 - **It is kept for 24 hours** (`SUBTITLES_TTL_HOURS`), which is nothing to keep: a WebVTT file for
   a 45-minute episode is under 100 KB, and the audio it was made from is deleted as each chunk
   finishes. The response is cacheable for the same day, so a player that keeps it does not ask
@@ -356,7 +367,7 @@ them again. `SUBTITLES=off` on a deployment means the models are never loaded by
 | `SUBTITLES` | `on` | Whether this deployment offers generated subtitles at all. Off means the models are never loaded. |
 | `SUBTITLES_LANGUAGE` | `en` | The language to recognise and refine. Align only refines the languages it knows; others keep the recogniser's own timings. |
 | `SUBTITLES_TTL_HOURS` | `24` | How long a generated track is kept, and how long a player may cache it. |
-| `SUBTITLES_CHUNK_SECONDS` | `300` | How much audio is transcribed in one go: smaller is finer progress and more retries. |
+| `SUBTITLES_CHUNK_SECONDS` | `30` | How much audio is transcribed in one go, and so how long each subtitle segment is: smaller means the first subtitles arrive sooner. |
 | `PROXY` | `on` | Whether the player fetches everything from this service. Off only suits a source the player can reach directly; debrid links need it on. |
 | `PREROLL_SECONDS` | `10` | How much of an episode must be packaged before playback starts on it. The card covers the gap. |
 | `SPLASH` | `on` | Draw the processing card for a cold playback. `off` holds the play request until the first segment exists instead. Everybody gets the card; this is an operator's switch, not an install's. |
