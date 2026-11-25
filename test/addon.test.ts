@@ -282,6 +282,9 @@ function testSettings(overrides: Partial<Settings> = {}): Settings {
     cuts: "off",
     // The production default: the sources people use are debrid files, so everything is relayed.
     proxy: relaying,
+subtitles: false,
+subtitlesLanguage: "en",
+subtitlesChunkSeconds: 300,
     skipMarginSeconds: 0,
     splash: false,
     prerollSeconds: 10,

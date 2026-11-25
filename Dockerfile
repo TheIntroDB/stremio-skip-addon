@@ -24,7 +24,14 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev \
+    # The generated-subtitles engines are installed here rather than declared in package.json:
+    # they are two Desert Ant packages plus an ONNX runtime, ~490 MB with the CUDA execution
+    # provider left out -- weight a CI run that never loads a model should not carry. They are
+    # loaded lazily (see src/transcribe.ts); without them /health says so and nothing else changes.
+    && ONNXRUNTIME_NODE_INSTALL=skip npm install --no-save --omit=dev \
+        @desert-ant-labs/voz@4.2.3 @desert-ant-labs/align@4.2.3 onnxruntime-node@1.31.1 \
+    && npm cache clean --force
 COPY --from=build /app/dist ./dist
 # The badge the processing card draws, so drawing it never needs the network.
 COPY assets ./assets
@@ -34,6 +41,11 @@ COPY assets ./assets
 # platform volume brings its own ownership -- if it is root-owned, /health says the
 # cache is unusable and the README says what to do.
 RUN mkdir -p /cache && chown -R node:node /cache
+# The speech models' weights (368 MiB) download on first use; keep them on the cache volume so
+# a container recreate does not fetch them again (src/transcribe.ts sets this too, for a host
+# that maps the cache somewhere else).
+ENV DAL_CACHE_ROOT=/cache/models
+
 ENV NODE_ENV=production \
     CACHE_DIR=/cache \
     CUTS=blocking \

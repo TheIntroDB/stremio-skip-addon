@@ -48,6 +48,18 @@ export interface Settings extends Env {
    */
   proxy: boolean;
   /**
+   * Whether this deployment offers generated subtitles at all.
+   *
+   * An install turns them on for itself; this is the switch for a host that wants none of it --
+   * with it off the speech models are never loaded, which is where the memory and the 368 MiB of
+   * weights would go.
+   */
+  subtitles: boolean;
+  /** The language to recognise and refine. Alignment falls back to the recogniser's own timings. */
+  subtitlesLanguage: string;
+  /** How much audio is transcribed in one go; smaller means finer progress and more retries. */
+  subtitlesChunkSeconds: number;
+  /**
    * How much of the episode must be ready before playback starts on it.
    *
    * Starting on a few seconds is what made Stremio decide an episode had ended, mark it
@@ -87,6 +99,9 @@ export function loadSettings(): Settings {
     cacheDir: process.env.CACHE_DIR ?? "./cache",
     cacheMaxBytes: Math.max(0, numberFrom("CACHE_MAX_GB", 50) * 1024 ** 3),
     cuts: cutMode(),
+    subtitles: !/^(off|false|0|no)$/i.test((process.env.SUBTITLES ?? "").trim()),
+    subtitlesLanguage: (process.env.SUBTITLES_LANGUAGE ?? "en").trim(),
+    subtitlesChunkSeconds: Math.min(900, Math.max(60, Math.round(numberFrom("SUBTITLES_CHUNK_SECONDS", 300)))),
     // Off only when it is explicitly turned off: the sources people actually use are debrid.
     proxy: !/^(off|false|0|no)$/i.test((process.env.PROXY ?? "").trim()),
     prerollSeconds: Math.min(60, Math.max(0, Math.round(numberFrom("PREROLL_SECONDS", 10)))),
@@ -111,6 +126,8 @@ export function describeSettings(settings: Settings): Record<string, unknown> {
     cuts: settings.cuts,
     skipMarginSeconds: settings.skipMarginSeconds,
     proxy: settings.proxy,
+    subtitles: settings.subtitles,
+    subtitlesLanguage: settings.subtitlesLanguage,
     splash: settings.splash,
     prerollSeconds: settings.prerollSeconds,
     cacheDir: settings.cuts === "off" ? null : settings.cacheDir,
