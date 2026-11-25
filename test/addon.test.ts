@@ -20,6 +20,8 @@ import { resetMemoryCache } from "../src/cache.js";
 import { encodeConfig } from "../src/config.js";
 import { INTRODB_API_BASE } from "../src/constants.js";
 import { PackageEngine } from "../src/packages.js";
+import { SubtitleEngine } from "../src/subtitles.js";
+import type { Transcriber } from "../src/transcribe.js";
 import type { Settings } from "../src/env.js";
 import { handleRequest } from "../src/index.js";
 import type { SegmentType } from "../src/types.js";
@@ -317,11 +319,13 @@ async function call(
   settings: Settings = testSettings(),
   init?: RequestInit,
   packages?: PackageEngine,
+  subtitles?: SubtitleEngine,
 ): Promise<Response> {
   return handleRequest(
     new Request(`https://worker.example${path}`, init),
     settings,
     packages ?? new PackageEngine(settings),
+    subtitles,
   );
 }
 
@@ -1065,6 +1069,79 @@ test("a package that is ready is served as a seekable playlist", async () => {
   // A name that is not one of ours is refused rather than read.
   const traversal = await call(`/${amplified}/seg?f=${key}/../../plan.json`, settings, undefined, engine);
   assert.equal(traversal.status, 400);
+});
+
+test("a package that is already cut still offers its subtitle track", async () => {
+  // The job that makes a track lives in memory; its chunks live on disk. A restart, a drain, or
+  // the idle stop after a viewer leaves all end the job -- and a cut film played afterwards used
+  // to be served with no rendition at all: the film plays, the intro is gone, and the player has
+  // no subtitle track, with nothing failing anywhere to say why.
+  const cacheDir = await mkdtemp(path.join(tmpdir(), "tidb-package-subs-"));
+  const settings = testSettings({ cacheDir, precutSources: 0, subtitles: true });
+  const engine = new PackageEngine(settings);
+  // The toggle is per install and lives in the link, so the link has to ask for it.
+  const subsConfig = encodeConfig({
+    src: [`${base}/upstream`],
+    types: ["intro", "recap", "credits"] as SegmentType[],
+    cuts: "mkv" as const,
+    subtitles: true,
+  });
+  const url = playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1", subsConfig);
+  const windows = [
+    { type: "intro" as const, startMs: 228665, endMs: 246498 },
+    { type: "credits" as const, startMs: 3432884, endMs: null },
+  ];
+  const key = engine.keyFor(`${base}/hls/movie.mp4`, windows, null);
+  const dir = path.join(cacheDir, "hls", key);
+  await mkdir(dir, { recursive: true });
+  await writeFile(
+    path.join(dir, "plan.json"),
+    JSON.stringify({
+      key,
+      windows: [],
+      ranges: [
+        { startMs: 0, endMs: 20_000 },
+        { startMs: 40_000, endMs: 60_000 },
+      ],
+      createdAt: Date.now(),
+    }),
+  );
+  // What the earlier run learnt about the source: the length it is timed against, and the audio
+  // tracks that can be recognised from. The audio stream is part of the track's key.
+  await writeFile(
+    path.join(dir, "duration.json"),
+    JSON.stringify({
+      durationMs: 60_000,
+      bitrate: 1000,
+      width: 320,
+      height: 180,
+      codecs: "avc1",
+      audio: [{ index: 1, language: "en", isDefault: true }],
+    }),
+  );
+  await writeFile(path.join(dir, "pass-0.csv"), "seg00000.ts,0.000000,10.000000\n");
+  await writeFile(path.join(dir, "pass-1.csv"), "seg00001.ts,0.000000,6.000000\n");
+  await writeFile(path.join(dir, "done"), "");
+  for (const name of ["seg00000.ts", "seg00001.ts"]) {
+    await writeFile(path.join(dir, name), "TS-BYTES");
+  }
+
+  // The recogniser is not what this test is about: it only has to exist for the engine to plan.
+  const subs = new SubtitleEngine(settings, {
+    lastError: null,
+    available: async () => false,
+    transcribe: async () => [],
+  } as unknown as Transcriber);
+  const response = await call(url, settings, undefined, engine, subs);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-tidb-play"), "package_vod", "the film, not the card");
+  const body = await response.text();
+  assert.ok(
+    body.includes('#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs"'),
+    "the film declares a subtitle rendition, so a player lists it",
+  );
+  assert.ok(body.includes(`f=${key}.a1`), "keyed by the package and the audio stream it is made from");
+  assert.ok(body.includes('SUBTITLES="subs"'), "and the variant points at it");
 });
 
 test("the deployment's margin trims every window, and an install can override it", async () => {

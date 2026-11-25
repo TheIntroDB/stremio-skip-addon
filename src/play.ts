@@ -103,9 +103,15 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
   // because these polls arrive before the target is known to be a file.
   if (cutKey) {
     const card = await context.packages.advanceCard(cutKey);
-    if (card) return packageResponse(context, card, cutKey, lookup?.reason ?? "");
+    if (card) {
+      const audio = await offerTrack(context, target, cutKey, windows, card);
+      return packageResponse(context, card, cutKey, lookup?.reason ?? "", audio);
+    }
     const ready = await context.packages.manifest(cutKey);
-    if (ready) return packageResponse(context, ready, cutKey, lookup?.reason ?? "");
+    if (ready) {
+      const audio = await offerTrack(context, target, cutKey, windows, ready);
+      return packageResponse(context, ready, cutKey, lookup?.reason ?? "", audio);
+    }
   }
 
   const proxyOn = context.settings.proxy === true;
@@ -289,6 +295,48 @@ function passThrough(
  * Whatever happens, a player that plays something is better than one that fails, so a
  * source too slow to produce a segment inside the window is passed through untouched.
  */
+/**
+ * Offer a package's track, starting or resuming the job that makes it, and return the audio stream
+ * it is being made from.
+ *
+ * Called on every path that serves a package, not only the one that builds it. The job lives in
+ * memory while its chunks live on disk, so a restart, a drain, or the idle stop after a viewer
+ * leaves all end it -- and a cut film served afterwards would have no rendition at all: the film
+ * plays, the intro is gone, and the player simply has no subtitle track, with nothing failing
+ * anywhere to say why. `run` treats a chunk's file as the record of it, so a resumed job continues
+ * where the last one stopped instead of recognising the episode again.
+ */
+async function offerTrack(
+  context: PlayContext,
+  target: string,
+  key: string,
+  windows: readonly SkipWindow[],
+  view: ManifestView,
+): Promise<{ index: number; language?: string } | null> {
+  const audio = await audioFor(context, key);
+  if (!context.subtitles.enabled(context.config)) return audio;
+  const info = await context.packages.sourceInfo(key);
+  // Without the source's own length there is no timeline to place cues on. The film still plays;
+  // it is the track that cannot be offered until a play has probed the source.
+  if (!info) return audio;
+  context.subtitles.ensure(
+    key,
+    target,
+    {
+      durationMs: info.durationMs,
+      windows,
+      // The offset the track is timed from has to match the playlist this playback gets: when the
+      // card was dropped as stale, the film starts at zero and so must the cues.
+      cardMs: view.card > 0 ? cardSeconds(context.settings) * 1000 : 0,
+    },
+    true,
+    audio ?? undefined,
+  );
+  const track = context.subtitles.trackFor(key);
+  if (track && context.episodeId) context.subtitles.note(context.episodeId, track);
+  return audio;
+}
+
 async function packageOrProxy(
   context: PlayContext,
   target: string,
@@ -302,12 +350,12 @@ async function packageOrProxy(
   // anything answers. On a key seen for the first time the probe below is what lists the tracks,
   // so it is resolved again after that.
   let audio = await audioFor(context, key);
-  const ready = await context.packages.manifest(key);
-  if (ready) return packageResponse(context, ready, key, lookupReason, audio);
-
-  // Generated subtitles are wanted for this install, and planning them needs the source's own
-  // length (see below), so ask for it either way.
   const wantsSubtitles = context.subtitles.enabled(context.config);
+  const ready = await context.packages.manifest(key);
+  if (ready) {
+    const resolved = await offerTrack(context, target, key, windows, ready);
+    return packageResponse(context, ready, key, lookupReason, resolved);
+  }
 
   // Learn the source's length before answering, so the playlist can declare the whole episode
   // from its first response: a player that reaches the end of a few-second playlist decides the
@@ -412,7 +460,8 @@ async function packageResponse(
       "content-type": "application/vnd.apple.mpegurl",
       // It carries the key of a track that is still being made, so it must not be cached.
       "cache-control": "no-cache",
-      // Where this playback starts, so "why is there a card" is answerable from a response.
+      // The master answers the same question the playlist does, so an operator sees one vocabulary.
+      "x-tidb-play": view.complete ? "package_vod" : "package_live",
       "x-tidb-complete": view.complete ? "yes" : "no",
       ...CORS_HEADERS,
     },
