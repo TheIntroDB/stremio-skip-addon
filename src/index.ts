@@ -195,7 +195,7 @@ async function handleStreams(
   // binds its link to the requesting address stops working entirely if the stream is
   // handed over raw. A lookup failure (`403`, a block on this deployment's address,
   // an outage) must therefore cost the cut, not the playback.
-  const relay = cutSummary !== null || config.proxy === true;
+  const relay = cutSummary !== null || settings.proxy === true;
   const note = cutSummary ?? "TheIntroDB has no timings for this title yet, so this stream is relayed but not cut.";
 
   const streams = relay

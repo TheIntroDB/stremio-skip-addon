@@ -33,6 +33,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     cacheDir: path.join(workDir, "cache"),
     cacheMaxBytes: 0,
     cuts: "off",
+    proxy: true,
     skipMarginSeconds: 0,
     splash: false,
     prerollSeconds: 10,

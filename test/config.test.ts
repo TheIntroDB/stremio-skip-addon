@@ -30,7 +30,6 @@ test("a config round-trips through the URL segment", () => {
     src: ["https://aiostreams.example/manifest.json"],
     types: ["intro", "recap"],
     key: "abc-123",
-    proxy: true,
     name: "Living Room",
   });
 
@@ -40,7 +39,6 @@ test("a config round-trips through the URL segment", () => {
     src: ["https://aiostreams.example"],
     types: ["intro", "recap"],
     key: "abc-123",
-    proxy: true,
     name: "Living Room",
   });
 });

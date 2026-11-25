@@ -42,6 +42,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     cacheDir: path.join(workDir, "cache"),
     cacheMaxBytes: 10 * 1024 ** 3,
     cuts: "blocking",
+    proxy: true,
     skipMarginSeconds: 0,
     splash: false,
     prerollSeconds: 10,

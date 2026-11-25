@@ -681,6 +681,7 @@ export class PackageEngine {
     }
     return {
       mode: this.settings.cuts,
+      proxy: this.settings.proxy,
       skipMarginSeconds: this.settings.skipMarginSeconds,
       available: this.available,
       cacheDir: this.settings.cacheDir,

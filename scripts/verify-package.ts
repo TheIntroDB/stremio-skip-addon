@@ -40,6 +40,7 @@ const settings: Settings = {
   cacheMaxBytes: 10 * 1024 ** 3,
   cuts: "blocking",
   skipMarginSeconds: 3,
+  proxy: true,
   splash: true,
   prerollSeconds: 10,
   cutWaitSeconds: 120,

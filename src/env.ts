@@ -40,6 +40,14 @@ export interface Settings extends Env {
    */
   splash: boolean;
   /**
+   * Whether the player fetches everything from here.
+   *
+   * On by default: a debrid link is minted for the address that asked for it, so the stream
+   * list, the playlists, the segments and the files all have to come from the same address.
+   * Off is for a source the player can reach directly (a public HLS stream).
+   */
+  proxy: boolean;
+  /**
    * How much of the episode must be ready before playback starts on it.
    *
    * Starting on a few seconds is what made Stremio decide an episode had ended, mark it
@@ -79,6 +87,8 @@ export function loadSettings(): Settings {
     cacheDir: process.env.CACHE_DIR ?? "./cache",
     cacheMaxBytes: Math.max(0, numberFrom("CACHE_MAX_GB", 50) * 1024 ** 3),
     cuts: cutMode(),
+    // Off only when it is explicitly turned off: the sources people actually use are debrid.
+    proxy: !/^(off|false|0|no)$/i.test((process.env.PROXY ?? "").trim()),
     prerollSeconds: Math.min(60, Math.max(0, Math.round(numberFrom("PREROLL_SECONDS", 10)))),
     splash: !/^(off|false|0|no)$/i.test((process.env.SPLASH ?? "").trim()),
     skipMarginSeconds: Math.min(
@@ -100,6 +110,7 @@ export function describeSettings(settings: Settings): Record<string, unknown> {
     apiKeyConfigured: Boolean((settings.TIDB_API_KEY ?? "").trim()),
     cuts: settings.cuts,
     skipMarginSeconds: settings.skipMarginSeconds,
+    proxy: settings.proxy,
     splash: settings.splash,
     prerollSeconds: settings.prerollSeconds,
     cacheDir: settings.cuts === "off" ? null : settings.cacheDir,

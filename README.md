@@ -156,7 +156,7 @@ With timings in hand, the stream offered to Stremio points at `/play` on this se
 - **HLS master playlist** → every variant, audio rendition and trick-play playlist is re-pointed at `/play`, so each one gets cut in turn.
 - **HLS media playlist** → the segments whose time range overlaps a skip window are dropped, `#EXT-X-DISCONTINUITY` marks the jump, and a re-declared `#EXT-X-MAP` keeps fragmented-MP4 streams decodable. Byte-range playlists keep pointing at the same bytes. **No video passes through this service on this path** — the player still fetches every segment from your source.
 - **A file** (`.mkv`, `.mp4`, what a debrid link usually is) → the stretches that survive are copied into MPEG-TS segments with ffmpeg (`-c copy`: no re-encode, no quality loss) and served from here as a playlist that grows while you watch, so playback starts after the first segment instead of after the file — see [Cutting a file](#cutting-a-file).
-- **Anything else** (`302`) → the player is sent to the origin untouched. With **Proxy streams through this service** on, that case disappears: the file is streamed through the addon instead, which is what a source that binds the link to the requesting address needs.
+- **Anything else** (`302`) → the player is sent to the origin untouched. With relaying on (the default) that case disappears: the file is streamed through the addon instead, which is what a source that binds the link to the requesting address needs.
 
 Measured on Apple's own fragmented-MP4 test stream (`img_bipbop_adv_example_fmp4`, 100 segments / 600s) with the Breaking Bad S1E1 timings:
 
@@ -254,7 +254,7 @@ Setting `CUTS=off` means no disk use at all and no video through the service —
 
 Your source binds the link to the address that asked for it, and ElfHosted's Comet says so with a page naming two IPs: the one it expected, and yours. The expected one is this service's — it fetched the stream list, so the debrid link was minted for it — and the player then opened the link from your own connection, which the source refuses.
 
-The fix is the **Proxy streams through this service** option on the configuration page (it is on by default, and it is stored in your install URL, so an existing install needs its link regenerated or edited):
+It is handled for you: streams are relayed through this service by default, because almost every source people use is a debrid file. It is the deployment setting **`PROXY`** (`on` by default; `off` only for a source the player can reach directly), not an install option — so nothing to configure per install:
 
 - with it on, the player asks *this service* for the playlists, the segments and the file itself, and every one of those fetches to the source comes from the same address the link was minted for;
 - with it off, the addon only relays the stream list and the playlists, and hands the video URL to the player, which is exactly the address mismatch above.
@@ -296,7 +296,7 @@ Worth reading before installing, because these are properties of the approach ra
 - **Torrent streams are not relaid.** A stream that is an `infoHash` (Torrentio and friends without a debrid) has no URL to rewrite, so it is passed through with a note.
 - **Sources that need custom headers are not relaid**, because the relay does not carry them. They are passed through untouched.
 - **Series numbering is the default order.** If your library follows another order — streaming rips, absolute-numbered anime, some specials — the lookup answers from the default numbering and the wrong episode's timings can apply. A Stremio stream request carries no episode-order hint, so this cannot be detected client-side.
-- **Proxying is what makes a debrid source work, and it costs bandwidth.** With it on, the player fetches playlists, segments and files from this service, which is the address the source minted the link for — without it a debrid link is opened from the player's own connection and refused. Off is fine (and cheaper) for a source the player can reach directly. See [above](#playback-fails-with-this-stream-link-only-works-on-the-internet-connection-that-requested-it).
+- **Relaying is what makes a debrid source work, and it costs bandwidth.** The player fetches playlists, segments and files from this service, which is the address the source minted the link for — without it a debrid link is opened from the player's own connection and refused. It is on by default and is the deployment's `PROXY` setting: off is fine (and cheaper) for a source the player can reach directly. See [above](#playback-fails-with-this-stream-link-only-works-on-the-internet-connection-that-requested-it).
 - **The install URL is the credential-ish thing.** It contains your config (and your API key if you pasted one there). Anyone with it can use your deployment; the service refuses to relay to private addresses, but treat the URL as private.
 - **This is not a Stremio `skip` API.** Stremio has no addon API for skip buttons; segments are removed from the stream instead, which is why it works on every platform.
 
@@ -314,6 +314,7 @@ Everything is an environment variable; there is nothing to edit in the image.
 | `CACHE_DIR` | `./cache` (`/cache` in the image) | Where package segments are kept. |
 | `CACHE_MAX_GB` | `50` | Disk budget for packages, evicted oldest-first. |
 | `CUT_WAIT_SECONDS` | `120` | `blocking` mode only: how long a play request waits for the first segment. A couple of seconds is the normal answer; the bound only matters when a source is slow. |
+| `PROXY` | `on` | Whether the player fetches everything from this service. Off only suits a source the player can reach directly; debrid links need it on. |
 | `PREROLL_SECONDS` | `10` | How much of an episode must be packaged before playback starts on it. The card covers the gap. |
 | `SPLASH` | `on` | Draw the processing card for a cold playback. `off` holds the play request until the first segment exists instead. Everybody gets the card; this is an operator's switch, not an install's. |
 | `SKIP_MARGIN_SECONDS` | `2` | Seconds left alone at each end of every window, so a cut never removes more than the timings ask for. A control on the configuration page sets it per install. |

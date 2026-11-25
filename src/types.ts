@@ -75,8 +75,6 @@ export interface AddonConfig {
   types: SegmentType[];
   /** Optional per-config TheIntroDB API key. The deployment's own key is preferred. */
   key?: string;
-  /** Route HLS segments (and keys/init segments) through this service too. */
-  proxy?: boolean;
   /** This install's own cutting mode, overriding the deployment's default. */
   cuts?: CutMode;
   /** This install's own margin on each cut, in seconds, overriding the deployment's. */

@@ -247,7 +247,8 @@ before(async () => {
   // source base has to be the real port.
   const config = { src: [`${base}/upstream`], types: ["intro", "recap", "credits"] as SegmentType[] };
   amplified = encodeConfig(config);
-  proxyConfig = encodeConfig({ ...config, proxy: true });
+  // Proxying comes from the deployment now (see testSettings), so this is just a config.
+  proxyConfig = encodeConfig({ ...config });
 });
 
 after(async () => {
@@ -255,10 +256,19 @@ after(async () => {
 });
 
 beforeEach(() => {
+  relaying = true;
   resetMemoryCache();
   apiCalls.clear();
   hits.clear();
 });
+
+/**
+ * Whether these tests describe a relaying deployment (the default) or one with `PROXY=off`,
+ * where the player fetches segments and files from the source. The behaviour differs by mode --
+ * a URI is rewritten to this service or left pointing at the source -- so this exists to make
+ * that explicit rather than incidental.
+ */
+let relaying = true;
 
 function testSettings(overrides: Partial<Settings> = {}): Settings {
   return {
@@ -270,6 +280,8 @@ function testSettings(overrides: Partial<Settings> = {}): Settings {
     // Off by default: these tests are about the playlist and relay paths. The package
     // engine has its own suite, which runs real ffmpeg (test/packages.test.ts).
     cuts: "off",
+    // The production default: the sources people use are debrid files, so everything is relayed.
+    proxy: relaying,
     skipMarginSeconds: 0,
     splash: false,
     prerollSeconds: 10,
@@ -340,7 +352,7 @@ test("the Worker serves a config page, a health check and a bare manifest", asyn
   for (const field of ["mode", "available", "cacheDir", "cacheMaxGb", "cutConcurrency"]) {
     assert.ok(field in parsed.cuts, `the page's cut data has ${field}`);
   }
-  assert.match(body, /id="proxy"[^>]*checked/, "proxying is on by default: it is what debrid sources need");
+  assert.ok(!body.includes('id="proxy"'), "relaying is a deployment setting, not an install one");
   // The cutting mode is a per-install choice, so the page has to offer it.
   assert.match(body, /<select id="cuts">/);
   for (const mode of ["blocking", "on", "off"]) {
@@ -545,6 +557,7 @@ test("a cut is keyed on the stream, not on the source's rotating link", async ()
 });
 
 test("the title TheIntroDB has no timings for is passed through untouched", async () => {
+  relaying = false; // a PROXY=off deployment, not this one's default
   const response = await call(`/${amplified}/stream/series/tt0000001:1:1.json`);
   const body = (await response.json()) as { streams: Array<Record<string, unknown>> };
   assert.equal(body.streams.length, 4);
@@ -578,7 +591,9 @@ test("with proxying on, a title with no timings is still relayed", async () => {
   assert.match(String(relayed.streams[0]!.description), /relayed but not cut/);
 
   // Without proxying, a title with no timings is still handed over untouched.
-  const direct = (await (await call(`/${amplified}/stream/series/tt0000001:1:1.json`)).json()) as {
+  const direct = (await (
+    await call(`/${amplified}/stream/series/tt0000001:1:1.json`, testSettings({ proxy: false }))
+  ).json()) as {
     streams: Array<{ url: string }>;
   };
   assert.equal(direct.streams[0]!.url, `${base}/hls/master.m3u8`);
@@ -601,6 +616,7 @@ test("a lookup the API refuses is reported on /health", async () => {
 });
 
 test("a rate-limited lookup is passed through too, never guessed at", async () => {
+  relaying = false; // a PROXY=off deployment, not this one's default
   const response = await call(`/${amplified}/stream/series/tt0000002:1:1.json`);
   const body = (await response.json()) as { streams: Array<Record<string, unknown>> };
   assert.equal(body.streams[0]!.url, `${base}/hls/master.m3u8`);
@@ -642,6 +658,7 @@ test("a master playlist sends its variants back through the addon", async () => 
 });
 
 test("a media playlist comes back with the intro and the credits gone", async () => {
+  relaying = false; // a PROXY=off deployment, not this one's default
   const response = await call(playPath(`${base}/hls/media.m3u8`, "tt0903747:1:1"));
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("x-tidb-play"), "spliced");
@@ -684,6 +701,7 @@ test("the lookup is cached, so a second playback does not ask TheIntroDB again",
 });
 
 test("timings that do not fit the file are not applied", async () => {
+  relaying = false; // a PROXY=off deployment, not this one's default
   // The movie answer has an intro inside this 3-minute playlist and credits at
   // 2:18:20, far past its end. Only the intro may be cut.
   const response = await call(playPath(`${base}/hls/media-short.m3u8`, "tt0111161"));
@@ -715,7 +733,6 @@ test("an install can choose its own cutting mode", async () => {
   const always = encodeConfig({
     src: [`${base}/upstream`],
     types: ["intro"] as SegmentType[],
-    proxy: true,
     cuts: "blocking",
   });
   await call(playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1", always), settings, undefined, waiting);
@@ -732,7 +749,6 @@ test("an install can choose its own cutting mode", async () => {
   const off = encodeConfig({
     src: [`${base}/upstream`],
     types: ["intro"] as SegmentType[],
-    proxy: true,
     cuts: "off",
   });
   const response = await call(playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1", off), settings, undefined, never);
@@ -800,12 +816,16 @@ test("with proxying on, files are streamed through this service", async () => {
   assert.equal(await ranged.text(), "range=bytes=100-200", "the range is relayed to the source");
 
   // The same file without proxying is still handed to the player untouched.
-  const direct = await call(playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1"));
+  const direct = await call(
+    playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1"),
+    testSettings({ proxy: false }),
+  );
   assert.equal(direct.status, 302);
   assert.equal(direct.headers.get("x-tidb-play"), "not_hls");
 });
 
 test("a progressive file is handed straight to the source", async () => {
+  relaying = false; // a PROXY=off deployment, not this one's default
   const response = await call(playPath(`${base}/hls/movie.mp4`, "tt0111161"));
   assert.equal(response.status, 302);
   assert.equal(response.headers.get("location"), `${base}/hls/movie.mp4`);
@@ -813,6 +833,7 @@ test("a progressive file is handed straight to the source", async () => {
 });
 
 test("a body is sniffed when its content type does not say 'playlist'", async () => {
+  relaying = false; // a PROXY=off deployment, not this one's default
   const response = await call(playPath(`${base}/hls/odd`, "tt0903747:1:1"));
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("x-tidb-play"), "spliced");
@@ -821,6 +842,7 @@ test("a body is sniffed when its content type does not say 'playlist'", async ()
 });
 
 test("a body that is not a playlist is not served as one", async () => {
+  relaying = false; // a PROXY=off deployment, not this one's default
   const response = await call(playPath(`${base}/blob`, "tt0903747:1:1"));
   assert.equal(response.status, 302);
   assert.equal(response.headers.get("x-tidb-play"), "not_a_playlist");
@@ -828,6 +850,7 @@ test("a body that is not a playlist is not served as one", async () => {
 });
 
 test("a target that is not a playlist is sniffed once, then remembered", async () => {
+  relaying = false; // a PROXY=off deployment, not this one's default
   // Players re-request a progressive file constantly (seeks, ranges), so the
   // verdict is cached instead of re-sniffing the origin each time.
   const first = await call(playPath(`${base}/blob`, "tt0903747:1:1"));
@@ -838,6 +861,7 @@ test("a target that is not a playlist is sniffed once, then remembered", async (
 });
 
 test("a range request goes straight to the origin, without a sniff", async () => {
+  relaying = false; // a PROXY=off deployment, not this one's default
   const response = await call(playPath(`${base}/hls/media.m3u8`, "tt0903747:1:1"), testSettings(), {
     headers: { range: "bytes=0-1023" },
   });

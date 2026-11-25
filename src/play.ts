@@ -94,7 +94,7 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
     if (ready) return manifestResponse(ready, cutKey, lookup?.reason ?? "");
   }
 
-  const proxyOn = context.config.proxy === true;
+  const proxyOn = context.settings.proxy === true;
   const cache = getHttpCache();
   const verdictKey = `play:verdict:${target}`;
 
@@ -132,7 +132,7 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
   const rewriters: UriRewriters = {
     playlistUri: (absoluteUri) => playUrl(context.origin, context.encodedConfig, absoluteUri, id),
     resourceUri: (absoluteUri) =>
-      context.config.proxy
+      context.settings.proxy
         ? segmentUrl(context.origin, context.encodedConfig, absoluteUri)
         : absoluteUri,
   };
@@ -163,7 +163,7 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
     );
     // A file behind a URL with no extension (a debrid `/playback/<token>`, for
     // instance): the prefix read above already had to come from here, so the rest
-    // does too -- which `handleProgressive` does when the config asks for proxying.
+    // does too -- which `handleProgressive` does, because proxying is on by default.
     return handleProgressive(
       context, target, windows, "not_a_playlist", streamKey, cutMode, lookup?.reason ?? "",
     );
@@ -178,7 +178,7 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
     baseUrl: target,
     windows,
     rewriters,
-    forceRewrite: context.config.proxy === true,
+    forceRewrite: context.settings.proxy === true,
   });
 
   if (!spliced) return redirectTo(target, "not_a_media_playlist");
@@ -194,7 +194,7 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
 
   if (!spliced.changed) {
     return playlistFor(sniffed.text, {
-      "x-tidb-play": context.config.proxy ? "rewritten_uris" : "unchanged",
+      "x-tidb-play": context.settings.proxy ? "rewritten_uris" : "unchanged",
       "x-tidb-lookup": lookup?.reason ?? "",
       "x-tidb-windows": String(spliced.windows.length),
       "x-tidb-cuts": describeWindows(spliced.windows),
@@ -248,7 +248,7 @@ function passThrough(
   reason: string,
   lookupReason = "",
 ): Promise<Response> | Response {
-  if (context.config.proxy === true) {
+  if (context.settings.proxy === true) {
     // `x-tidb-play` says what happened, `x-tidb-fallback` says why the original was
     // served instead of a package: two different questions, and an operator asking
     // "why is the intro still there" needs the second one.
@@ -332,7 +332,7 @@ function manifestResponse(view: ManifestView, key: string, lookupReason: string)
 /**
  * `/seg` -- passthrough for the media resources of a playlist.
  *
- * Used when the config asks for proxying: the player fetches every segment from here
+ * Used when proxying is on: the player fetches every segment from here
  * instead of from the source, which is what makes a source that binds its links to
  * the requesting address work.
  */

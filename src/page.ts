@@ -201,11 +201,7 @@ export function renderConfigPage(options: PageOptions): string {
       <p class="hint" id="key-hint"></p>
     </div>
 
-    <div class="field">
-      <label class="check" style="max-width:520px"><input type="checkbox" id="proxy" checked> Proxy streams through this service</label>
-      <p class="hint">On by default, because most sources bind the link to the address that asked for it (ElfHosted Comet and other debrid setups do) — then the player cannot open it from its own connection and shows an error like &quot;this stream link only works on the internet connection that requested it&quot;. With this on, the player fetches your playlists, segments and files from here, which is that address.</p>
-      <p class="hint">Video then uses this deployment's bandwidth: turn it off for a source the player can reach directly (a public HLS stream), and leave it on for a debrid. Cutting a file still happens either way — with proxying off, the playlist comes from here and the segments from the source.</p>
-    </div>
+    <p class="hint">Streams are relayed through this service. Most sources bind a link to the address that asked for it (ElfHosted Comet and other debrid setups do), so the player would otherwise be refused with &quot;this stream link only works on the internet connection that requested it&quot;. It is a deployment setting (<span class="mono">PROXY</span>), on by default because the sources people actually use are debrid files.</p>
 
     <div class="field">
       <label for="name">Addon name <span class="badge">optional</span></label>
@@ -244,6 +240,7 @@ export function renderConfigPage(options: PageOptions): string {
     <h2>This instance</h2>
     <ul>
       <li>Files: <span class="mono" id="cuts-mode"></span></li>
+      <li>Relaying streams: <span class="mono" id="proxy-relay"></span></li>
       <li>Margin on each cut: <span class="mono" id="cuts-margin"></span></li>
       <li>Segment cache: <span class="mono" id="cuts-cache"></span></li>
       <li>ffmpeg: <span class="mono" id="cuts-ffmpeg"></span></li>
@@ -312,7 +309,6 @@ export function renderConfigPage(options: PageOptions): string {
     var margin = Math.max(0, Math.min(5, Math.round(rawMargin)));
     var config = { src: sources, types: types, cuts: document.getElementById("cuts").value, margin: margin };
     if (key) config.key = key;
-    if (document.getElementById("proxy").checked) config.proxy = true;
     var name = document.getElementById("name").value.trim();
     if (name) config.name = name;
 
@@ -363,6 +359,8 @@ export function renderConfigPage(options: PageOptions): string {
     cuts.mode === "off"
       ? "disabled"
       : cuts.cacheDir + " (max " + cuts.cacheMaxGb + " GB, " + cuts.cutConcurrency + " packing at a time)";
+  document.getElementById("proxy-relay").textContent =
+    cuts.proxy === false ? "off — the player fetches from the source" : "on — the player fetches from here";
   document.getElementById("cuts-ffmpeg").textContent =
     cuts.available === true ? "available" : cuts.available === false ? "NOT available — files cannot be cut" : "unknown";
 
@@ -405,7 +403,6 @@ export function renderConfigPage(options: PageOptions): string {
     });
     if (config.key) document.getElementById("key").value = config.key;
     if (config.name) document.getElementById("name").value = config.name;
-    document.getElementById("proxy").checked = config.proxy === true;
     if (config.cuts) document.getElementById("cuts").value = config.cuts;
     if (typeof config.margin === "number") document.getElementById("margin").value = String(config.margin);
 

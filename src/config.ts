@@ -55,8 +55,6 @@ export function decodeConfig(encoded: string): AddonConfig | null {
   const key = typeof input.key === "string" ? input.key.trim() : "";
   if (key) config.key = key.slice(0, MAX_KEY_LENGTH);
 
-  if (input.proxy === true) config.proxy = true;
-
   // Only one of the three known modes is accepted, so a hand-edited URL cannot ask
   // for something the engine does not implement.
   const cuts = parseCutMode(input.cuts);
@@ -80,7 +78,6 @@ export function encodeConfig(config: AddonConfig): string {
     types: normalizeTypes(config.types),
   };
   if (config.key) packed.key = config.key.trim().slice(0, MAX_KEY_LENGTH);
-  if (config.proxy) packed.proxy = true;
   if (config.cuts) packed.cuts = config.cuts;
   if (typeof config.margin === "number") packed.margin = config.margin;
   if (config.name) packed.name = sanitizeName(config.name);
