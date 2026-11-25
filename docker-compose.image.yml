@@ -1,0 +1,26 @@
+# Same service, but running the published image instead of building it.
+#
+#   docker login ghcr.io          # the package is private while the repo is; a token
+#                                 # with read:packages is enough
+#   docker compose -f docker-compose.image.yml up -d
+#
+# This exists for hosts that cannot build (a resolver that will not answer for Docker
+# Hub's CDN, no buildkit, a locked-down server): pulling one image is a much smaller
+# ask than building two stages and installing ffmpeg inside the builder.
+services:
+  tidb-skip:
+    image: ghcr.io/theintrodb/stremio-skip-addon:latest
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      TIDB_API_KEY: ${TIDB_API_KEY:?set TIDB_API_KEY}
+      CUTS: ${CUTS:-on}
+      CACHE_MAX_GB: ${CACHE_MAX_GB:-50}
+      PRECUT_SOURCES: ${PRECUT_SOURCES:-2}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - cut-cache:/cache
+
+volumes:
+  cut-cache:

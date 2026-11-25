@@ -47,7 +47,16 @@ cp .env.example .env      # put TIDB_API_KEY in it
 docker compose up -d
 ```
 
-That is `docker-compose.yml` in this repository: it builds the image (or pulls `ghcr.io/theintrodb/stremio-skip-addon:latest` if you remove `build:`), publishes `:8787`, and keeps the cut cache in a named volume.
+That is `docker-compose.yml` in this repository: it builds the image, publishes `:8787`, and keeps the cut cache in a named volume.
+
+If the host cannot build — a resolver that will not answer for Docker Hub's CDN, no BuildKit, a locked-down server — use the published image instead, which only needs a pull:
+
+```bash
+docker login ghcr.io          # the package is private while this repo is
+docker compose -f docker-compose.image.yml up -d
+```
+
+`docker-compose.image.yml` is the same service with `image:` and no `build:`. Pointing a deployment platform at that file is the way to deploy this without a builder.
 
 Without compose (Node 22 plus ffmpeg in the image, about 200 MB):
 
