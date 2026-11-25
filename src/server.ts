@@ -14,6 +14,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import { Readable } from "node:stream";
 
 import { PackageEngine } from "./packages.js";
+import { recordFailure } from "./diagnostics.js";
 import { SubtitleEngine } from "./subtitles.js";
 import { Transcriber } from "./transcribe.js";
 import { loadSettings, type Settings } from "./env.js";
@@ -45,7 +46,7 @@ export function createApp(
           headers: nodeRequest.headers as Record<string, string>,
         });
 
-        const response = await handleRequest(request, settings, packages);
+        const response = await handleRequest(request, settings, packages, subtitles);
 
         const headers: Record<string, string | string[]> = {};
         response.headers.forEach((value, name) => {
@@ -61,8 +62,16 @@ export function createApp(
           nodeResponse.end();
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error("request failed:", message);
+        // The whole story -- which request, what it said, where it came from -- in the log and
+        // on `/health` as `lastError`, so a 500 does not cost a trip through somebody's logs.
+        let where = `${nodeRequest.method} ${nodeRequest.url ?? "/"}`;
+        try {
+          const parsed = new URL(requestUrl(nodeRequest));
+          where = `${nodeRequest.method} ${parsed.pathname}`;
+        } catch {
+          // A request line we cannot parse is still worth naming.
+        }
+        console.error(`  error          ${recordFailure(where, error)}`);
         if (!nodeResponse.headersSent) {
           nodeResponse.writeHead(500, { "content-type": "application/json" });
         }
