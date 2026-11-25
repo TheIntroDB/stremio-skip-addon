@@ -299,6 +299,7 @@ subtitlesChunkSeconds: 300,
 subtitlesTtlHours: 24,
 subtitlesIdleSeconds: 120,
 subtitlesAudioLanguage: "en",
+drainSecret: "",
     skipMarginSeconds: 0,
     splash: false,
     prerollSeconds: 10,
@@ -1099,4 +1100,61 @@ test("the deployment's margin trims every window, and an install can override it
     testSettings({ skipMarginSeconds: 3 }),
   );
   assert.equal(wider.headers.get("x-tidb-cuts"), "intro 3:56-3:58", "8s off both ends of a 17.8s intro");
+});
+
+test("the debug page reports what the process is doing, and the drain is gated", async () => {
+  const page = await call("/debug");
+  assert.equal(page.status, 200, "the page is served");
+  assert.match(page.headers.get("cache-control") ?? "", /no-store/, "and is never cached");
+  const markup = await page.text();
+  assert.match(markup, /Drain and wipe the cache/, "with the button on it");
+  assert.match(markup, /Packaging/, "and the packaging numbers");
+  assert.ok(!markup.includes(testSettings().TIDB_API_KEY ?? "no key"), "and never the API key");
+
+  const snapshot = await call("/debug.json");
+  assert.equal(snapshot.status, 200);
+  const body = (await snapshot.json()) as Record<string, unknown>;
+  for (const field of ["version", "settings", "subtitles", "cuts", "cache", "drainProtected"]) {
+    assert.ok(field in body, `the snapshot carries ${field}`);
+  }
+  assert.ok(Array.isArray(body.cache), "and a per-directory cache report");
+
+  // A header a cross-origin form cannot send is what makes this something you have to mean.
+  const noHeader = await call("/drain", undefined, { method: "POST" });
+  assert.equal(noHeader.status, 403, "no header, no drain");
+  const stillThere = await call("/drain", testSettings({ drainSecret: "shh" }), {
+    method: "POST",
+    headers: { "x-tidb-drain": "1" },
+  });
+  assert.equal(stillThere.status, 403, "and a secret this deployment wants must be given");
+});
+
+test("draining stops the engines and empties the working cache", async () => {
+  const settings = testSettings();
+  const packages = new PackageEngine(settings);
+  const drained = await call("/drain", settings, {
+    method: "POST",
+    headers: { "x-tidb-drain": "1", "x-tidb-drain-secret": "" },
+  }, packages);
+  assert.equal(drained.status, 200);
+  const result = (await drained.json()) as {
+    stopped: { jobs: number; packages: number };
+    purged: { dirs: number; bytes: number; human: string };
+    at: string;
+  };
+  assert.equal(result.purged.dirs, 2, "both working directories are removed");
+  assert.equal(typeof result.purged.human, "string", "and the size is reported readably");
+  assert.ok(Date.parse(result.at) > 0, "with a timestamp");
+
+  // The next play must package from scratch: the engine forgot the key entirely.
+  const again = await call("/drain", settings, {
+    method: "POST",
+    headers: { "x-tidb-drain": "1" },
+  }, packages);
+  assert.equal(again.status, 200, "and it can be drained twice");
+  assert.equal(
+    ((await again.json()) as { stopped: { packages: number } }).stopped.packages,
+    0,
+    "with nothing left to stop",
+  );
 });

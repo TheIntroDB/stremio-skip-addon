@@ -110,8 +110,13 @@ export interface RunResult {
   stderr: string;
 }
 
-/** Run a command to completion, killing it after `timeoutMs`. */
-export function run(command: string, args: string[], timeoutMs: number): Promise<RunResult> {
+/** Run a command to completion, killing it after `timeoutMs`, or when `signal` aborts. */
+export function run(
+  command: string,
+  args: string[],
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<RunResult> {
   return new Promise((resolve) => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
@@ -122,6 +127,24 @@ export function run(command: string, args: string[], timeoutMs: number): Promise
       stderr += `\n[timed out after ${Math.round(timeoutMs / 1000)}s]`;
     }, timeoutMs);
 
+    // A drain has to be able to stop a job mid-encode: the whole point of it is that nothing this
+    // process started is still reading or writing when the cache is cleared.
+    const abort = () => {
+      child.kill("SIGKILL");
+      stderr += "\n[aborted]";
+    };
+    if (signal) {
+      if (signal.aborted) abort();
+      else signal.addEventListener("abort", abort, { once: true });
+    }
+    const settle = (result: RunResult) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      resolve(result);
+    };
+
     child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString();
     });
@@ -129,16 +152,10 @@ export function run(command: string, args: string[], timeoutMs: number): Promise
       stderr += chunk.toString();
     });
     child.on("error", (error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({ code: -1, stdout, stderr: `${stderr}${error.message}` });
+      settle({ code: -1, stdout, stderr: `${stderr}${error.message}` });
     });
     child.on("close", (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve({ code: code ?? -1, stdout, stderr });
+      settle({ code: code ?? -1, stdout, stderr });
     });
   });
 }

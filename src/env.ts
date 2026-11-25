@@ -103,6 +103,14 @@ export interface Settings extends Env {
    */
   subtitlesAudioLanguage: string;
   /**
+   * A secret `/drain` requires, when set.
+   *
+   * `/drain` is a write on a service that is otherwise read-only, and this deployment may be
+   * reachable from anywhere. Empty means the header alone gates it -- enough for a private host,
+   * not enough for a public one, so a public deployment should set this.
+   */
+  drainSecret: string;
+  /**
    * How much of the episode must be ready before playback starts on it.
    *
    * Starting on a few seconds is what made Stremio decide an episode had ended, mark it
@@ -151,6 +159,7 @@ export function loadSettings(): Settings {
       Math.max(0, Math.round(numberFrom("SUBTITLES_IDLE_SECONDS", 120))),
     ),
     subtitlesAudioLanguage: (process.env.SUBTITLES_AUDIO_LANGUAGE ?? "en").trim().toLowerCase(),
+    drainSecret: (process.env.DRAIN_SECRET ?? "").trim(),
     // Off only when it is explicitly turned off: the sources people actually use are debrid.
     proxy: !/^(off|false|0|no)$/i.test((process.env.PROXY ?? "").trim()),
     prerollSeconds: Math.min(60, Math.max(0, Math.round(numberFrom("PREROLL_SECONDS", 10)))),

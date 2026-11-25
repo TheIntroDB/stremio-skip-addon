@@ -154,8 +154,39 @@ export class PackageEngine {
    * closed one both stop asking.
    */
   lastActivity = Date.now();
+  /**
+   * Kills whatever ffmpeg this engine has running when a drain asks it to (see `drain`).
+   *
+   * Replaced rather than reused on every drain, because an aborted signal stays aborted and the
+   * next playback has to be able to run normally.
+   */
+  private controller = new AbortController();
 
   constructor(private readonly settings: Settings) {}
+
+  /** Abort signal for the ffmpeg jobs this engine starts. */
+  private get signal(): AbortSignal {
+    return this.controller.signal;
+  }
+
+  /**
+   * Stop everything this engine is doing and forget what it knows.
+   *
+   * Used by `/drain`: the caller clears the cache immediately afterwards, so nothing may still be
+   * writing into it. Queued work is dropped, in-flight ffmpeg is killed (its `finally` settles the
+   * bookkeeping), and the in-memory map is emptied so the next play packages from scratch.
+   */
+  drain(): number {
+    const stopped = this.states.size + this.running.size + this.tasks.length;
+    this.controller.abort();
+    this.controller = new AbortController();
+    this.states.clear();
+    this.used.clear();
+    this.cards.clear();
+    this.running.clear();
+    this.tasks.length = 0;
+    return stopped;
+  }
 
   /** Note that a player asked for the film (see `lastActivity`). */
   noteActivity(): void {
@@ -207,7 +238,7 @@ export class PackageEngine {
       };
     }
 
-    const probe = await run(this.settings.ffmpegPath, ["-version"], 10_000);
+    const probe = await run(this.settings.ffmpegPath, ["-version"], 10_000, this.signal);
     this.available = probe.code === 0;
     if (!this.available) {
       return {
@@ -669,6 +700,7 @@ export class PackageEngine {
         target,
       ],
       30_000,
+      this.signal,
     );
     const info = probe.code === 0 ? parseProbe(probe.stdout) : null;
     if (!info) return null;
@@ -875,6 +907,7 @@ export class PackageEngine {
           path.join(state.dir, "seg%05d.ts"),
         ],
         this.timeoutFor(wanted),
+        this.signal,
       );
       const rows = await this.readCsv(csv);
       recorded += rows.length;

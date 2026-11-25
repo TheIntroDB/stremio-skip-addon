@@ -32,6 +32,9 @@ import { describeCuts } from "./format.js";
 import { corsPreflight, errorResponse, html, json, text } from "./http.js";
 import { lastLookupFailure, lookupSkipWindows } from "./introdb.js";
 import { ADDON_VERSION, buildManifest } from "./manifest.js";
+import { renderDebugJson, renderDebugPage, type DebugOptions } from "./debug.js";
+import { diagnostics } from "./diagnostics.js";
+import { cacheReport, formatBytes, purgeCache } from "./drain.js";
 import { renderConfigPage } from "./page.js";
 import { handlePlay, handleSegment } from "./play.js";
 import { handleSubtitleChunk, handleSubtitlePlaylist, SubtitleEngine } from "./subtitles.js";
@@ -82,6 +85,11 @@ export async function handleRequest(
 
   if (request.method === "OPTIONS") return corsPreflight();
   if (request.method === "POST") {
+    // The one write this service accepts: the drain on /debug. It is gated on a header a
+    // cross-origin form cannot send (the preflight does not allow it), so a page elsewhere cannot
+    // wipe the cache by submitting a form, and on a public deployment `DRAIN_SECRET` makes it
+    // something you have to know rather than something you can find.
+    if (path === "/drain") return drainNow(request, settings, packages, engine);
     return errorResponse(405, "method_not_allowed", "This addon is read-only");
   }
   if (request.method !== "GET" && request.method !== "HEAD") {
@@ -104,6 +112,15 @@ export async function handleRequest(
   }
   if (path === "/robots.txt") return text("User-agent: *\nDisallow: /\n");
   if (path === "/manifest.json") return json(buildManifest(null));
+
+  // What this process is doing, and the one button that stops all of it. Not cached: the whole
+  // point is that it is current.
+  if (path === "/debug" || path === "/debug.json") {
+    const snapshot = await debugSnapshot(origin, settings, packages, engine);
+    return path === "/debug"
+      ? html(renderDebugPage(snapshot), 200, { "cache-control": "no-store" })
+      : json(renderDebugJson(snapshot));
+  }
 
   const match = CONFIG_ROUTE_RE.exec(path);
   if (match) {
@@ -327,4 +344,64 @@ function notFoundPage(origin: string): string {
 <h1 style="font-size:20px">Not found</h1>
 <p>This is a Stremio addon, not a website. Start at <a style="color:#22c55e" href="${origin}/">${origin}/</a> to build an install link.</p>
 </main></body></html>`;
+}
+
+/**
+ * What `/debug` shows, gathered in one place so the page and the JSON cannot disagree.
+ *
+ * Nothing secret: `describeSettings` already reports whether a key is configured rather than the
+ * key itself, and the drain secret is reported only as "is one required".
+ */
+async function debugSnapshot(
+  origin: string,
+  settings: Settings,
+  packages: PackageEngine,
+  engine: SubtitleEngine,
+): Promise<DebugOptions> {
+  return {
+    origin,
+    version: ADDON_VERSION,
+    settings: describeSettings(settings),
+    subtitles: engine.status(),
+    cuts: packages.stats(),
+    cache: await cacheReport(settings.cacheDir),
+    lastError: diagnostics.lastError,
+    drainProtected: Boolean((settings.drainSecret ?? "").trim()),
+    drained: null,
+  };
+}
+
+/**
+ * `POST /drain` -- stop everything, wipe the working cache.
+ *
+ * A new stream test wants a clean process: no ffmpeg still cutting the last title, no track still
+ * being recognised, no segments left on disk. The one thing it must not do is delete the speech
+ * models, which are minutes of network to fetch again.
+ */
+async function drainNow(
+  request: Request,
+  settings: Settings,
+  packages: PackageEngine,
+  engine: SubtitleEngine,
+): Promise<Response> {
+  // A header, not a query parameter: a browser will not send a custom header to a form post from
+  // another origin, and the preflight does not allow this one, so a drive-by page cannot drain.
+  if (request.headers.get("x-tidb-drain") !== "1") {
+    return errorResponse(403, "drain_refused", "Draining needs the x-tidb-drain header");
+  }
+  const secret = (settings.drainSecret ?? "").trim();
+  if (secret && request.headers.get("x-tidb-drain-secret") !== secret) {
+    return errorResponse(403, "drain_refused", "This deployment requires the drain secret");
+  }
+  const jobs = engine.drain();
+  const stoppedPackages = packages.drain();
+  const purged = await purgeCache(settings.cacheDir);
+  console.log(
+    `  drained        ${jobs} subtitle job(s), ${stoppedPackages} package(s), ${formatBytes(purged.bytes)} deleted`,
+  );
+  return json({
+    stopped: { jobs, packages: stoppedPackages },
+    purged: { ...purged, human: formatBytes(purged.bytes) },
+    at: new Date().toISOString(),
+  });
 }

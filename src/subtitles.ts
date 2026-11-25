@@ -81,6 +81,14 @@ export class SubtitleEngine {
   private pumping = false;
   /** Which package an episode was last played from, so its subtitles can be offered with it. */
   private readonly byEpisode = new Map<string, string>();
+  /** Kills the ffmpeg this engine has running when a drain asks it to (see `drain`). */
+  private controller = new AbortController();
+  /**
+   * Bumped by a drain. A job captures it, so work for a job that no longer exists stops even if
+   * the model is halfway through a chunk -- clearing jobs from the map alone would leave the loop
+   * writing chunks for a track nobody can ask for any more.
+   */
+  private epoch = 0;
 
   constructor(
     private readonly settings: Settings,
@@ -184,6 +192,29 @@ export class SubtitleEngine {
   private touch(key: string): void {
     const job = this.jobs.get(key);
     if (job) job.lastSeen = Date.now();
+  }
+
+  /**
+   * Stop everything and forget everything, for `/drain`.
+   *
+   * The model runs in this process, so a chunk that is already being recognised cannot be
+   * interrupted -- but the loop stops before the *next* one, the extraction ffmpeg is killed, and
+   * the cache the caller is about to clear is no longer being written to.
+   */
+  drain(): number {
+    const stopped = this.jobs.size + this.queue.length;
+    this.controller.abort();
+    this.controller = new AbortController();
+    this.epoch += 1;
+    this.jobs.clear();
+    this.queue.length = 0;
+    this.byEpisode.clear();
+    this.served.wanted = 0;
+    this.served.masters = 0;
+    this.served.playlists = 0;
+    this.served.chunks = 0;
+    delete this.served.lastKey;
+    return stopped;
   }
 
   /** Counters for /health: what playbacks asked for, and what was served. */
@@ -295,6 +326,7 @@ export class SubtitleEngine {
   }
 
   private async run(job: Job): Promise<void> {
+    const epoch = this.epoch;
     const dir = this.dirFor(job.key);
     try {
       await mkdir(dir, { recursive: true });
@@ -321,6 +353,8 @@ export class SubtitleEngine {
           job.lastAt = Date.now();
           continue;
         }
+        // Draining is not idleness: the whole track is being thrown away.
+        if (epoch !== this.epoch) return;
         // Before spending a chunk's worth of CPU: is anyone still watching this? A closed tab and
         // a paused player look the same from here, and both want the same thing -- stop spending
         // the host's cores. What is written stays, and the playlist still ends at the last chunk.
@@ -384,6 +418,7 @@ export class SubtitleEngine {
             wav,
           ],
           300_000,
+          this.controller.signal,
         );
         if (extracted.code !== 0) throw new Error(extracted.stderr.trim().slice(-200) || `ffmpeg exited ${extracted.code}`);
         const transcript = await this.transcriber.transcribe(wav, language);
