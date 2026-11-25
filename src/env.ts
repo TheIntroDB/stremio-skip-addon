@@ -10,7 +10,7 @@
  */
 
 import { INTRODB_API_BASE } from "./constants.js";
-import { MAX_MARGIN_SECONDS, parseCutMode, type CutMode, type Env } from "./types.js";
+import { MAX_MARGIN_SECONDS, type Env } from "./types.js";
 
 /**
  * How much of each window's edge is left alone by default, in seconds.
@@ -30,8 +30,6 @@ export interface Settings extends Env {
   cacheDir: string;
   /** How much disk the cut cache may use before the oldest cut is evicted. */
   cacheMaxBytes: number;
-  /** The deployment's default; an install URL may override it. See `CutMode`. */
-  cuts: CutMode;
   /** The deployment's default margin on each cut; an install URL may override it. */
   skipMarginSeconds: number;
   /**
@@ -100,11 +98,6 @@ function numberFrom(name: string, fallback: number): number {
   return Number.isFinite(value) ? value : fallback;
 }
 
-/** The deployment's cutting mode, from `CUTS`. Defaults to always cutting. */
-function cutMode(): CutMode {
-  return parseCutMode(process.env.CUTS) ?? "mkv";
-}
-
 export function loadSettings(): Settings {
   return {
     TIDB_API_KEY: process.env.TIDB_API_KEY ?? "",
@@ -112,7 +105,6 @@ export function loadSettings(): Settings {
     port: numberFrom("PORT", 8787),
     cacheDir: process.env.CACHE_DIR ?? "./cache",
     cacheMaxBytes: Math.max(0, numberFrom("CACHE_MAX_GB", 50) * 1024 ** 3),
-    cuts: cutMode(),
     subtitles: !/^(off|false|0|no)$/i.test((process.env.SUBTITLES ?? "").trim()),
     subtitlesLanguage: (process.env.SUBTITLES_LANGUAGE ?? "en").trim(),
     subtitlesChunkSeconds: Math.min(900, Math.max(60, Math.round(numberFrom("SUBTITLES_CHUNK_SECONDS", 30)))),
@@ -138,7 +130,6 @@ export function describeSettings(settings: Settings): Record<string, unknown> {
   return {
     api: `${INTRODB_API_BASE}/v4/media`,
     apiKeyConfigured: Boolean((settings.TIDB_API_KEY ?? "").trim()),
-    cuts: settings.cuts,
     skipMarginSeconds: settings.skipMarginSeconds,
     proxy: settings.proxy,
     subtitles: settings.subtitles,
@@ -146,9 +137,8 @@ export function describeSettings(settings: Settings): Record<string, unknown> {
     subtitlesTtlHours: settings.subtitlesTtlHours,
     splash: settings.splash,
     prerollSeconds: settings.prerollSeconds,
-    // Only the packaging path uses these; splicing a playlist is a text rewrite.
-    cacheDir: settings.cuts === "hls" ? null : settings.cacheDir,
-    cacheMaxGb: settings.cuts === "hls" ? null : Math.round(settings.cacheMaxBytes / 1024 ** 3),
-    cutConcurrency: settings.cuts === "hls" ? null : settings.cutConcurrency,
+    cacheDir: settings.cacheDir,
+    cacheMaxGb: Math.round(settings.cacheMaxBytes / 1024 ** 3),
+    cutConcurrency: settings.cutConcurrency,
   };
 }

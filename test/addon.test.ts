@@ -30,6 +30,8 @@ let amplified = "";
 let rotatingTokens = 0;
 let apiUserAgents: string[] = [];
 let proxyConfig = "";
+/** The same install, but one that packages files too. */
+let cutConfig = "";
 const apiCalls = new Map<string, number>();
 /** Every path the stub was asked for, so a test can prove nothing was fetched. */
 const hits = new Map<string, number>();
@@ -245,10 +247,19 @@ before(async () => {
 
   // Built once the stub is listening: the config is packed into the URL, so the
   // source base has to be the real port.
-  const config = { src: [`${base}/upstream`], types: ["intro", "recap", "credits"] as SegmentType[] };
+  //
+  // The fixture install only splices playlists (`cuts: "hls"`), so the relay and playlist
+  // tests below are not racing a package being built. Tests that exercise packaging build
+  // their own link with `cuts: "mkv"` -- the mode is per install, so that is where it belongs.
+  const config = {
+    src: [`${base}/upstream`],
+    types: ["intro", "recap", "credits"] as SegmentType[],
+    cuts: "hls" as const,
+  };
   amplified = encodeConfig(config);
   // Proxying comes from the deployment now (see testSettings), so this is just a config.
   proxyConfig = encodeConfig({ ...config });
+  cutConfig = encodeConfig({ ...config, cuts: "mkv" });
 });
 
 after(async () => {
@@ -277,9 +288,9 @@ function testSettings(overrides: Partial<Settings> = {}): Settings {
     port: 0,
     cacheDir: path.join(tmpdir(), "tidb-addon-test-cache"),
     cacheMaxBytes: 0,
-    // Off by default: these tests are about the playlist and relay paths. The package
-    // engine has its own suite, which runs real ffmpeg (test/packages.test.ts).
-    cuts: "hls",
+    // Whether files are packaged is the install's choice, not the deployment's: a link that
+    // says `cuts: "hls"` never copies anything. The package engine has its own suite, which
+    // runs real ffmpeg (test/packages.test.ts).
     // The production default: the sources people use are debrid files, so everything is relayed.
     proxy: relaying,
 subtitles: false,
@@ -340,8 +351,8 @@ test("the Worker serves a config page, a health check and a bare manifest", asyn
   assert.equal(healthBody.api, "https://api.theintrodb.org/v4/media");
   assert.equal(healthBody.site, "https://theintrodb.org");
   assert.equal(healthBody.apiKeyConfigured, true);
-  // The fixture is an HLS-only install, which is the mode that never packages anything.
-  assert.equal(healthBody.cuts, "hls");
+  // No deployment-wide cutting mode: it is the install's choice, and /health does not report one.
+  assert.equal(healthBody.cuts, undefined, "the cutting mode is per install, not a deployment setting");
   assert.ok(healthBody.cutsStatus);
 
   // The page knows whether this deployment has a key, and says so.
@@ -354,7 +365,7 @@ test("the Worker serves a config page, a health check and a bare manifest", asyn
   const data = /<script id="config-data" type="application\/json">(.*?)<\/script>/s.exec(body)?.[1];
   assert.ok(data, "the page carries its data blob");
   const parsed = JSON.parse(data.replace(/\\u003c/g, "<")) as { cuts: Record<string, unknown> };
-  for (const field of ["mode", "available", "cacheDir", "cacheMaxGb", "cutConcurrency"]) {
+  for (const field of ["available", "cacheDir", "cacheMaxGb", "cutConcurrency"]) {
     assert.ok(field in parsed.cuts, `the page's cut data has ${field}`);
   }
   assert.ok(!body.includes('id="proxy"'), "relaying is a deployment setting, not an install one");
@@ -364,7 +375,8 @@ test("the Worker serves a config page, a health check and a bare manifest", asyn
   for (const mode of ["mkv", "hls"]) {
     assert.ok(body.includes(`value="${mode}"`), `the page offers the ${mode} mode`);
   }
-  assert.ok(body.includes('"cuts":{"mode"'), "and it defaults to what this deployment does");
+  assert.ok(body.includes('"cuts":{"proxy"'), "the page reports the deployment's own settings");
+  assert.equal(parsed.cuts.mode, undefined, "and no cutting mode: that belongs to the install");
   assert.ok(body.includes('"skipMarginSeconds":0'), "including its margin");
   assert.match(body, /<select id="margin"><\/select>/, "the page offers the margin as a dropdown");
   for (const id of ["cuts-mode", "cuts-cache", "cuts-margin", "cuts-ffmpeg", "api", "origin"]) {
@@ -511,7 +523,7 @@ test("a stream list is a menu: nothing is cut, probed or packaged for it", async
   // is a list that fails when that source is slow. The work belongs to the playback.
   const scheduled: string[] = [];
   const probed: string[] = [];
-  const engine = new PackageEngine(testSettings({ cuts: "mkv" }));
+  const engine = new PackageEngine(testSettings());
   const realSchedule = engine.schedule.bind(engine);
   engine.schedule = ((url: string, ...rest: Parameters<typeof realSchedule> extends never ? never : unknown[]) => {
     scheduled.push(url);
@@ -523,7 +535,7 @@ test("a stream list is a menu: nothing is cut, probed or packaged for it", async
     return realDuration(key, target);
   }) as typeof engine.rememberDuration;
 
-  const response = await call(`/${amplified}/stream/series/tt0903747:1:1.json`, testSettings({ cuts: "mkv" }), undefined, engine);
+  const response = await call(`/${amplified}/stream/series/tt0903747:1:1.json`, testSettings(), undefined, engine);
   assert.equal(response.status, 200, "the list is served");
   const body = (await response.json()) as { streams: unknown[] };
   assert.ok(body.streams.length > 0, "with the sources on it");
@@ -729,7 +741,7 @@ test("an install can choose its own cutting mode", async () => {
   // always cuts and another that copies nothing.
   // A real wait window, so the assertion can see that the install's choice was used
   // (the stub's target is not a video, so generation fails fast and the wait ends).
-  const settings = testSettings({ cuts: "mkv", precutSources: 0, cutWaitSeconds: 5 });
+  const settings = testSettings({ precutSources: 0, cutWaitSeconds: 5 });
 
   const waiting = new PackageEngine(settings);
   const waits: number[] = [];
@@ -744,7 +756,7 @@ test("an install can choose its own cutting mode", async () => {
     cuts: "mkv",
   });
   await call(playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1", always), settings, undefined, waiting);
-  assert.ok(waits.length > 0, "the install said always cut, so the play waited for a segment even though the deployment says on");
+  assert.ok(waits.length > 0, "this install's link says cut files, so the play waited for a segment");
   assert.equal(waits[0], 5000, "and it waited the deployment's window, not zero");
 
   const never = new PackageEngine(settings);
@@ -764,11 +776,29 @@ test("an install can choose its own cutting mode", async () => {
   assert.equal(response.headers.get("x-tidb-play"), "proxied_file");
 });
 
-test("blocking means blocking: a proxied file waits for a segment", async () => {
-  // With proxying on the streamed original used to go out immediately whatever CUTS
-  // said, so the promise "blocking waits for the cut" was quietly broken -- which looks
-  // exactly like "the intro was still there".
-  const settings = testSettings({ cuts: "mkv", precutSources: 0 });
+test("a link that says nothing about cutting gets the default: files are cut too", async () => {
+  // There is no deployment-wide mode any more, so the fallback lives in one place
+  // (`DEFAULT_CUT_MODE`). A hand-built link without `cuts` has to behave like the default
+  // the configuration page writes, or the two disagree about what "unset" means.
+  const settings = testSettings({ precutSources: 0 });
+  const engine = new PackageEngine(settings);
+  const scheduled: string[] = [];
+  const realSchedule = engine.schedule.bind(engine);
+  engine.schedule = ((url: string, windows: Parameters<typeof realSchedule>[1], id?: string) => {
+    scheduled.push(url);
+    return realSchedule(url, windows, id);
+  }) as typeof engine.schedule;
+
+  const bare = encodeConfig({ src: [`${base}/upstream`], types: ["intro"] as SegmentType[] });
+  await call(playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1", bare), settings, undefined, engine);
+  assert.equal(scheduled.length, 1, "an unset mode means cut, which is what the page's first option is");
+});
+
+test("a proxied file waits for its first segment instead of streaming the original", async () => {
+  // With proxying on the streamed original used to go out immediately whatever the cutting
+  // mode said, so the promise "an install that cuts files pays for it up front" was quietly
+  // broken -- which looks exactly like "the intro was still there".
+  const settings = testSettings({ precutSources: 0 });
   const engine = new PackageEngine(settings);
   const scheduled: string[] = [];
   const realSchedule = engine.schedule.bind(engine);
@@ -778,7 +808,7 @@ test("blocking means blocking: a proxied file waits for a segment", async () => 
   }) as typeof engine.schedule;
 
   const response = await call(
-    playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1", proxyConfig),
+    playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1", cutConfig),
     settings,
     undefined,
     engine,
@@ -968,9 +998,9 @@ test("a package that is ready is served as a seekable playlist", async () => {
   // The end state of the whole feature: the playlist a player is handed for a file, and
   // the segments it points at, served from this service's own cache.
   const cacheDir = await mkdtemp(path.join(tmpdir(), "tidb-package-http-"));
-  const settings = testSettings({ cuts: "mkv", cacheDir, precutSources: 0 });
+  const settings = testSettings({ cacheDir, precutSources: 0 });
   const engine = new PackageEngine(settings);
-  const url = playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1");
+  const url = playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1", cutConfig);
 
   // The key is the identity of the source plus its windows, which is what the play URL
   // resolves to; asking the engine for it is exactly what the handler does.

@@ -32,7 +32,6 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     port: 0,
     cacheDir: path.join(workDir, "cache"),
     cacheMaxBytes: 0,
-    cuts: "hls",
     proxy: true,
     subtitles: false,
     subtitlesLanguage: "en",
@@ -71,7 +70,7 @@ test("health answers over a real socket", async () => {
   const body = (await response.json()) as Record<string, unknown>;
   assert.equal(body.status, "ok");
   assert.equal(body.apiKeyConfigured, true);
-  assert.equal(body.cuts, "hls");
+  assert.equal(body.cuts, undefined, "no deployment-wide cutting mode: the install picks");
 });
 
 test("the config page is served, and uses the forwarded host and scheme", async () => {

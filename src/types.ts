@@ -16,22 +16,20 @@ export const SEGMENT_TYPES = ["intro", "recap", "credits", "preview"] as const;
 export type SegmentType = (typeof SEGMENT_TYPES)[number];
 
 /**
- * How a progressive file is treated.
- *
- * `blocking` hold the play request until the cut is ready (bounded by
- *            CUT_WAIT_SECONDS / the config's own choice), so even the first play is cut
- * `on`       cut in the background; the original is served until the cut is ready
- * `off`      never cut a file: playlists are still spliced, but no video is copied
- */
-/**
  * What an install is willing to have cut.
  *
  * `mkv` is the default and means everything: HLS playlists are spliced, and a file with no
  * playlist (a debrid `.mkv`) is packaged -- always with the processing card in front, because a
  * player handed a playlist that grows under it is what makes it think the episode has ended.
  * `hls` leaves `.mkv`/`.mp4` files alone entirely and only splices playlists.
+ *
+ * This is an install's own choice, carried in its link (see `AddonConfig.cuts`); there is no
+ * deployment-wide setting for it.
  */
 export type CutMode = "mkv" | "hls";
+
+/** What an install that says nothing about it gets: cut everything. */
+export const DEFAULT_CUT_MODE: CutMode = "mkv";
 
 /** The largest margin the page offers, in seconds. */
 export const MAX_MARGIN_SECONDS = 30;
@@ -86,7 +84,10 @@ export interface AddonConfig {
   types: SegmentType[];
   /** Optional per-config TheIntroDB API key. The deployment's own key is preferred. */
   key?: string;
-  /** This install's own cutting mode, overriding the deployment's default. */
+  /**
+   * This install's cutting mode: whether files with no playlist of their own are packaged too.
+   * Absent means `DEFAULT_CUT_MODE` -- everything cut.
+   */
   cuts?: CutMode;
   /** This install's own margin on each cut, in seconds, overriding the deployment's. */
   margin?: number;
@@ -98,7 +99,11 @@ export interface AddonConfig {
 
 /** Environment variables this service reads. See `.env.example`. */
 export interface Env {
-  /** TheIntroDB API key. Required; without it no lookups happen. */
+  /**
+   * TheIntroDB API key for the whole deployment. Optional: a key can also be pasted on the
+   * configuration page, where it rides in that install's link. One of the two is needed for
+   * lookups -- anonymous lookups are limited per IP.
+   */
   TIDB_API_KEY?: string;
   /** How much of each window's edges to leave alone, in seconds. */
   skipMarginSeconds?: number;

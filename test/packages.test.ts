@@ -41,7 +41,6 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     port: 0,
     cacheDir: path.join(workDir, "cache"),
     cacheMaxBytes: 10 * 1024 ** 3,
-    cuts: "mkv",
     proxy: true,
     subtitles: false,
     subtitlesLanguage: "en",
@@ -256,10 +255,14 @@ test("the engine reports ffmpeg as available", async () => {
   assert.equal(engine.enabled, true);
 });
 
-test("cutting can be switched off entirely", async () => {
-  const engine = new PackageEngine(settings({ cuts: "hls" }));
+test("a deployment with no usable ffmpeg reports the engine off, so files pass through", async () => {
+  // The cutting mode is the install's choice, so the engine cannot be switched off from the
+  // environment any more -- but a host without ffmpeg still has to say so rather than fail
+  // the first person who plays a `.mkv`.
+  const engine = new PackageEngine(settings({ ffmpegPath: path.join(workDir, "no-such-ffmpeg") }));
   const status = await engine.start();
-  assert.equal(status.ok, true);
+  assert.equal(status.ok, false);
+  assert.match(status.detail, /not runnable/);
   assert.equal(engine.enabled, false);
 });
 

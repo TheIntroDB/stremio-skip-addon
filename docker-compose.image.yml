@@ -14,8 +14,8 @@ services:
     ports:
       - "8787:8787"
     environment:
-      TIDB_API_KEY: ${TIDB_API_KEY:?set TIDB_API_KEY}
-      CUTS: ${CUTS:-mkv}
+      # Optional: leave it empty and paste a key on the configuration page instead.
+      TIDB_API_KEY: ${TIDB_API_KEY:-}
       SKIP_MARGIN_SECONDS: ${SKIP_MARGIN_SECONDS:-2}
       # Seconds of the episode that must be ready before playback starts (see .env.example).
       PREROLL_SECONDS: ${PREROLL_SECONDS:-10}

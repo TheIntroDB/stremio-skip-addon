@@ -22,7 +22,7 @@ test("the cutting mode is part of the install, and junk is ignored", () => {
   const nonsense = Buffer.from(
     JSON.stringify({ src: ["https://a.example"], types: ["intro"], cuts: "whenever" }),
   ).toString("base64url");
-  assert.equal(decodeConfig(nonsense)?.cuts, undefined, "and anything else falls back to the deployment");
+  assert.equal(decodeConfig(nonsense)?.cuts, undefined, "and anything else falls back to the default");
 });
 
 test("a config round-trips through the URL segment", () => {

@@ -36,6 +36,7 @@ import { CORS_HEADERS, playlist, redirectTo, text } from "./http.js";
 import { lookupSkipWindows } from "./introdb.js";
 import { isPrivateHost } from "./upstream.js";
 import type { AddonConfig, CutMode, SkipWindow } from "./types.js";
+import { DEFAULT_CUT_MODE } from "./types.js";
 import { playUrl, segmentUrl } from "./urls.js";
 
 /** Playlists are text and small; anything bigger is not a playlist. */
@@ -84,10 +85,9 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
   // The timings decide whether anything can be cut, so they come first.
   const lookup = id ? await lookupSkipWindows(context.settings, context.config, id) : null;
   const windows = lookup?.windows ?? [];
-  // The install's own choice wins over the deployment's default, so `off` in the URL
-  // means nothing is cut (or copied) for that install while the service keeps cutting
-  // for everyone else.
-  const cutMode: CutMode = context.config.cuts ?? context.settings.cuts;
+  // Whether files are packaged is the install's own choice, so it comes from the link rather
+  // than from the deployment: a link that says nothing means everything is cut.
+  const cutMode: CutMode = context.config.cuts ?? DEFAULT_CUT_MODE;
   // Both modes splice HLS playlists; only `mkv` packages a file with no playlist of its own.
   // Packaging is what `cutting` means here: a file with no playlist of its own. Splicing an
   // HLS playlist is a text rewrite and happens in both modes, without a cache key.
@@ -97,9 +97,8 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
 
   // A package that already exists is served before anything else is decided: this is
   // what makes a debrid `.mkv` skip its intro on every playback after the first, and
-  // (in `on` mode) what makes it skip from the very first one. A processing card that is
-  // already in such a playlist is kept up to date here, because these polls arrive before
-  // the target is known to be a file.
+  // a processing card that is already in such a playlist is kept up to date here,
+  // because these polls arrive before the target is known to be a file.
   if (cutKey) {
     const card = await context.packages.advanceCard(cutKey);
     if (card) return packageResponse(context, card, cutKey, lookup?.reason ?? "");
@@ -228,9 +227,10 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
 /**
  * A file with no playlist to rewrite: get it cut, and serve it once it is.
  *
- * In `on` mode the first playback is handed to the origin and the remux runs in
- * the background, so nothing blocks; `blocking` holds the request (bounded by
- * CUT_WAIT_SECONDS) and falls back the same way.
+ * The install decides whether a file is packaged at all (`mkv`) or handed over untouched
+ * (`hls`). When it is packaged the request waits, bounded by `CUT_WAIT_SECONDS`, for the
+ * first segment -- so even the first play is handed a playlist that is already being
+ * written, rather than the original.
  */
 async function handleProgressive(
   context: PlayContext,
@@ -238,11 +238,11 @@ async function handleProgressive(
   windows: readonly SkipWindow[],
   reason: string,
   streamKey: string | null = null,
-  mode: CutMode = context.settings.cuts,
+  mode: CutMode = DEFAULT_CUT_MODE,
   lookupReason = "",
 ): Promise<Response> {
   if (windows.length > 0 && mode === "mkv" && context.packages.enabled) {
-    return packageOrProxy(context, target, windows, streamKey, mode, reason, lookupReason);
+    return packageOrProxy(context, target, windows, streamKey, reason, lookupReason);
   }
   return passThrough(context, target, reason, lookupReason);
 }
@@ -284,17 +284,14 @@ function passThrough(
  *
  * This is the answer to "the player gives up before the file has downloaded": what is
  * waited for here is one segment, a couple of seconds of work, and not the file.
- * `on` mode does not even wait for that: it plays the source now and cuts from the
- * next playback. Whatever happens, a player that plays something is better than one
- * that fails, so a source too slow to produce a segment inside the window is passed
- * through untouched.
+ * Whatever happens, a player that plays something is better than one that fails, so a
+ * source too slow to produce a segment inside the window is passed through untouched.
  */
 async function packageOrProxy(
   context: PlayContext,
   target: string,
   windows: readonly SkipWindow[],
   streamKey: string | null,
-  mode: CutMode,
   reason: string,
   lookupReason: string,
 ): Promise<Response> {

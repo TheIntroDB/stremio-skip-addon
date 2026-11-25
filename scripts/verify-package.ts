@@ -38,7 +38,6 @@ const settings: Settings = {
   port: 0,
   cacheDir,
   cacheMaxBytes: 10 * 1024 ** 3,
-  cuts: "mkv",
   skipMarginSeconds: 3,
   proxy: true,
 subtitles: false,

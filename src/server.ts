@@ -97,10 +97,10 @@ export async function main(): Promise<void> {
     console.log(`  config page    ${base}/`);
     console.log(`  health         ${base}/health`);
     console.log(
-      `  api key        ${(settings.TIDB_API_KEY ?? "").trim() ? "configured" : "MISSING - lookups will refuse with 403"}`,
+      `  api key        ${(settings.TIDB_API_KEY ?? "").trim() ? "configured" : "not set - paste one on the configuration page, or set TIDB_API_KEY"}`,
     );
     console.log(
-      `  cutting        ${settings.cuts}${settings.cuts === "hls" ? "" : ` (${settings.cacheDir}, max ${Math.round(settings.cacheMaxBytes / 1024 ** 3)} GB, ${settings.cutConcurrency} at a time)`}`,
+      `  cutting files  on demand (${settings.cacheDir}, max ${Math.round(settings.cacheMaxBytes / 1024 ** 3)} GB, ${settings.cutConcurrency} at a time) - each install link chooses whether files are cut`,
     );
     console.log(`  ffmpeg         ${packageStatus.detail}`);
     if (!packageStatus.ok) {
