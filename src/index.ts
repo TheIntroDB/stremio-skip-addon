@@ -170,9 +170,12 @@ export async function handleRequest(
     // is read again and again while a track is being made (hence never cached); the chunks are
     // written once and never change.
     if (route === "subs.m3u8") {
+      // `nc=1` is a playback with no processing card in front of it (see `play.ts`), so its track
+      // must not carry the card's segment either -- the cue positions come from the playlist's.
+      const cardless = new URL(request.url).searchParams.get("nc") === "1";
       return handleSubtitlePlaylist(
         { settings, subtitles: engine, request },
-        settings.splash ? cardSeconds(settings) * 1000 : 0,
+        cardless ? 0 : settings.splash ? cardSeconds(settings) * 1000 : 0,
       );
     }
     // A chunk is addressed by its own name in the path (`subs/0.vtt`) rather than by a query

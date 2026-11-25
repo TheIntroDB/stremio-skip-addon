@@ -21,7 +21,7 @@ import { getHttpCache } from "./cache.js";
 import { cardSeconds } from "./splash.js";
 import { chooseAudio, masterPlaylist } from "./streaminfo.js";
 import type { ManifestView, PackageEngine } from "./packages.js";
-import type { SubtitleEngine } from "./subtitles.js";
+import { trackKey, type SubtitleEngine } from "./subtitles.js";
 import type { Settings } from "./env.js";
 import { serveFile } from "./files.js";
 import { describeWindows } from "./format.js";
@@ -319,11 +319,11 @@ async function packageOrProxy(
   // a key seen for the first time.
   if (!audio) audio = await audioFor(context, key);
   context.packages.schedule(target, windows, streamKey, durationMs);
-  if (context.episodeId) context.subtitles.note(context.episodeId, trackKeyOf(key, audio));
+  if (context.episodeId) context.subtitles.note(context.episodeId, trackKey(key, audio));
   // The card is the pre-roll the deployment configured, and the film starts after it, so that is
   // the offset a generated track is timed from. (With the card off, the film starts at zero.)
   context.subtitles.ensure(
-    trackKeyOf(key, audio),
+    key,
     target,
     {
       durationMs,
@@ -359,16 +359,6 @@ async function audioFor(
   return chosen ? { index: chosen.index, language: chosen.language } : null;
 }
 
-/**
- * A track's identity, which is not the package's.
- *
- * The same file can be recognised from a different audio track, and a track made from a dub is
- * not the track for an install that asked for English -- so the chosen stream is part of the key,
- * and a cached track is never handed to an install that asked for another one.
- */
-function trackKeyOf(key: string, audio: { index: number } | null): string {
-  return audio ? `${key}.a${audio.index}` : key;
-}
 
 /**
  * A package's playlist: the master that carries the subtitle rendition, or the media playlist.
@@ -391,19 +381,27 @@ async function packageResponse(
   // Only when a track is actually being made: a master that points at a rendition with nothing
   // behind it is a track a player will drop, or worse, a master it will refuse. The track is
   // keyed by the audio stream it is made from, not by the package.
-  const track = trackKeyOf(key, audio);
+  // The engine is the only thing that knows which key its job was started under (the key carries
+  // the audio stream), so it is asked rather than re-derived: a mismatch here is a master that
+  // declares no rendition, which a player reads as "no subtitle track" with nothing wrong in the
+  // logs to say why.
+  const track = context.subtitles!.trackFor(key);
+  if (enabled) context.subtitles!.noteResolved(track ?? trackKey(key, audio), audio ? audio.index : null);
   const wants =
     enabled &&
-    context.subtitles!.tracking(track) &&
+    track !== null &&
     url.searchParams.get("m") !== "1";
-  if (!wants) return mediaResponse(view, key, lookupReason);
+  if (!wants || track === null) return mediaResponse(view, key, lookupReason);
   context.subtitles!.served.masters += 1;
 
   const media = new URL(url.toString());
   media.searchParams.set("m", "1");
+  // The track must agree with the film about the card: if this playlist has none in front of it,
+  // its rendition must not carry the card's segment either, or every cue would sit one card late.
+  const subtitleQuery = `f=${encodeURIComponent(track)}${view.card === 0 ? "&nc=1" : ""}`;
   const master = masterPlaylist({
     mediaUri: `${media.pathname}${media.search}`,
-    subtitleUri: `subs.m3u8?f=${encodeURIComponent(track)}`,
+    subtitleUri: `subs.m3u8?${subtitleQuery}`,
     language: context.settings.subtitlesLanguage || "en",
     name: "TheIntroDB",
     info: await context.packages.sourceInfo(key),
@@ -414,6 +412,8 @@ async function packageResponse(
       "content-type": "application/vnd.apple.mpegurl",
       // It carries the key of a track that is still being made, so it must not be cached.
       "cache-control": "no-cache",
+      // Where this playback starts, so "why is there a card" is answerable from a response.
+      "x-tidb-complete": view.complete ? "yes" : "no",
       ...CORS_HEADERS,
     },
   });
@@ -430,6 +430,7 @@ function mediaResponse(view: ManifestView, key: string, lookupReason: string): R
       "x-tidb-segments": String(view.segments),
       ...(view.card > 0 ? { "x-tidb-card": String(view.card) } : {}),
       "x-tidb-content-ms": String(view.durationMs),
+      "x-tidb-complete": view.complete ? "yes" : "no",
       ...(lookupReason ? { "x-tidb-lookup": lookupReason } : {}),
     },
     // Re-read on every poll: an EVENT playlist grows while the player watches.

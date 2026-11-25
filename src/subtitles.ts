@@ -38,6 +38,11 @@ export interface TrackPlan {
   cardMs: number;
 }
 
+/** A track's identity: the package it is cut from, and the audio stream it is recognised from. */
+export function trackKey(packageKey: string, audio?: { index: number } | null): string {
+  return audio ? `${packageKey}.a${audio.index}` : packageKey;
+}
+
 export interface TrackStatus {
   /** Chunks finished, and how many there are in total. */
   chunks: number;
@@ -81,6 +86,17 @@ export class SubtitleEngine {
   private pumping = false;
   /** Which package an episode was last played from, so its subtitles can be offered with it. */
   private readonly byEpisode = new Map<string, string>();
+  /**
+   * The track key a package's job was actually started under.
+   *
+   * The key carries the audio stream (`<package>.a2`), because a track made from a dub is not the
+   * track for an install that asked for English. That makes it a derived value, and a derived value
+   * computed in two places is one that will disagree: when the play path re-derived it and got a
+   * different answer, `tracking()` said no, no master was served, and the player had no subtitle
+   * track -- with a job running and its chunks being written. So the engine records the key it used
+   * and the play path asks for it.
+   */
+  private readonly byPackage = new Map<string, string>();
   /** Kills the ffmpeg this engine has running when a drain asks it to (see `drain`). */
   private controller = new AbortController();
   /**
@@ -121,13 +137,14 @@ export class SubtitleEngine {
    * Idempotent: the playback that starts the packaging calls this, and so does every later play.
    */
   ensure(
-    key: string,
+    packageKey: string,
     target: string,
     plan: TrackPlan,
     wanted: boolean,
     audio?: { index: number; language: string },
   ): TrackStatus | null {
     if (!this.settings.subtitles) return null;
+    const key = trackKey(packageKey, audio);
     const existing = this.jobs.get(key);
     if (existing) {
       existing.lastAt = Date.now();
@@ -157,15 +174,29 @@ export class SubtitleEngine {
     job.chunks = job.stretches.reduce((total, stretch) => total + stretch.chunks.length, 0);
     if (job.chunks === 0) return null;
     this.jobs.set(key, job);
+    this.byPackage.set(packageKey, key);
     this.queue.push(key);
     void this.sweep();
     void this.pump();
     return job;
   }
 
-  /** Whether a track is being made (or has been made) for this key. */
+  /** Whether a track is being made (or has been made) under this track key. */
   tracking(key: string): boolean {
     return this.jobs.has(key);
+  }
+
+  /**
+   * The track key a package's job is running under, or null when it has none.
+   *
+   * This is what the play path must use: the key is derived (package + audio stream) and only the
+   * engine knows which one it used, so asking is the only way the master's rendition cannot point
+   * at a job that does not exist.
+   */
+  trackFor(packageKey: string): string | null {
+    const known = this.byPackage.get(packageKey);
+    if (known && this.jobs.has(known)) return known;
+    return this.jobs.has(packageKey) ? packageKey : null;
   }
 
   /** Whether a track exists for this key at all (used by /health and the tests). */
@@ -207,6 +238,7 @@ export class SubtitleEngine {
     this.controller = new AbortController();
     this.epoch += 1;
     this.jobs.clear();
+    this.byPackage.clear();
     this.queue.length = 0;
     this.byEpisode.clear();
     this.served.wanted = 0;
@@ -218,8 +250,27 @@ export class SubtitleEngine {
   }
 
   /** Counters for /health: what playbacks asked for, and what was served. */
-  readonly served: { wanted: number; masters: number; playlists: number; chunks: number; lastKey?: string } =
-    { wanted: 0, masters: 0, playlists: 0, chunks: 0 };
+  readonly served: {
+    wanted: number;
+    masters: number;
+    playlists: number;
+    chunks: number;
+    lastKey?: string;
+    /** The last track key a playback resolved to, and the audio stream behind it. */
+    lastTrack?: string;
+    lastAudio?: number | null;
+  } = { wanted: 0, masters: 0, playlists: 0, chunks: 0 };
+
+  /**
+   * Record what a playback resolved the track to.
+   *
+   * The one field that explains "the player has no subtitle track": if this key is not the key the
+   * job was started under, the master was not served at all -- because `tracking` said no.
+   */
+  noteResolved(track: string, audio: number | null): void {
+    this.served.lastTrack = track;
+    this.served.lastAudio = audio;
+  }
 
   /** What /health reports. */
   status(): Record<string, unknown> {

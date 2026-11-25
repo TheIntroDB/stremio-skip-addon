@@ -711,3 +711,58 @@ test("the card covers the wait for the buffer, and is the buffer's length", asyn
   assert.equal(later?.card, 1, "the card is still one piece");
   assert.equal(await engine.cardMs(key), 10_000, "and still the same length");
 });
+
+test("the processing card goes away once the film has been ready for a while", async () => {
+  // The card exists to cover the packaging. A playback that starts long after the film was cut is
+  // given the film at position zero, because watching ten seconds of "preparing" for something that
+  // was prepared yesterday is the card getting in the way. The window is the card's own length: a
+  // player that started on it is still on it, and moving the head of a playlist underneath a player
+  // is the one thing this must not do.
+  const engine = new PackageEngine(settings({ splash: true }));
+  await engine.start();
+  const windows = [INTRO];
+  const key = engine.keyFor(samplePath, windows, "cardless-test");
+  const dir = path.join(workDir, "cache", "hls", key);
+  await mkdir(dir, { recursive: true });
+
+  await writeFile(
+    path.join(dir, "plan.json"),
+    JSON.stringify({
+      key,
+      windows,
+      ranges: [{ startMs: 0, endMs: INTRO.startMs }, { startMs: INTRO.endMs, endMs: SAMPLE_SECONDS * 1000 }],
+      createdAt: Date.now(),
+    }),
+  );
+  await writeFile(
+    path.join(dir, "duration.json"),
+    JSON.stringify({ durationMs: SAMPLE_SECONDS * 1000, bitrate: 1000, width: 320, height: 180, codecs: "" }),
+  );
+  await writeFile(path.join(dir, "pass-0.csv"), "seg00000.ts,0.000000,5.000000\nseg00001.ts,5.000000,10.000000\n");
+  await writeFile(
+    path.join(dir, "pass-1.csv"),
+    "seg00002.ts,0.000000,8.500000\nseg00003.ts,8.500000,17.000000\n",
+  );
+  await writeFile(path.join(dir, "splash.list"), "splash00000.ts 10000\n");
+  await writeFile(path.join(dir, "done"), "");
+
+  assert.equal(await engine.isComplete(key), true, "the engine says the film is ready");
+
+  // Just finished: a playback may still be on the card, so it stays.
+  const fresh = (await engine.manifest(key))!;
+  assert.equal(fresh.card, 1, "the card is still listed while a player could be on it");
+  assert.match(fresh.body, /splash00000\.ts/, "and its piece with it");
+
+  // Finished long ago: nothing can still be watching it.
+  const old = new Date(Date.now() - 3_600_000);
+  await utimes(path.join(dir, "done"), old, old);
+  const settled = (await engine.manifest(key))!;
+  assert.equal(settled.card, 0, "a stale card is not listed at all");
+  assert.ok(!settled.body.includes("splash"), "no card piece remains");
+  assert.equal(settled.complete, true, "the film is still declared complete");
+
+  const entries = (body: string): string[] => body.match(/#EXTINF:[\d.]+,/g) ?? [];
+  assert.deepEqual(entries(settled.body), entries(fresh.body).slice(1), "exactly the card's entry went");
+  const total = entries(settled.body).reduce((sum, entry) => sum + Number(entry.slice(8, -1)), 0);
+  assert.equal(Math.round(total), 27, "and what is left is the film that survives the intro");
+});

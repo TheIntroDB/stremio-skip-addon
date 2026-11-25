@@ -330,6 +330,19 @@ export class PackageEngine {
   }
 
   /**
+   * Whether this key's film is fully packaged.
+   *
+   * Used to decide, once per playback, whether the processing card belongs at the front of it at
+   * all -- a finished package needs no pre-roll.
+   */
+  async isComplete(key: string): Promise<boolean> {
+    const plan = await this.readPlan(key);
+    if (!plan) return false;
+    if ((await this.realStretches(plan, key)).length === 0) return false;
+    return this.isDone(key);
+  }
+
+  /**
    * A package left behind by a previous process, or by a pre-cut, and its status.
    * `null` when this key has never been generated.
    */
@@ -393,6 +406,17 @@ export class PackageEngine {
     const stretches = await this.realStretches(plan, key);
     if (card.length === 0 && stretches.length === 0) return null;
 
+    // The card covers the packaging. Once the film has been finished for longer than the card
+    // itself lasts, no playback can still be watching it -- so a card at the front is purely in
+    // the way, and a playback that starts now gets the film immediately, at position zero. The
+    // window is the card's own length: inside it, a player that started on the card is still on
+    // it, and removing it would move the head of a playlist that player is already reading.
+    const segments = stretches.reduce((total, stretch) => total + stretch.length, 0);
+    const doneAt = segments > 0 ? await this.doneAt(key) : null;
+    const cardMs = card.reduce((total, entry) => total + entry.ms, 0);
+    const stale = doneAt !== null && Date.now() - doneAt > cardMs + 5_000;
+    const shown = stale ? [] : card;
+
     const items: Array<{ uri: string; ms: number } | "disc"> = [];
     const add = (group: Array<{ name: string; ms: number }>): void => {
       if (group.length === 0) return;
@@ -403,11 +427,10 @@ export class PackageEngine {
         items.push({ uri: `seg?f=${encodeURIComponent(key)}/${entry.name}`, ms: entry.ms });
       }
     };
-    add(card);
+    add(shown);
     for (const stretch of stretches) add(stretch);
 
-    const segments = stretches.reduce((total, stretch) => total + stretch.length, 0);
-    const complete = segments > 0 && (await this.isDone(key));
+    const complete = doneAt !== null;
     const realMs = stretches.reduce(
       (total, stretch) => total + stretch.reduce((sum, entry) => sum + entry.ms, 0),
       0,
@@ -421,7 +444,7 @@ export class PackageEngine {
     return this.playlistView(items, {
       complete,
       segments,
-      card: card.length,
+      card: shown.length,
       padding: padding.length,
       expectedMs: await this.episodeMs(plan),
     });
@@ -686,9 +709,13 @@ export class PackageEngine {
    * the packaging rather than by every poll.
    */
   async rememberDuration(key: string, target: string): Promise<number | null> {
-    const known = await this.readDuration(key);
-    if (known !== null) return known;
-    if (!KEY_RE.test(key)) return null;
+    const cached = await this.sourceInfo(key);
+    // A package probed before the audio tracks were recorded is probed again, not trusted: without
+    // that list the recogniser falls back to ffmpeg's own stream choice (which is what made a
+    // dubbed file produce an empty track), and the subtitle key it derives would not match the job
+    // that was made with one. The probe is one ffprobe, paid once, and only for old entries.
+    if (cached && Array.isArray(cached.audio)) return cached.durationMs;
+    if (!KEY_RE.test(key)) return cached?.durationMs ?? null;
     const probe = await run(
       this.settings.ffprobePath,
       [
@@ -787,11 +814,15 @@ export class PackageEngine {
   }
 
   private async isDone(key: string): Promise<boolean> {
+    return (await this.doneAt(key)) !== null;
+  }
+
+  /** When this key's film was finished, or null if it is still being made. */
+  private async doneAt(key: string): Promise<number | null> {
     try {
-      await stat(path.join(this.dirFor(key), DONE));
-      return true;
+      return (await stat(path.join(this.dirFor(key), DONE))).mtimeMs;
     } catch {
-      return false;
+      return null;
     }
   }
 
