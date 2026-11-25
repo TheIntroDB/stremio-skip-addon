@@ -282,6 +282,9 @@ test("a 4K HEVC source is described as HEVC, not left for the player to guess", 
     }),
   )!;
   assert.equal(unnamed.codecs, "", "no spelling rather than a wrong one");
+  // The name is still there for the packaging decision: a HEVC package written as TS is a black
+  // picture in every browser, whether or not the codec string could be spelled.
+  assert.equal(unnamed.video, "hevc");
 });
 
 test("the recogniser is fed the chosen stream, not ffmpeg's own preference", async () => {

@@ -36,6 +36,9 @@ export interface StreamInfo {
   height: number;
   /** An `RFC 6381` codec string, or "" when it cannot be spelled correctly. */
   codecs: string;
+  /** The video codec's name as ffprobe reports it (`hevc`, `h264`, ...), so the packaging does
+   *  not have to infer it from a codec string it may not have been able to spell. */
+  video?: string;
   /** Every audio track, in container order. Absent on a package probed before this existed. */
   audio?: AudioStream[];
 }
@@ -156,6 +159,7 @@ export function parseProbe(text: string): StreamInfo | null {
     width: Number(video?.width) || 0,
     height: Number(video?.height) || 0,
     codecs: codecsFor(video, audio),
+    video: (video?.codec_name ?? "").toLowerCase(),
     audio: streams
       .filter((stream) => stream.codec_type === "audio" && Number.isInteger(stream.index))
       .map((stream) => ({

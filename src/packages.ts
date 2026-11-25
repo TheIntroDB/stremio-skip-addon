@@ -903,7 +903,11 @@ export class PackageEngine {
     const existing = await this.formatFor(key);
     if (existing.container === "mp4") return existing;
     const info = await this.sourceInfo(key);
-    if (!info?.codecs.startsWith("hvc1")) return existing;
+    // The codec string is the better signal but it is not always spellable (an unfamiliar HEVC
+    // profile leaves it empty), and a HEVC package written as TS is a black picture in every
+    // browser. The name ffprobe reported is the fallback.
+    const hevc = info?.video === "hevc" || (info?.codecs ?? "").startsWith("hvc1");
+    if (!hevc) return existing;
     const plan = await this.readPlan(key);
     const chosen: PackageFormat = {
       container: "mp4",
