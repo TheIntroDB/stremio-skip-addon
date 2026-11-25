@@ -21,7 +21,7 @@ import type { Env, SkipWindow } from "../src/types.js";
 
 const apiKey = (process.env.TIDB_API_KEY ?? "").trim();
 const live = process.env.TIDB_LIVE === "1" && apiKey.length > 0;
-const liveEnv: Env = { TIDB_API_KEY: apiKey };
+const liveEnv: Env = { TIDB_API_KEY: apiKey, skipMarginSeconds: 0 };
 
 const identity: UriRewriters = { playlistUri: (uri) => uri, resourceUri: (uri) => uri };
 

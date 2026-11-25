@@ -25,6 +25,23 @@ export type SegmentType = (typeof SEGMENT_TYPES)[number];
  */
 export type CutMode = "on" | "blocking" | "off";
 
+/** The largest margin the page offers, in seconds. */
+export const MAX_MARGIN_SECONDS = 30;
+
+/**
+ * A margin in seconds: whole seconds between 0 and MAX_MARGIN_SECONDS, or null when the
+ * value is not one the service offers.
+ */
+export function parseMarginSeconds(value: unknown): number | null {
+  const raw = typeof value === "number" ? value : typeof value === "string" ? value.trim() : "";
+  if (raw === "") return null;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return null;
+  const whole = Math.round(parsed);
+  if (whole < 0 || whole > MAX_MARGIN_SECONDS) return null;
+  return whole;
+}
+
 /** What a mode can be set to, from an env var or an install URL, or null. */
 export function parseCutMode(value: unknown): CutMode | null {
   if (typeof value !== "string") return null;
@@ -62,6 +79,8 @@ export interface AddonConfig {
   proxy?: boolean;
   /** This install's own cutting mode, overriding the deployment's default. */
   cuts?: CutMode;
+  /** This install's own margin on each cut, in seconds, overriding the deployment's. */
+  margin?: number;
   /** Overrides the addon name shown in Stremio. */
   name?: string;
 }
@@ -70,6 +89,8 @@ export interface AddonConfig {
 export interface Env {
   /** TheIntroDB API key. Required; without it no lookups happen. */
   TIDB_API_KEY?: string;
+  /** How much of each window's edges to leave alone, in seconds. */
+  skipMarginSeconds?: number;
   /**
    * Development escape hatch: allow fetching private/loopback hosts, so a source
    * addon on the same machine can be used. Leave unset in production.

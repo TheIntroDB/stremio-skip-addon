@@ -19,6 +19,7 @@ import {
   DEFAULT_SEGMENT_TYPES,
   SEGMENT_TYPES,
   parseCutMode,
+  parseMarginSeconds,
   type AddonConfig,
   type SegmentType,
 } from "./types.js";
@@ -61,6 +62,11 @@ export function decodeConfig(encoded: string): AddonConfig | null {
   const cuts = parseCutMode(input.cuts);
   if (cuts) config.cuts = cuts;
 
+  // Likewise, only a margin the service offers is accepted: a hand-edited link cannot
+  // ask for a negative one.
+  const margin = parseMarginSeconds(input.margin);
+  if (margin !== null) config.margin = margin;
+
   const name = typeof input.name === "string" ? input.name.trim() : "";
   if (name) config.name = sanitizeName(name);
 
@@ -76,6 +82,7 @@ export function encodeConfig(config: AddonConfig): string {
   if (config.key) packed.key = config.key.trim().slice(0, MAX_KEY_LENGTH);
   if (config.proxy) packed.proxy = true;
   if (config.cuts) packed.cuts = config.cuts;
+  if (typeof config.margin === "number") packed.margin = config.margin;
   if (config.name) packed.name = sanitizeName(config.name);
   return toBase64Url(JSON.stringify(packed));
 }

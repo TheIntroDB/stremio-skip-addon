@@ -22,6 +22,8 @@ services:
       # on        play the source immediately and cut from the next playback
       # off       splice HLS playlists only: no video copied, no disk use
       CUTS: ${CUTS:-blocking}
+      # Seconds left alone at each end of every window (see .env.example).
+      SKIP_MARGIN_SECONDS: ${SKIP_MARGIN_SECONDS:-3}
       CACHE_MAX_GB: ${CACHE_MAX_GB:-50}
       PRECUT_SOURCES: ${PRECUT_SOURCES:-2}
       CUT_CONCURRENCY: ${CUT_CONCURRENCY:-2}

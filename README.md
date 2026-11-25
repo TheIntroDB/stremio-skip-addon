@@ -111,8 +111,9 @@ Open your deployment's URL in a browser. The page builds your install link:
 1. **Paste your stream addon URL** — AIOStreams, Torrentio, Comet, MediaFusion, anything that serves Stremio streams (the `manifest.json` URL). One per line; they are tried in order and the first that answers with streams is used, so a second URL is a fallback.
 2. **Pick the segments to cut.** Intro, recap and credits are on; previews are off. Credits and previews run to the end of the file when TheIntroDB does not close them, so they are the destructive ones.
 3. **Pick the cutting mode** — *always cut* (the default: the first play waits a couple of seconds for the first segment, so the intro is gone from the start), *start playing first* (the source plays immediately and the cut applies from the next playback), or *never cut files* (playlists only, nothing copied). It lives in the install link, so your installs can differ.
-4. **The API key** is already handled if the service has one in its environment; paste one here only if you would rather carry it in the install URL. See [API key](#api-key).
-5. **Install** — the `stremio://` link opens the desktop or mobile app; *Open in Stremio Web* handles the browser player.
+4. **Set the margin** below it — the seconds left alone at each end of every window (3 by default). If an intro cut feels too aggressive, this is the dial.
+5. **The API key** is already handled if the service has one in its environment; paste one here only if you would rather carry it in the install URL. See [API key](#api-key).
+6. **Install** — the `stremio://` link opens the desktop or mobile app; *Open in Stremio Web* handles the browser player.
 
 Your settings live in the install URL itself (base64url of a small JSON object), which is the only place a Stremio addon can keep per-user settings. **Keep that URL private:** anyone who has it can use your deployment.
 
@@ -201,7 +202,17 @@ A progressive file has no playlist to rewrite, and copying the whole 6 GB before
 
 Nothing is re-encoded, so a cut can only be as precise as the keyframe grid, and cannot start inside a GOP. **The error is always in the safe direction:** a stretch is copied until the first keyframe *after* the end of the window, so a moment of the *window* can be kept (up to one GOP), and playback always resumes at the keyframe at or before the window's end — the addon never skips past a window and never drops footage you should be hearing. Segments that begin after the end of a stretch are dropped, and those contain window footage only.
 
-Both ends of that: with a 2-second keyframe grid a 17.8 s window lost 17.3 s of itself, and with a 10-second grid up to 10 s of the window can remain. If the cut lands in the wrong place for *your* release (the same episode is cut differently in different edits), the timings are what differ, not the skipping — `/v4/media` can answer from the release cluster nearest your file when the caller sends its `duration_ms`, which this addon does not do yet.
+Both ends of that: with a 2-second keyframe grid a 17.8 s window lost 17.3 s of itself, and with a 10-second grid up to 10 s of the window can remain.
+
+### Margin
+
+Because the cut is keyframe-limited, and because TheIntroDB's timings describe *a* release of a title rather than necessarily the one being watched, the first and last seconds of an intro are exactly where dialogue can go missing. Every window is therefore **shrunk before it is used**: the skip starts `SKIP_MARGIN_SECONDS` (default **3**) after the reported start, and ends that many seconds before the reported end — on every segment type, and in both cut paths. It can only ever remove *less* than the timings ask for, never more.
+
+- `SKIP_MARGIN_SECONDS=0` cuts exactly what TheIntroDB reports.
+- It is a control on the configuration page too, stored in the install link, so one install can be cautious while another is literal. Changing it makes a different package (the windows are part of the key), so the next playback packages afresh.
+- A window the margin would empty is dropped outright rather than cut at zero length, so a very short segment simply keeps playing.
+
+If a cut still lands in the wrong place, it is the timings that differ from your file rather than the skipping: `/v4/media` can answer from the release cluster nearest the file when the caller sends its `duration_ms`, which this addon does not do yet. A larger margin is the blunt but effective answer until then.
 
 The first playback is a question of policy. `CUTS` sets the deployment's default and **the configuration page lets each install choose its own**, so one service can serve an install that always cuts and another that copies nothing:
 
@@ -289,6 +300,7 @@ Everything is an environment variable; there is nothing to edit in the image.
 | `CACHE_DIR` | `./cache` (`/cache` in the image) | Where package segments are kept. |
 | `CACHE_MAX_GB` | `50` | Disk budget for packages, evicted oldest-first. |
 | `CUT_WAIT_SECONDS` | `120` | `blocking` mode only: how long a play request waits for the first segment. A couple of seconds is the normal answer; the bound only matters when a source is slow. |
+| `SKIP_MARGIN_SECONDS` | `3` | Seconds left alone at each end of every window, so a cut never removes more than the timings ask for. A control on the configuration page sets it per install. |
 | `CUT_CONCURRENCY` | `2` | Concurrent ffmpeg processes. |
 | `PRECUT_SOURCES` | `2` | Sources to start cutting when a stream list is fetched (0 disables the head start). |
 | `FFMPEG_PATH`, `FFPROBE_PATH` | `ffmpeg`, `ffprobe` | Override if they are not on `PATH`. |

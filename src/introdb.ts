@@ -95,7 +95,7 @@ function remember(reason: string): void {
 
 export async function lookupSkipWindows(
   env: Env,
-  config: { key?: string; types: SegmentType[] },
+  config: { key?: string; types: SegmentType[]; margin?: number },
   stremioId: string,
   options: LookupOptions = {},
 ): Promise<LookupResult> {
@@ -118,11 +118,12 @@ export async function lookupSkipWindows(
     return { status: "ok", windows: [], reason: "no_segment_types_enabled", cached: false };
   }
 
+  const marginMs = marginOf(env, config) * 1000;
   const apiUrl = buildApiUrl(parsed);
   const cacheKey = `introdb:${apiUrl}`;
   const hit = await cache.match(cacheKey);
   if (hit) {
-    return toResult(hit.status, hit.body, config.types, "cache_hit", true);
+    return toResult(hit.status, hit.body, config.types, "cache_hit", true, marginMs);
   }
 
   const headers: Record<string, string> = {
@@ -158,7 +159,7 @@ export async function lookupSkipWindows(
       { status: 200, body, contentType: "application/json" },
       TTL_FOUND_SECONDS,
     );
-    return toResult(200, body, config.types, "fresh", false);
+    return toResult(200, body, config.types, "fresh", false, marginMs);
   }
 
   if (response.status === 404) {
@@ -167,7 +168,7 @@ export async function lookupSkipWindows(
       { status: 404, body, contentType: "application/json" },
       TTL_MISSING_SECONDS,
     );
-    return toResult(404, body, config.types, errorCode(body) ?? "media_not_found", false);
+    return toResult(404, body, config.types, errorCode(body) ?? "media_not_found", false, marginMs);
   }
 
   if (response.status === 429) {
@@ -241,6 +242,42 @@ function normalizeBound(value: unknown): number | null {
   return Math.round(value);
 }
 
+/**
+ * How much of each window's edges to leave alone, in seconds.
+ *
+ * The install's own choice wins over the deployment's, and both default to a few seconds.
+ */
+function marginOf(
+  env: { skipMarginSeconds?: number },
+  config: { margin?: number },
+): number {
+  const chosen = typeof config.margin === "number" ? config.margin : env.skipMarginSeconds;
+  if (typeof chosen !== "number" || !Number.isFinite(chosen)) return 0;
+  return Math.max(0, chosen);
+}
+
+/**
+ * Take a margin off the start and the end of every window.
+ *
+ * The direction matters: this makes each cut *smaller*, so the skip begins a little after
+ * the reported start and ends a little before the reported end. Nothing a viewer should
+ * hear is ever skipped; at worst a moment of the segment itself plays. A window that the
+ * margin leaves empty is dropped outright rather than cut at zero length.
+ */
+export function applyMargin(windows: readonly SkipWindow[], marginMs: number): SkipWindow[] {
+  if (!Number.isFinite(marginMs) || marginMs <= 0) return [...windows];
+  const kept: SkipWindow[] = [];
+  for (const window of windows) {
+    // A window that runs to the end of the file has no end to protect; its start still
+    // gets the margin, so the last seconds before it keep playing.
+    const startMs = window.startMs + marginMs;
+    const endMs = window.endMs === null ? null : window.endMs - marginMs;
+    if (endMs !== null && endMs <= startMs) continue;
+    kept.push({ ...window, startMs, endMs });
+  }
+  return kept;
+}
+
 /** Sort and fuse windows that overlap or touch. */
 export function mergeWindows(windows: readonly SkipWindow[]): SkipWindow[] {
   const sorted = [...windows].sort((a, b) => a.startMs - b.startMs);
@@ -283,6 +320,7 @@ function toResult(
   types: SegmentType[],
   reason: string,
   cached: boolean,
+  marginMs = 0,
 ): LookupResult {
   if (status === 404) {
     return { status: "not_found", windows: [], reason, cached };
@@ -297,7 +335,7 @@ function toResult(
 
   return {
     status: "ok",
-    windows: mediaToWindows(media, types),
+    windows: applyMargin(mediaToWindows(media, types), marginMs),
     reason,
     cached,
     tvdbId: media.tvdb_id ?? null,

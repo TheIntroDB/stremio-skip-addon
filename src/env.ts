@@ -10,7 +10,17 @@
  */
 
 import { INTRODB_API_BASE } from "./constants.js";
-import { parseCutMode, type CutMode, type Env } from "./types.js";
+import { MAX_MARGIN_SECONDS, parseCutMode, type CutMode, type Env } from "./types.js";
+
+/**
+ * How much of each window's edge is left alone by default, in seconds.
+ *
+ * A cut can only land on a keyframe, and TheIntroDB's timings describe *a* release of the
+ * title rather than necessarily the one being watched — so the first and last seconds of
+ * an intro are exactly where dialogue goes missing. Skipping slightly less than the
+ * reported window is the safe direction, and this is the amount.
+ */
+const DEFAULT_MARGIN_SECONDS = 3;
 
 export type { CutMode } from "./types.js";
 
@@ -22,6 +32,8 @@ export interface Settings extends Env {
   cacheMaxBytes: number;
   /** The deployment's default; an install URL may override it. See `CutMode`. */
   cuts: CutMode;
+  /** The deployment's default margin on each cut; an install URL may override it. */
+  skipMarginSeconds: number;
   cutWaitSeconds: number;
   cutConcurrency: number;
   /**
@@ -55,6 +67,10 @@ export function loadSettings(): Settings {
     cacheDir: process.env.CACHE_DIR ?? "./cache",
     cacheMaxBytes: Math.max(0, numberFrom("CACHE_MAX_GB", 50) * 1024 ** 3),
     cuts: cutMode(),
+    skipMarginSeconds: Math.min(
+      MAX_MARGIN_SECONDS,
+      Math.max(0, Math.round(numberFrom("SKIP_MARGIN_SECONDS", DEFAULT_MARGIN_SECONDS))),
+    ),
     cutWaitSeconds: Math.max(0, numberFrom("CUT_WAIT_SECONDS", 120)),
     cutConcurrency: Math.max(1, Math.floor(numberFrom("CUT_CONCURRENCY", 2))),
     precutSources: Math.min(5, Math.max(0, Math.floor(numberFrom("PRECUT_SOURCES", 2)))),
@@ -69,6 +85,7 @@ export function describeSettings(settings: Settings): Record<string, unknown> {
     api: `${INTRODB_API_BASE}/v4/media`,
     apiKeyConfigured: Boolean((settings.TIDB_API_KEY ?? "").trim()),
     cuts: settings.cuts,
+    skipMarginSeconds: settings.skipMarginSeconds,
     cacheDir: settings.cuts === "off" ? null : settings.cacheDir,
     cacheMaxGb: settings.cuts === "off" ? null : Math.round(settings.cacheMaxBytes / 1024 ** 3),
     cutConcurrency: settings.cuts === "off" ? null : settings.cutConcurrency,

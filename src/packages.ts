@@ -342,6 +342,7 @@ export class PackageEngine {
     }
     return {
       mode: this.settings.cuts,
+      skipMarginSeconds: this.settings.skipMarginSeconds,
       available: this.available,
       cacheDir: this.settings.cacheDir,
       cacheMaxGb: Math.round(this.settings.cacheMaxBytes / 1024 ** 3),

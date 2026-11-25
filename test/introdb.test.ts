@@ -6,9 +6,10 @@ import test from "node:test";
 
 import { buildApiUrl, lookupSkipWindows, mediaToWindows } from "../src/introdb.js";
 import { MemoryHttpCache } from "../src/cache.js";
+import { applyMargin } from "../src/introdb.js";
 import type { Env, IntroDbMediaResponse } from "../src/types.js";
 
-const env: Env = { TIDB_API_KEY: "unit-test-key" };
+const env: Env = { TIDB_API_KEY: "unit-test-key", skipMarginSeconds: 0 };
 
 test("a null end runs to the end of the file, a null start is 0:00", () => {
   const media: IntroDbMediaResponse = {
@@ -216,4 +217,35 @@ test("a malformed body is unavailable, not empty", async () => {
   });
   assert.equal(result.status, "unavailable");
   assert.equal(result.reason, "invalid_json");
+});
+
+test("a margin takes a slice off both ends of every window", () => {
+  const windows = [
+    { type: "intro" as const, startMs: 228_665, endMs: 246_498 },
+    { type: "credits" as const, startMs: 3_432_884, endMs: null },
+  ];
+  assert.deepEqual(applyMargin(windows, 3000), [
+    // The skip starts three seconds late and ends three seconds early: it can only ever
+    // remove less than the timings ask for, never more.
+    { type: "intro", startMs: 231_665, endMs: 243_498 },
+    { type: "credits", startMs: 3_435_884, endMs: null },
+  ]);
+});
+
+test("a margin leaves a window that runs to the end of the file its end alone", () => {
+  const credits = [{ type: "credits" as const, startMs: 3_432_884, endMs: null }];
+  assert.deepEqual(applyMargin(credits, 5000), [{ type: "credits", startMs: 3_437_884, endMs: null }]);
+});
+
+test("a window the margin would empty is dropped rather than cut at zero length", () => {
+  const brief = [{ type: "preview" as const, startMs: 100_000, endMs: 104_000 }];
+  assert.deepEqual(applyMargin(brief, 3000), []);
+  // Exactly as long as the two margins: nothing left either.
+  assert.deepEqual(applyMargin(brief, 2000), []);
+});
+
+test("no margin is no change", () => {
+  const windows = [{ type: "recap" as const, startMs: 5_000, endMs: 9_000 }];
+  assert.deepEqual(applyMargin(windows, 0), windows);
+  assert.deepEqual(applyMargin(windows, -1), windows);
 });

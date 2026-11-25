@@ -33,6 +33,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     cacheDir: path.join(workDir, "cache"),
     cacheMaxBytes: 0,
     cuts: "off",
+    skipMarginSeconds: 0,
     cutWaitSeconds: 0,
     cutConcurrency: 1,
     precutSources: 2,

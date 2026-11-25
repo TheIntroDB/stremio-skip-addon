@@ -190,6 +190,12 @@ export function renderConfigPage(options: PageOptions): string {
     </div>
 
     <div class="field">
+      <label for="margin">Margin on every cut <span class="badge">seconds</span></label>
+      <input type="number" id="margin" min="0" max="30" step="1" value="3">
+      <p class="hint">How much of each window's edges to leave alone. A cut can only land on a keyframe, and TheIntroDB's timings describe <i>a</i> release of a title rather than necessarily yours, so the first and last seconds of an intro are where dialogue goes missing. With a margin of 3, the skip starts three seconds after the reported start and ends three seconds before the reported end — it never skips more than the timings ask for. 0 cuts exactly what TheIntroDB reports.</p>
+    </div>
+
+    <div class="field">
       <label for="key">TheIntroDB API key <span class="badge">required</span></label>
       <input type="password" id="key" spellcheck="false" autocomplete="off" placeholder="set TIDB_API_KEY in the environment, or paste a key here">
       <p class="hint" id="key-hint"></p>
@@ -238,6 +244,7 @@ export function renderConfigPage(options: PageOptions): string {
     <h2>This instance</h2>
     <ul>
       <li>Files: <span class="mono" id="cuts-mode"></span></li>
+      <li>Margin on each cut: <span class="mono" id="cuts-margin"></span></li>
       <li>Segment cache: <span class="mono" id="cuts-cache"></span></li>
       <li>ffmpeg: <span class="mono" id="cuts-ffmpeg"></span></li>
       <li>Reading timings from <span class="mono" id="api"></span> — instance <span class="mono" id="origin"></span></li>
@@ -300,7 +307,10 @@ export function renderConfigPage(options: PageOptions): string {
     var types = SEGMENTS.filter(function (type) {
       return document.getElementById("type-" + type).checked;
     });
-    var config = { src: sources, types: types, cuts: document.getElementById("cuts").value };
+    var rawMargin = Number(document.getElementById("margin").value);
+    if (!isFinite(rawMargin)) rawMargin = 0;
+    var margin = Math.max(0, Math.min(30, Math.round(rawMargin)));
+    var config = { src: sources, types: types, cuts: document.getElementById("cuts").value, margin: margin };
     if (key) config.key = key;
     if (document.getElementById("proxy").checked) config.proxy = true;
     var name = document.getElementById("name").value.trim();
@@ -330,11 +340,17 @@ export function renderConfigPage(options: PageOptions): string {
   var cuts = data.cuts;
   // The deployment's own default is what a new install gets unless it says otherwise.
   document.getElementById("cuts").value = cuts.mode || "blocking";
+  document.getElementById("margin").value =
+    cuts.skipMarginSeconds === undefined || cuts.skipMarginSeconds === null
+      ? 3
+      : cuts.skipMarginSeconds;
   document.getElementById("cuts-mode").textContent =
     cuts.mode === "off"
       ? "off — files are passed through"
       : cuts.mode +
         (cuts.segments ? " — " + cuts.segments + " segments (" + Math.round((cuts.bytes || 0) / 1048576) + " MB)" : "");
+  document.getElementById("cuts-margin").textContent =
+    (cuts.skipMarginSeconds || 0) + "s — the skip starts after, and ends before, the reported window";
   document.getElementById("cuts-cache").textContent =
     cuts.mode === "off"
       ? "disabled"
@@ -383,6 +399,7 @@ export function renderConfigPage(options: PageOptions): string {
     if (config.name) document.getElementById("name").value = config.name;
     document.getElementById("proxy").checked = config.proxy === true;
     if (config.cuts) document.getElementById("cuts").value = config.cuts;
+    if (typeof config.margin === "number") document.getElementById("margin").value = config.margin;
 
     notice("You are editing an install. Change what you need and install again — the new link replaces the old one, and the old one keeps working. Source URLs are shown without their /manifest.json, which the addon fetches for you. Keep this page's address private: it is the configuration, and it carries the API key if you put one in it.");
     generate();

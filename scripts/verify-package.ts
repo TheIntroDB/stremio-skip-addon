@@ -39,6 +39,7 @@ const settings: Settings = {
   cacheDir,
   cacheMaxBytes: 10 * 1024 ** 3,
   cuts: "blocking",
+  skipMarginSeconds: 3,
   cutWaitSeconds: 120,
   cutConcurrency: 1,
   precutSources: 0,

@@ -270,6 +270,7 @@ function testSettings(overrides: Partial<Settings> = {}): Settings {
     // Off by default: these tests are about the playlist and relay paths. The package
     // engine has its own suite, which runs real ffmpeg (test/packages.test.ts).
     cuts: "off",
+    skipMarginSeconds: 0,
     cutWaitSeconds: 0,
     cutConcurrency: 1,
     precutSources: 2,
@@ -344,7 +345,9 @@ test("the Worker serves a config page, a health check and a bare manifest", asyn
     assert.ok(body.includes(`value="${mode}"`), `the page offers the ${mode} mode`);
   }
   assert.ok(body.includes('"cuts":{"mode"'), "and it defaults to what this deployment does");
-  for (const id of ["cuts-mode", "cuts-cache", "cuts-ffmpeg", "api", "origin"]) {
+  assert.ok(body.includes('"skipMarginSeconds":0'), "including its margin");
+  assert.match(body, /<input type="number" id="margin"/, "the page offers the margin");
+  for (const id of ["cuts-mode", "cuts-cache", "cuts-margin", "cuts-ffmpeg", "api", "origin"]) {
     assert.ok(body.includes(`id="${id}"`), `the page has the #${id} element the script writes to`);
   }
 
@@ -995,4 +998,39 @@ test("a package that is ready is served as a seekable playlist", async () => {
   // A name that is not one of ours is refused rather than read.
   const traversal = await call(`/${amplified}/seg?f=${key}/../../plan.json`, settings, undefined, engine);
   assert.equal(traversal.status, 400);
+});
+
+test("the deployment's margin trims every window, and an install can override it", async () => {
+  // A cut can only land on a keyframe and the timings describe one release, so the last
+  // seconds of an intro are where dialogue goes missing. The margin skips less; the
+  // install's own number wins over the deployment's.
+  const trimmed = await call(
+    playPath(`${base}/hls/media.m3u8`, "tt0903747:1:1"),
+    testSettings({ skipMarginSeconds: 3 }),
+  );
+  assert.equal(trimmed.headers.get("x-tidb-cuts"), "intro 3:51-4:03, credits 57:15-end");
+
+  const untrimmed = await call(
+    playPath(`${base}/hls/media.m3u8`, "tt0903747:1:1"),
+    testSettings({ skipMarginSeconds: 0 }),
+  );
+  assert.equal(untrimmed.headers.get("x-tidb-cuts"), "intro 3:48-4:06, credits 57:12-end");
+
+  const dropped = (response: Response): number => Number(response.headers.get("x-tidb-dropped-segments"));
+  assert.ok(
+    dropped(trimmed) < dropped(untrimmed),
+    `a margin drops fewer segments (${dropped(trimmed)} < ${dropped(untrimmed)})`,
+  );
+
+  // An install carrying its own margin, on a deployment set to a different one.
+  const own = encodeConfig({
+    src: [`${base}/upstream`],
+    types: ["intro"] as SegmentType[],
+    margin: 8,
+  });
+  const wider = await call(
+    playPath(`${base}/hls/media.m3u8`, "tt0903747:1:1", own),
+    testSettings({ skipMarginSeconds: 3 }),
+  );
+  assert.equal(wider.headers.get("x-tidb-cuts"), "intro 3:56-3:58", "8s off both ends of a 17.8s intro");
 });
