@@ -22,6 +22,19 @@ import { MAX_MARGIN_SECONDS, type Env } from "./types.js";
  */
 const DEFAULT_MARGIN_SECONDS = 2;
 
+/**
+ * How much audio goes to the recogniser in one go, and therefore how long each subtitle segment is.
+ *
+ * 30 seconds is one window of the recogniser, so it is the default *and* the floor: a chunk is a
+ * subtitle segment, so a shorter one does make the first cues arrive sooner, but it cannot be
+ * recognised any faster than the window it is given to. The ceiling is a typo guard, not a
+ * recommendation -- the segment length is what a player waits for before it shows anything.
+ */
+export const DEFAULT_SUBTITLES_CHUNK_SECONDS = 30;
+/** The floor *is* the default, so the clamp can never lift the default off its documented value. */
+const MIN_SUBTITLES_CHUNK_SECONDS = DEFAULT_SUBTITLES_CHUNK_SECONDS;
+const MAX_SUBTITLES_CHUNK_SECONDS = 900;
+
 export type { CutMode } from "./types.js";
 
 export interface Settings extends Env {
@@ -107,7 +120,13 @@ export function loadSettings(): Settings {
     cacheMaxBytes: Math.max(0, numberFrom("CACHE_MAX_GB", 50) * 1024 ** 3),
     subtitles: !/^(off|false|0|no)$/i.test((process.env.SUBTITLES ?? "").trim()),
     subtitlesLanguage: (process.env.SUBTITLES_LANGUAGE ?? "en").trim(),
-    subtitlesChunkSeconds: Math.min(900, Math.max(60, Math.round(numberFrom("SUBTITLES_CHUNK_SECONDS", 30)))),
+    subtitlesChunkSeconds: Math.min(
+      MAX_SUBTITLES_CHUNK_SECONDS,
+      Math.max(
+        MIN_SUBTITLES_CHUNK_SECONDS,
+        Math.round(numberFrom("SUBTITLES_CHUNK_SECONDS", DEFAULT_SUBTITLES_CHUNK_SECONDS)),
+      ),
+    ),
     subtitlesTtlHours: Math.min(720, Math.max(1, Math.round(numberFrom("SUBTITLES_TTL_HOURS", 24)))),
     // Off only when it is explicitly turned off: the sources people actually use are debrid.
     proxy: !/^(off|false|0|no)$/i.test((process.env.PROXY ?? "").trim()),
