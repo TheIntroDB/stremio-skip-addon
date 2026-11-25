@@ -18,6 +18,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { run } from "../src/ffmpeg.js";
+import { masterPlaylist } from "../src/streaminfo.js";
 import { handleSubtitleChunk, handleSubtitlePlaylist, SubtitleEngine } from "../src/subtitles.js";
 import type { Transcriber } from "../src/transcribe.js";
 import type { Settings } from "../src/env.js";
@@ -202,4 +203,27 @@ test("a player that asks too early gets a valid playlist, not a 404", async () =
   assert.ok(!body.includes("#EXT-X-ENDLIST"), "and has not finished");
   assert.ok(body.includes("#EXT-X-TARGETDURATION"), "with a reload cadence");
   assert.equal(engine.served.playlists, 1, "and it is counted, so /health can see it");
+});
+
+test("the master's rendition line is one a strict parser accepts", async () => {
+  // IINA (mpv) reported no subtitle track at all, and this is why: `LANGUAGE=en` is a
+  // quoted-string attribute, and unquoted it makes the whole `#EXT-X-MEDIA` line unparseable.
+  const master = masterPlaylist({
+    mediaUri: "/cfg/play?u=x&m=1",
+    subtitleUri: "subs.m3u8?f=key",
+    language: "en",
+    name: "TheIntroDB",
+    info: { durationMs: 60_000, bitrate: 5_300_000, width: 1920, height: 1080, codecs: "avc1.640028,mp4a.40.2" },
+  });
+  const media = master.split("\n").find((line) => line.startsWith("#EXT-X-MEDIA"))!;
+  assert.ok(media.includes('TYPE=SUBTITLES'), "a subtitle rendition");
+  assert.ok(media.includes('GROUP-ID="subs"'), "in the group the variant claims");
+  assert.ok(media.includes('LANGUAGE="en"'), "with its language quoted, as HLS requires");
+  assert.ok(media.includes('URI="subs.m3u8?f=key"'), "and a URI to read");
+  assert.ok(!media.includes("FORCED"), "and not marked forced: these are the whole track");
+  const variant = master.split("\n").find((line) => line.startsWith("#EXT-X-STREAM-INF"))!;
+  assert.ok(variant.includes('SUBTITLES="subs"'), "the variant claims the group");
+  assert.ok(variant.includes("RESOLUTION=1920x1080"), "and says what it is");
+  assert.ok(variant.includes('CODECS="avc1.640028,mp4a.40.2"'), "including its codecs");
+  assert.ok(master.includes("RESOLUTION=") && !master.includes("RESOLUTION=x"), "never half-built");
 });

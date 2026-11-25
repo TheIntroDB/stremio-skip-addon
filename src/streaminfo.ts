@@ -107,3 +107,50 @@ export function variantAttributes(info: StreamInfo | null, subtitles: boolean): 
   if (subtitles) parts.push('SUBTITLES="subs"');
   return parts.join(",");
 }
+
+/** A quoted-string attribute. HLS requires the quotes, and a strict parser drops the line
+ *  without them -- mpv/IINA among them, which then reports no subtitle track at all. */
+function quoted(name: string, value: string): string {
+  return `${name}="${value.replace(/"/g, "")}"`;
+}
+
+export interface MasterOptions {
+  /** The film itself, as a media playlist -- this same URL with the media flag set. */
+  mediaUri: string;
+  /** The subtitle rendition's playlist. */
+  subtitleUri: string;
+  /** The one language this track holds. */
+  language: string;
+  name: string;
+  info: StreamInfo | null;
+}
+
+/**
+ * The multivariant playlist a film is offered as when it carries generated subtitles.
+ *
+ * A subtitle rendition can only be declared here, and every attribute that is a quoted-string has
+ * to be quoted: `LANGUAGE=en` makes the whole `#EXT-X-MEDIA` line unparseable, which reads as a
+ * stream with no subtitle track rather than as a syntax error.
+ *
+ * `FORCED` is deliberately absent. Forced subtitles mean "only the lines someone must read, for
+ * dialogue in another language" -- these are the whole track, and players treat a forced-only
+ * group as one to leave off.
+ */
+export function masterPlaylist(options: MasterOptions): string {
+  return [
+    "#EXTM3U",
+    "#EXT-X-VERSION:7",
+    [
+      "#EXT-X-MEDIA:TYPE=SUBTITLES",
+      quoted("GROUP-ID", "subs"),
+      quoted("NAME", options.name),
+      quoted("LANGUAGE", options.language),
+      "DEFAULT=YES",
+      "AUTOSELECT=YES",
+      quoted("URI", options.subtitleUri),
+    ].join(","),
+    `#EXT-X-STREAM-INF:${variantAttributes(options.info, true)}`,
+    options.mediaUri,
+    "",
+  ].join("\n");
+}

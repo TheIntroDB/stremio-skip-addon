@@ -19,7 +19,7 @@
 
 import { getHttpCache } from "./cache.js";
 import { cardSeconds } from "./splash.js";
-import { variantAttributes } from "./streaminfo.js";
+import { masterPlaylist } from "./streaminfo.js";
 import type { ManifestView, PackageEngine } from "./packages.js";
 import type { SubtitleEngine } from "./subtitles.js";
 import type { Settings } from "./env.js";
@@ -369,18 +369,13 @@ async function packageResponse(
 
   const media = new URL(url.toString());
   media.searchParams.set("m", "1");
-  const language = context.settings.subtitlesLanguage || "en";
-  const master = [
-    "#EXTM3U",
-    "#EXT-X-VERSION:7",
-    `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="TheIntroDB",LANGUAGE=${language},` +
-      // FORCED, not just DEFAULT: an install asked for these subtitles, and several players
-      // (webOS among them) only turn a track on without a pick when it is forced.
-      `DEFAULT=YES,AUTOSELECT=YES,FORCED=YES,URI="subs.m3u8?f=${encodeURIComponent(key)}"`,
-    `#EXT-X-STREAM-INF:${variantAttributes(await context.packages.sourceInfo(key), true)}`,
-    `${media.pathname}${media.search}`,
-    "",
-  ].join("\n");
+  const master = masterPlaylist({
+    mediaUri: `${media.pathname}${media.search}`,
+    subtitleUri: `subs.m3u8?f=${encodeURIComponent(key)}`,
+    language: context.settings.subtitlesLanguage || "en",
+    name: "TheIntroDB",
+    info: await context.packages.sourceInfo(key),
+  });
   return new Response(master, {
     status: 200,
     headers: {
