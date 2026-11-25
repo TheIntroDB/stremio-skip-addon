@@ -55,9 +55,10 @@ test("junk falls back to the default rather than to NaN", () => {
   assert.equal(settingsWith({ SUBTITLES_CHUNK_SECONDS: "" }).subtitlesChunkSeconds, 30);
 });
 
-test("the README's table documents the default the code actually uses", async () => {
-  const readme = await readFile(new URL("../README.md", import.meta.url), "utf8");
-  const row = /^\|\s*`SUBTITLES_CHUNK_SECONDS`\s*\|\s*`(\d+)`/m.exec(readme);
-  assert.ok(row, "the variable is in the README's settings table");
+test("the documented settings table states the default the code actually uses", async () => {
+  // The full configuration table is the reference; the README is the short page and links to it.
+  const reference = await readFile(new URL("../AGENTS.md", import.meta.url), "utf8");
+  const row = /^\|\s*`SUBTITLES_CHUNK_SECONDS`\s*\|\s*`(\d+)`/m.exec(reference);
+  assert.ok(row, "the variable is in the reference's settings table");
   assert.equal(Number(row[1]), DEFAULT_SUBTITLES_CHUNK_SECONDS);
 });
