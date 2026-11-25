@@ -52,6 +52,7 @@ import {
   run,
   type KeptRange,
 } from "./ffmpeg.js";
+import { parseProbe, type StreamInfo } from "./streaminfo.js";
 import type { SkipWindow } from "./types.js";
 
 export type PackageStatus = "queued" | "generating" | "ready" | "failed";
@@ -647,15 +648,20 @@ export class PackageEngine {
     if (!KEY_RE.test(key)) return null;
     const probe = await run(
       this.settings.ffprobePath,
-      ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", target],
+      [
+        "-v", "error",
+        "-show_entries", "format=duration,bit_rate:stream=codec_type,codec_name,profile,level,width,height",
+        "-of", "json",
+        target,
+      ],
       30_000,
     );
-    const seconds = Number(probe.stdout.trim());
-    if (probe.code !== 0 || !Number.isFinite(seconds) || seconds <= 0) return null;
-    const ms = Math.round(seconds * 1000);
+    const info = probe.code === 0 ? parseProbe(probe.stdout) : null;
+    if (!info) return null;
+    const ms = info.durationMs;
     try {
       await mkdir(this.dirFor(key), { recursive: true });
-      await writeFile(path.join(this.dirFor(key), DURATION), JSON.stringify({ ms }));
+      await writeFile(path.join(this.dirFor(key), DURATION), JSON.stringify(info));
     } catch {
       // Not fatal: without it the playlist cannot pad, and the caller still gets to play.
     }
@@ -663,11 +669,23 @@ export class PackageEngine {
   }
 
   private async readDuration(key: string): Promise<number | null> {
+    const info = await this.sourceInfo(key);
+    return info ? info.durationMs : null;
+  }
+
+  /** What the probe learned about this source: its length, and what a master needs to say. */
+  async sourceInfo(key: string): Promise<StreamInfo | null> {
     try {
-      const parsed = JSON.parse(await readFile(path.join(this.dirFor(key), DURATION), "utf8")) as {
-        ms?: number;
-      };
-      return typeof parsed.ms === "number" && parsed.ms > 0 ? parsed.ms : null;
+      const parsed = JSON.parse(await readFile(path.join(this.dirFor(key), DURATION), "utf8")) as
+        | StreamInfo
+        | { ms?: number };
+      const legacy = parsed as { ms?: number };
+      if (typeof legacy.ms === "number" && legacy.ms > 0 && !("durationMs" in parsed)) {
+        // A package probed before the stream was recorded: the length is enough to play.
+        return { durationMs: legacy.ms, bitrate: 0, width: 0, height: 0, codecs: "" };
+      }
+      const info = parsed as StreamInfo;
+      return typeof info.durationMs === "number" && info.durationMs > 0 ? info : null;
     } catch {
       return null;
     }

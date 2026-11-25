@@ -19,6 +19,7 @@
 
 import { getHttpCache } from "./cache.js";
 import { cardSeconds } from "./splash.js";
+import { variantAttributes } from "./streaminfo.js";
 import type { ManifestView, PackageEngine } from "./packages.js";
 import type { SubtitleEngine } from "./subtitles.js";
 import type { Settings } from "./env.js";
@@ -348,12 +349,12 @@ async function packageOrProxy(
  * whose subtitle track is the growing playlist the engine serves. The variant is this same URL
  * with `m=1`, which asks for the media playlist itself.
  */
-function packageResponse(
+async function packageResponse(
   context: PlayContext,
   view: ManifestView,
   key: string,
   lookupReason: string,
-): Response {
+): Promise<Response> {
   const url = new URL(context.request.url);
   const enabled = context.subtitles?.enabled(context.config) === true;
   if (enabled) context.subtitles!.served.wanted += 1;
@@ -361,7 +362,6 @@ function packageResponse(
   // behind it is a track a player will drop, or worse, a master it will refuse.
   const wants =
     enabled &&
-    context.settings.subtitlesRendition &&
     context.subtitles!.tracking(key) &&
     url.searchParams.get("m") !== "1";
   if (!wants) return mediaResponse(view, key, lookupReason);
@@ -377,7 +377,7 @@ function packageResponse(
       // FORCED, not just DEFAULT: an install asked for these subtitles, and several players
       // (webOS among them) only turn a track on without a pick when it is forced.
       `DEFAULT=YES,AUTOSELECT=YES,FORCED=YES,URI="subs.m3u8?f=${encodeURIComponent(key)}"`,
-    '#EXT-X-STREAM-INF:BANDWIDTH=10000000,SUBTITLES="subs"',
+    `#EXT-X-STREAM-INF:${variantAttributes(await context.packages.sourceInfo(key), true)}`,
     `${media.pathname}${media.search}`,
     "",
   ].join("\n");

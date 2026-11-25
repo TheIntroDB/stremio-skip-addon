@@ -55,16 +55,6 @@ export interface Settings extends Env {
    * weights would go.
    */
   subtitles: boolean;
-  /**
-   * Whether the track is delivered as an HLS subtitle rendition (a master playlist carrying
-   * `#EXT-X-MEDIA:TYPE=SUBTITLES`).
-   *
-   * Off by default, and deliberately: a master playlist is a different kind of stream, and one
-   * player in the field would not load it at all. The track and its playlist are made either
-   * way -- `/health`'s `subtitles.served.playlists` then says whether a player ever asks for
-   * them -- so turning this on is the experiment, and turning it off is the fallback.
-   */
-  subtitlesRendition: boolean;
   /** The language to recognise and refine. Alignment falls back to the recogniser's own timings. */
   subtitlesLanguage: string;
   /**
@@ -124,7 +114,6 @@ export function loadSettings(): Settings {
     cacheMaxBytes: Math.max(0, numberFrom("CACHE_MAX_GB", 50) * 1024 ** 3),
     cuts: cutMode(),
     subtitles: !/^(off|false|0|no)$/i.test((process.env.SUBTITLES ?? "").trim()),
-    subtitlesRendition: /^(on|true|1|yes)$/i.test((process.env.SUBTITLES_RENDITION ?? "").trim()),
     subtitlesLanguage: (process.env.SUBTITLES_LANGUAGE ?? "en").trim(),
     subtitlesChunkSeconds: Math.min(900, Math.max(60, Math.round(numberFrom("SUBTITLES_CHUNK_SECONDS", 30)))),
     subtitlesTtlHours: Math.min(720, Math.max(1, Math.round(numberFrom("SUBTITLES_TTL_HOURS", 24)))),
@@ -154,7 +143,6 @@ export function describeSettings(settings: Settings): Record<string, unknown> {
     proxy: settings.proxy,
     subtitles: settings.subtitles,
     subtitlesLanguage: settings.subtitlesLanguage,
-    subtitlesRendition: settings.subtitlesRendition,
     subtitlesTtlHours: settings.subtitlesTtlHours,
     splash: settings.splash,
     prerollSeconds: settings.prerollSeconds,

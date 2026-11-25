@@ -60,7 +60,6 @@ async function fixture(): Promise<{ cacheDir: string; audio: string; settings: S
       ffmpegPath: "ffmpeg",
       subtitles: true,
       subtitlesLanguage: "en",
-      subtitlesRendition: false,
       subtitlesTtlHours: 24,
       subtitlesChunkSeconds: 30,
       splash: true,
