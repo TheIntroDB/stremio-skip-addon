@@ -128,8 +128,9 @@ export async function lookupSkipWindows(
   const headers: Record<string, string> = {
     accept: "application/json",
     // Identify the client. A proxy in front of the API cannot allow-list an empty
-    // user agent, and an empty one is what a bot rule blocks first.
-    "user-agent": `TheIntroDB-Skip/${ADDON_VERSION} (+${REPO_URL})`,
+    // user agent, and an empty one is what a bot rule blocks first -- so this is the
+    // string to match on in a rule: it starts with `TIDB-stremio-skip`.
+    "user-agent": `TIDB-stremio-skip/${ADDON_VERSION} (+${REPO_URL})`,
     authorization: `Bearer ${apiKey}`,
   };
 

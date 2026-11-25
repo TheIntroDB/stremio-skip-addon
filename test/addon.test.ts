@@ -27,6 +27,7 @@ let server: Server;
 let base = "";
 let amplified = "";
 let rotatingTokens = 0;
+let apiUserAgents: string[] = [];
 let proxyConfig = "";
 const apiCalls = new Map<string, number>();
 /** Every path the stub was asked for, so a test can prove nothing was fetched. */
@@ -128,6 +129,7 @@ before(async () => {
     hits.set(path, (hits.get(path) ?? 0) + 1);
 
     if (path === "/api/v4/media") {
+      apiUserAgents.push(request.headers["user-agent"] ?? "");
       const id = url.searchParams.get("imdb_id") ?? "";
       const season = url.searchParams.get("season") ?? "-";
       const episode = url.searchParams.get("episode") ?? "-";
@@ -539,6 +541,18 @@ test("the title TheIntroDB has no timings for is passed through untouched", asyn
   assert.equal(body.streams[0]!.name, "StubSource");
   assert.equal(response.headers.get("x-tidb-lookup"), "media_not_found");
   assert.equal(response.headers.get("x-tidb-windows"), "0");
+});
+
+test("the API is told who is asking", async () => {
+  // A proxy in front of the API blocks an empty user agent first, and cannot be told
+  // to allow a client it cannot name.
+  resetMemoryCache(); // this title may already have been looked up by an earlier test
+  apiUserAgents = [];
+  await call(`/${amplified}/stream/movie/tt0111161.json`);
+  assert.ok(apiUserAgents.length > 0, "the lookup happened");
+  for (const agent of apiUserAgents) {
+    assert.match(agent, /^TIDB-stremio-skip\//);
+  }
 });
 
 test("with proxying on, a title with no timings is still relayed", async () => {
