@@ -5,7 +5,7 @@
  * Configuration, read once from the environment at boot.
  *
  * This is a self-hosted service, so there is no bindings object: everything comes
- * from process.env (Docker `-e`, Railway variables, or a `.env` file passed with
+ * from process.env (Docker `-e`, a `.env` file, or a `.env` passed with
  * `node --env-file=.env`).
  */
 

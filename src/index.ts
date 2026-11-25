@@ -28,7 +28,7 @@ import type { CutEngine } from "./cut.js";
 import { describeSettings, type Settings } from "./env.js";
 import { describeCuts } from "./format.js";
 import { corsPreflight, errorResponse, html, json, text } from "./http.js";
-import { lookupSkipWindows } from "./introdb.js";
+import { lastLookupFailure, lookupSkipWindows } from "./introdb.js";
 import { ADDON_VERSION, buildManifest } from "./manifest.js";
 import { renderConfigPage } from "./page.js";
 import { handlePlay, handleSegment } from "./play.js";
@@ -82,6 +82,7 @@ export async function handleRequest(
       site: INTRODB_SITE,
       api: `${INTRODB_API_BASE}/${INTRODB_API_VERSION}/media`,
       ...describeSettings(settings),
+      lastLookupFailure: lastLookupFailure(),
       cutsStatus: cuts.stats(),
     });
   }
@@ -189,12 +190,20 @@ async function handleStreams(
   const label = `TheIntroDB Skip · ${sourceLabel(upstream.used ?? config.src[0] ?? "")}`;
   const cutSummary = lookup.windows.length > 0 ? `${describeCuts(lookup.windows)}.` : null;
 
-  const streams = cutSummary
+  // Relay whenever there is something to cut -- and also whenever the user asked for
+  // proxying, because the reason to proxy is reachability, not cutting: a source that
+  // binds its link to the requesting address stops working entirely if the stream is
+  // handed over raw. A lookup failure (`403`, a block on this deployment's address,
+  // an outage) must therefore cost the cut, not the playback.
+  const relay = cutSummary !== null || config.proxy === true;
+  const note = cutSummary ?? "TheIntroDB has no timings for this title yet, so this stream is relayed but not cut.";
+
+  const streams = relay
     ? upstream.streams.map((stream) =>
         wrapStream(stream, {
           playUrl: (target, streamIdentity) => playUrl(origin, encoded, target, id, streamIdentity),
           label,
-          cutSummary,
+          cutSummary: note,
           allowPrivateHosts: settings.ALLOW_PRIVATE_HOSTS === "1",
           sourceBase: upstream.used ?? config.src[0] ?? "",
         }),

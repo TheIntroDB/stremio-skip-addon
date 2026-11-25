@@ -25,46 +25,20 @@ Intros, recaps, credits and previews are gone from the timeline, on every platfo
 
 ## Run your own
 
-Nobody hosts this for you. It is a small Node service that relays streams from a source addon you already have, so you run it where your bandwidth is: a Railway project, a VPS, a NAS, or Docker anywhere.
+Nobody hosts this for you. It is a small Node service that relays streams from a source addon you already have, so it runs where your bandwidth is: a NAS, a home server, a VPS, or any Docker host.
 
-You need three things: **Node 22** (or Docker), **ffmpeg** on the host (only used to cut progressive files), and a **TheIntroDB API key**.
+You need three things: **Docker** (or Node 22 plus **ffmpeg**, if you would rather not containerise), a **TheIntroDB API key**, and an address Stremio can reach over HTTPS.
 
-### Option A — Railway
-
-Railway builds the Dockerfile in this repository, gives you a public HTTPS domain, and keeps the cut cache on a volume. Two ways in:
-
-**From the dashboard:** *New Project → Deploy from GitHub repo* → pick this repository. This works with the repository private, as long as you have access to it. Then:
-
-- **Variables** → add `TIDB_API_KEY` (required, see [API key](#api-key)). `CUTS` is `on` by default.
-- **Volumes** → add a Railway Volume with the mount path `/cache`, sized for a few films' worth of cuts (see [Disk](#disk)). Railway Volumes are the only kind of persistent storage here: the Dockerfile deliberately has **no `VOLUME` instruction**, because Railway rejects one (`docker VOLUME … is not supported, use Railway Volumes`).
-
-**From the CLI:**
-
-```bash
-npm i -g @railway/cli
-railway login
-railway init                                  # or: railway link
-railway up
-railway variable set TIDB_API_KEY=<your key>
-railway volume add --mount-path /cache         # persistent cut cache
-railway domain                                 # prints your public URL
-```
-
-Notes for a metered or small plan:
-
-- **The port is the platform's.** Railway injects `PORT`; the service reads it and binds to it, so the image's `8787` default only applies to a plain `docker run`. `railway.json` asks Railway to healthcheck `/health` before it routes traffic.
-- **Watch disk and egress.** A file cut copies the whole source once and then serves it, so a 4 GB episode is 4 GB of volume and 4 GB out. `CUTS=off` removes both entirely and still cuts HLS sources (which is a text rewrite — a few kilobytes of playlists). `CACHE_MAX_GB` bounds the volume, and `PRECUT_SOURCES=0` stops the head-start cuts when a stream list is fetched.
-- **If `/health` says the cache is unusable** (`cutsStatus.available: false`), the volume is mounted with an owner the `node` user cannot write to. Either set the service's *User* to `root` in Railway's settings, or point `CACHE_DIR` at a directory you can write. Nothing else breaks meanwhile: HLS sources keep being cut.
-
-> **A "Deploy on Railway" button needs a published template.** Railway's button points at a *template code* (`https://railway.com/new/template/<code>`), not at a repository, so the owner of this project has to publish this repo as a template once from their own Railway account (dashboard: the project → *Share* → publish as template). After that the badge for this repository is:
+> **Run it on your own network, not on a cloud platform.** Two things break otherwise, and both are properties of the sources rather than of this addon:
 >
-> ```md
-> [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/<template-code>)
-> ```
+> - A debrid source (ElfHosted's Comet, and most others) mints a link for **the address that requested it**. On your own connection, the addon and the player share that address, so the link is valid for both. On a cloud host the addon's egress address is a *different* one — and it can change on every deploy — so links minted before a restart stop working, and anything that has to be fetched by the player rather than the addon is refused outright.
+> - A cloud host's address is a datacenter address in a shared range, which is exactly what a proxy in front of an API blocks first. TheIntroDB's own API answers `403` to some of those ranges, and then there are no timings to cut with.
 >
-> `railway.json` in this repository is already written for it: Dockerfile build, `/health` healthcheck, restart on failure.
+> Self-hosting on your own network avoids both. Running it remotely works too, as long as the machine has a **stable address** you control — a VPS with its own IP, or a tunnel back to your network.
 
-### Option B — Docker (your own stack)
+### Docker (recommended)
+
+### Docker, from a clone of this repository
 
 One command, from a clone of this repository:
 
@@ -96,7 +70,7 @@ Dockerfile needs nothing but the source.
 
 > Mount the cache as a directory you own. The image runs as the `node` user, so a root-owned bind mount will not be writable — `docker run --user "$(id -u):$(id -g)"` fixes that, or let Docker manage the volume as above.
 
-### Option C — from a clone
+### Node, without Docker
 
 ```bash
 git clone https://github.com/TheIntroDB/stremio-skip-addon.git
@@ -140,12 +114,12 @@ There is no account, no database and nothing to look up server-side: the page is
 
 ### API key
 
-A TheIntroDB API key is **required**, not optional. Anonymous lookups are rate limited *per IP*, and a self-hosted deployment is not alone on its address — a home connection, a VPS or a Railway egress all share it with strangers. Without a key this addon does no lookups at all: the config page will not give you an install link, and a stream request answers `403 missing_api_key` instead of pretending.
+A TheIntroDB API key is **required**, not optional. Anonymous lookups are rate limited *per IP*, and a self-hosted deployment is not alone on its address — a home connection or a VPS shares it with everything else that runs there. Without a key this addon does no lookups at all: the config page will not give you an install link, and a stream request answers `403 missing_api_key` instead of pretending.
 
 Get one at [theintrodb.org/docs](https://theintrodb.org/docs), then set it in the environment so it stays out of your install URL:
 
 ```bash
-TIDB_API_KEY=...        # Docker: -e TIDB_API_KEY=...  ·  Railway: Variables tab
+TIDB_API_KEY=...        # docker run -e TIDB_API_KEY=...   (or a .env next to docker-compose.yml)
 ```
 
 A key can also be pasted into the config page, in which case it is embedded in the install URL and stored by Stremio — useful if you want a different key than the deployment's own, or if you are sharing one deployment between accounts.
@@ -225,7 +199,7 @@ The stream list is also fetched moments before playback, so a cut for the first 
 
 ### Disk
 
-Cuts live in `CACHE_DIR` (default `/cache` in the container) and are evicted oldest-first once they exceed `CACHE_MAX_GB`. A two-hour 1080p episode is roughly 2-6 GB, so 50 GB is a reasonable starting point and a volume is worth attaching on Railway. Evicting a cut that is being watched is safe — the open file keeps streaming — it is simply cut again next time.
+Cuts live in `CACHE_DIR` (default `/cache` in the container) and are evicted oldest-first once they exceed `CACHE_MAX_GB`. A two-hour 1080p episode is roughly 2-6 GB, so 50 GB is a reasonable starting point and a volume is worth mounting. Evicting a cut that is being watched is safe — the open file keeps streaming — it is simply cut again next time.
 
 A copy is only started when the source's own reported size fits with a tenth of the disk still free, because a cut that fills the volume takes the whole service down with it; the refusal is reported as a `skipped` cut with the reason in `/health`. A source that streams in chunks (many debrid links) reports no size, so it is attempted — those are the sources that need cutting the most.
 
@@ -242,9 +216,9 @@ The fix is the **Proxy streams through this service** option on the configuratio
 - with it on, the player asks *this service* for the playlists, the segments and the file itself, and every one of those fetches to the source comes from the same address the link was minted for;
 - with it off, the addon only relays the stream list and the playlists, and hands the video URL to the player, which is exactly the address mismatch above.
 
-Check it with `x-tidb-play: proxied_file` (or `proxied` on a segment) in the response headers, and `x-tidb-proxy: streamed`. The service's own address is stable for a Railway service, but it is not yours to choose: `GET /health` does not report it, so read it from a source that echoes it — `/<config>/seg?u=https://api.ipify.org/?format=json`.
+Check it with `x-tidb-play: proxied_file` (or `proxied` on a segment) in the response headers, and `x-tidb-proxy: streamed`. The service's own address is whatever its host gives it, and `/health` does not report it, so read it from a source that echoes it — `/<config>/seg?u=https://api.ipify.org/?format=json`.
 
-Note that the video now flows through your deployment (see [Disk](#disk) and the Railway notes above for what that costs).
+Note that the video now flows through your deployment (see [Disk](#disk) for what that costs).
 
 ### Response headers
 

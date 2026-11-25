@@ -2,10 +2,9 @@
 # TheIntroDB Stremio addon, as a self-hosted service with ffmpeg for cutting
 # progressive files.
 #
-# No `# syntax=` directive and no `VOLUME` instruction on purpose: a platform that
-# builds this for you (Railway) rejects `VOLUME` and asks for its own volume instead,
-# and the syntax frontend is one more network fetch in the build. A `VOLUME` is not
-# what makes `-v` work anyway -- see the README for mounting /cache.
+# No `VOLUME` instruction and no `# syntax=` directive on purpose: a managed builder
+# may reject `VOLUME` (and a `VOLUME` is not what makes `-v` work anyway -- see the
+# README for mounting /cache), and the syntax frontend is one more fetch in the build.
 
 FROM node:22-bookworm-slim AS build
 WORKDIR /app
@@ -34,8 +33,8 @@ RUN mkdir -p /cache && chown -R node:node /cache
 ENV NODE_ENV=production \
     CACHE_DIR=/cache \
     CUTS=on
-# Railway (and most platforms) inject their own PORT; the service reads PORT and
-# binds to it, so this is only the default for a plain `docker run`.
+# A platform may inject its own PORT; the service reads PORT and binds to it, so this
+# is the default for a plain `docker run`.
 EXPOSE 8787
 
 USER node

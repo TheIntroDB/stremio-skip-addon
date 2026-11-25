@@ -27,6 +27,7 @@
 import { getHttpCache, type HttpCache } from "./cache.js";
 import { parseStremioId } from "./config.js";
 import { INTRODB_API_BASE, INTRODB_API_VERSION } from "./constants.js";
+import { ADDON_VERSION, REPO_URL } from "./manifest.js";
 import type {
   Env,
   IntroDbMediaResponse,
@@ -66,6 +67,32 @@ export interface LookupOptions {
  * Without a key this returns `missing_api_key` and the caller passes streams through
  * untouched.
  */
+let lastFailure: { reason: string; at: string } | null = null;
+
+/**
+ * The most recent lookup that did not produce timings.
+ *
+ * Cutting stops silently when the API refuses this deployment -- a block on its
+ * address, a revoked key, an outage -- and `/health` is where an operator looks.
+ */
+export function lastLookupFailure(): { reason: string; at: string } | null {
+  return lastFailure;
+}
+
+/** Answers that mean "nothing to cut here", not "this deployment is broken". */
+const NORMAL_REASONS = new Set([
+  "fresh",
+  "cache_hit",
+  "media_not_found",
+  "episode_not_found",
+  "no_segment_types_enabled",
+]);
+
+function remember(reason: string): void {
+  if (NORMAL_REASONS.has(reason)) return;
+  lastFailure = { reason, at: new Date().toISOString() };
+}
+
 export async function lookupSkipWindows(
   env: Env,
   config: { key?: string; types: SegmentType[] },
@@ -77,11 +104,13 @@ export async function lookupSkipWindows(
 
   const parsed = parseStremioId(stremioId);
   if (!parsed) {
+    remember("unsupported_id");
     return { status: "unavailable", windows: [], reason: "unsupported_id", cached: false };
   }
 
   const apiKey = (config.key || env.TIDB_API_KEY || "").trim();
   if (!apiKey) {
+    remember("missing_api_key");
     return { status: "unavailable", windows: [], reason: "missing_api_key", cached: false };
   }
 
@@ -98,6 +127,9 @@ export async function lookupSkipWindows(
 
   const headers: Record<string, string> = {
     accept: "application/json",
+    // Identify the client. A proxy in front of the API cannot allow-list an empty
+    // user agent, and an empty one is what a bot rule blocks first.
+    "user-agent": `TheIntroDB-Skip/${ADDON_VERSION} (+${REPO_URL})`,
     authorization: `Bearer ${apiKey}`,
   };
 
@@ -108,6 +140,7 @@ export async function lookupSkipWindows(
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch (error) {
+    remember(`request_failed:${describeError(error)}`);
     return {
       status: "unavailable",
       windows: [],
@@ -138,6 +171,7 @@ export async function lookupSkipWindows(
 
   if (response.status === 429) {
     const retryAfter = response.headers.get("retry-after");
+    remember(`rate_limited${retryAfter ? `:retry_after=${retryAfter}` : ""}`);
     return {
       status: "unavailable",
       windows: [],
@@ -146,6 +180,9 @@ export async function lookupSkipWindows(
     };
   }
 
+  // A 403 here is usually a block on this deployment's address rather than a bad key:
+  // the API's own proxy refuses the request before it is read.
+  remember(`http_${response.status}`);
   return {
     status: "unavailable",
     windows: [],

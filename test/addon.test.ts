@@ -145,6 +145,10 @@ before(async () => {
         );
       }
       if (id === "tt0000002") return send(response, 429, JSON.stringify({ code: "rate_limit_exceeded" }), "application/json");
+      if (id === "tt0000003") {
+        // What a proxy in front of the API does to an address it has blocked.
+        return send(response, 403, "<html>Sorry, you have been blocked</html>", "text/html");
+      }
       return send(response, 500, JSON.stringify({ code: "internal" }), "application/json");
     }
 
@@ -535,6 +539,39 @@ test("the title TheIntroDB has no timings for is passed through untouched", asyn
   assert.equal(body.streams[0]!.name, "StubSource");
   assert.equal(response.headers.get("x-tidb-lookup"), "media_not_found");
   assert.equal(response.headers.get("x-tidb-windows"), "0");
+});
+
+test("with proxying on, a title with no timings is still relayed", async () => {
+  // Relay is about reachability, not cutting: a source that binds its link to the
+  // requesting address stops working completely if the stream is handed over raw, so a
+  // lookup that finds nothing (or fails) must cost the cut, not the playback.
+  const relayed = (await (await call(`/${proxyConfig}/stream/series/tt0000001:1:1.json`)).json()) as {
+    streams: Array<{ url: string; description?: string }>;
+  };
+  assert.equal(new URL(relayed.streams[0]!.url).origin, "https://worker.example");
+  assert.match(String(relayed.streams[0]!.description), /relayed but not cut/);
+
+  // Without proxying, a title with no timings is still handed over untouched.
+  const direct = (await (await call(`/${amplified}/stream/series/tt0000001:1:1.json`)).json()) as {
+    streams: Array<{ url: string }>;
+  };
+  assert.equal(direct.streams[0]!.url, `${base}/hls/master.m3u8`);
+});
+
+test("a lookup the API refuses is reported on /health", async () => {
+  const blocked = await call(`/${amplified}/stream/series/tt0000003:1:1.json`);
+  assert.equal(blocked.headers.get("x-tidb-lookup"), "http_403", "the header names it");
+
+  const health = (await (await call("/health")).json()) as {
+    lastLookupFailure: { reason: string; at: string } | null;
+  };
+  assert.equal(health.lastLookupFailure?.reason, "http_403", "/health says why nothing is being cut");
+  assert.ok(health.lastLookupFailure?.at);
+
+  // A title TheIntroDB simply has nothing for is not a failure.
+  await call(`/${amplified}/stream/series/tt0000001:1:1.json`);
+  const after = (await (await call("/health")).json()) as { lastLookupFailure: { reason: string } | null };
+  assert.equal(after.lastLookupFailure?.reason, "http_403", "a missing title does not overwrite it");
 });
 
 test("a rate-limited lookup is passed through too, never guessed at", async () => {
