@@ -289,6 +289,10 @@ async function packageOrProxy(
   const ready = await context.packages.manifest(key);
   if (ready) return manifestResponse(ready, key, lookupReason);
 
+  // Learn the source's length before answering, so the playlist can declare the whole episode
+  // from its first response: a player that reaches the end of a few-second playlist decides the
+  // episode is over, marks it watched and jumps to the next one.
+  if (mode === "blocking") await context.packages.rememberDuration(key, target);
   context.packages.schedule(target, windows, streamKey);
   if (mode !== "blocking") return passThrough(context, target, "package_warming", lookupReason);
 

@@ -44,6 +44,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     cuts: "blocking",
     skipMarginSeconds: 0,
     splash: false,
+    prerollSeconds: 10,
     cutWaitSeconds: 60,
     cutConcurrency: 2,
     precutSources: 2,
@@ -548,7 +549,11 @@ test("a cold play gets the processing card, and hands over as soon as the episod
   // spinner, and the card does not keep growing in front of the film -- waiting for the whole
   // file is exactly what that looked like.
   const window = { type: "intro" as const, startMs: 30_000, endMs: 36_000 };
-  const engine = new PackageEngine(settings({ cacheDir: path.join(workDir, "cache-card"), splash: true }));
+  const engine = new PackageEngine(
+    // A small buffer, so the card is drawn before this source has produced that much: with the
+    // card and the episode racing, a zero buffer would mean "no card" whenever the source won.
+    settings({ cacheDir: path.join(workDir, "cache-card"), splash: true, prerollSeconds: 2 }),
+  );
   await engine.start();
   const url = `${base}/long.mkv`;
   const key = engine.keyFor(url, [window], "stream:card");
@@ -624,3 +629,68 @@ test("the card keeps moving while nothing of the episode can be played yet", asy
   assert.equal((await engine.splashView("deadbeefdeadbeef0000")), null, "no package, no card");
 });
 
+test("the playlist declares the whole episode from its first response", async () => {
+  // Stremio marks an episode watched and jumps to the next one when the playlist it was handed
+  // reaches the end -- and a playlist holding only what has been packaged so far ends after a
+  // few seconds. The remainder is padded with the card, so the declared length is the episode's
+  // from the very first response, however little of it has actually been cut.
+  const window = { type: "intro" as const, startMs: 30_000, endMs: 36_000 };
+  const engine = new PackageEngine(settings({ cacheDir: path.join(workDir, "cache-full"), splash: true }));
+  await engine.start();
+  const url = `${base}/long.mkv`;
+  const key = engine.keyFor(url, [window], "stream:full");
+
+  // The handler learns the length before it answers (see rememberDuration).
+  const duration = await engine.rememberDuration(key, url);
+  assert.ok(duration && Math.abs(duration - LONG_SECONDS * 1000) < 2_000, `probed ${duration}ms`);
+  engine.schedule(url, [window], "stream:full", duration);
+
+  const card = await engine.splashView(key, [window]);
+  assert.ok(card, "the card is served");
+  assert.equal(card.expectedMs, LONG_SECONDS * 1000 - 6_000, "the episode's length less the window");
+  assert.ok(card.padding > 0, "with the remainder padded");
+  assert.ok(
+    card.durationMs >= card.expectedMs! - 8_000 && card.durationMs <= card.expectedMs! + 8_000,
+    `the declared length is the episode's (${card.durationMs}ms against ${card.expectedMs}ms)`,
+  );
+
+  // The padding is real, fetchable media rather than a dangling URI: a player that outruns the
+  // packaging walks onto it.
+  const piece = /seg\?f=[^/]+\/((?:pad|splash)\d{5}\.ts)/.exec(card.body)?.[1];
+  assert.ok(piece, "the padding names a piece");
+  const path0 = engine.segmentPath(key, piece!);
+  assert.ok(path0, "which the service will serve");
+  assert.ok((await durationOf(path0!)) > 1_000, "and which is real media");
+});
+
+test("the card is played until a buffer of real video exists", async () => {
+  // Starting playback on a couple of seconds is what made the player treat the episode as
+  // finished; the card covers the gap until enough of the film is ready to watch.
+  const window = { type: "intro" as const, startMs: 30_000, endMs: 36_000 };
+  const engine = new PackageEngine(
+    settings({ cacheDir: path.join(workDir, "cache-buffer"), splash: true, prerollSeconds: 10 }),
+  );
+  await engine.start();
+  const url = `${base}/long.mkv`;
+  const key = engine.keyFor(url, [window], "stream:buffer");
+  engine.schedule(url, [window], "stream:buffer", LONG_SECONDS * 1000);
+
+  const first = await engine.splashView(key, [window]);
+  assert.ok(first, "the card is served straight away");
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+
+  // Wait for more than the buffer's worth of the episode, then check the card has stopped.
+  const deadline = Date.now() + 180_000;
+  for (;;) {
+    const view = await engine.manifest(key);
+    if ((view?.segments ?? 0) >= 3) break;
+    assert.ok(Date.now() < deadline, "the episode's own segments arrive");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  const stopped = await engine.advanceCard(key);
+  const pieces = stopped?.card ?? 0;
+  assert.ok(pieces >= 1, "the card is in the playlist");
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  const later = await engine.advanceCard(key);
+  assert.equal(later?.card, pieces, "and no further pieces once there is a buffer to watch");
+});

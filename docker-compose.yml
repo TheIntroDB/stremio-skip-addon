@@ -24,6 +24,8 @@ services:
       CUTS: ${CUTS:-blocking}
       # Seconds left alone at each end of every window (see .env.example).
       SKIP_MARGIN_SECONDS: ${SKIP_MARGIN_SECONDS:-2}
+      # Seconds of the episode that must be ready before playback starts (see .env.example).
+      PREROLL_SECONDS: ${PREROLL_SECONDS:-10}
       CACHE_MAX_GB: ${CACHE_MAX_GB:-50}
       PRECUT_SOURCES: ${PRECUT_SOURCES:-2}
       CUT_CONCURRENCY: ${CUT_CONCURRENCY:-2}

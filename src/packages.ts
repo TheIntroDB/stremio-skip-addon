@@ -35,7 +35,9 @@ import path from "node:path";
 
 import type { Settings } from "./env.js";
 import {
+  generatePadPiece,
   generateSplashPiece,
+  PAD_RE,
   SPLASH_PIECE_MS,
   SPLASH_RE,
   splashAvailable,
@@ -75,6 +77,10 @@ export interface ManifestView {
   segments: number;
   /** Pieces of the processing card in the playlist, before the episode. */
   card: number;
+  /** Placeholder entries standing in for the not-yet-packaged remainder. */
+  padding: number;
+  /** The length the playlist declares for the episode, when it is known. */
+  expectedMs: number | null;
   durationMs: number;
 }
 
@@ -88,6 +94,19 @@ interface Plan {
 const PACKAGE_ROOT = "hls";
 /** Where the processing card's pieces are recorded, in the order they were drawn. */
 const SPLASH_LIST = "splash.list";
+/** The source's own length, probed once, so the playlist can declare the whole episode. */
+const DURATION = "duration.json";
+/**
+ * What one placeholder entry of the not-yet-packaged remainder stands for.
+ *
+ * A player's reload cadence comes from #EXT-X-TARGETDURATION, so the padding cannot be one
+ * enormous entry -- a two-hour target would mean the player waited two hours before noticing
+ * the episode had arrived. One segment's worth keeps it behaving like any other playlist,
+ * which is what it is: a two-hour episode is ~1200 entries whether or not some are placeholder.
+ */
+const PAD_ENTRY_MS = 6000;
+/** A padded playlist is still a playlist; this bounds a pathological file length. */
+const PAD_MAX_ENTRIES = 2000;
 const PLAN = "plan.json";
 const DONE = "done";
 const PASS = "pass-";
@@ -342,10 +361,22 @@ export class PackageEngine {
 
     const segments = stretches.reduce((total, stretch) => total + stretch.length, 0);
     const complete = segments > 0 && (await this.isDone(key));
+    const realMs = stretches.reduce(
+      (total, stretch) => total + stretch.reduce((sum, entry) => sum + entry.ms, 0),
+      0,
+    );
+    // The placeholder keeps the declared length honest while the packaging is still running.
+    const padding = complete ? [] : await this.paddingEntries(plan, key, realMs);
+    for (const entry of padding) {
+      if (items.length > 0 && !items.includes("disc")) items.push("disc");
+      items.push(entry);
+    }
     return this.playlistView(items, {
       complete,
       segments,
       card: card.length,
+      padding: padding.length,
+      expectedMs: await this.episodeMs(plan),
     });
   }
 
@@ -405,7 +436,17 @@ export class PackageEngine {
     const passes = plan?.ranges.length ?? 1;
     const stretches = plan ? await this.realStretches(plan, key) : [];
     const written = stretches.reduce((total, stretch) => total + stretch.length, 0);
-    if (written > 0) {
+    const writtenMs = stretches.reduce(
+      (total, stretch) => total + stretch.reduce((sum, entry) => sum + entry.ms, 0),
+      0,
+    );
+    // A buffer of the episode, but never less than one segment of it: a preroll of zero means
+    // "start as soon as there is anything to start on", not "never draw a card".
+    if (written > 0 && writtenMs >= this.settings.prerollSeconds * 1000) {
+      // Enough of the episode is ready to start on. The card is already in this playlist, so
+      // the player walks off the end of it into the film, and the rest is packaged behind it.
+      // Starting on *nothing* was the other bug: a playlist whose declared length was a few
+      // seconds made Stremio decide the episode had ended and jump to the next one.
       state.frozen = true;
       return;
     }
@@ -440,7 +481,13 @@ export class PackageEngine {
   /** The playlist itself: headers, the entries, and an end marker when it is finished. */
   private playlistView(
     items: Array<{ uri: string; ms: number } | "disc">,
-    facts: { complete: boolean; segments: number; card: number },
+    facts: {
+      complete: boolean;
+      segments: number;
+      card: number;
+      padding: number;
+      expectedMs: number | null;
+    },
   ): ManifestView {
     const lines: string[] = [];
     let durationMs = 0;
@@ -471,8 +518,65 @@ export class PackageEngine {
       complete: facts.complete,
       segments: facts.segments,
       card: facts.card,
+      padding: facts.padding,
+      expectedMs: facts.expectedMs,
       durationMs: Math.round(durationMs),
     };
+  }
+
+  /**
+   * The length the playlist should declare: the source minus the windows being cut.
+   *
+   * Null when the source's length was never probed, in which case nothing can be padded and
+   * the playlist grows as it did before.
+   */
+  private async episodeMs(plan: Plan): Promise<number | null> {
+    const duration = await this.readDuration(plan.key);
+    if (duration === null) return null;
+    const ranges = keptRanges(plan.windows ?? [], duration);
+    return ranges.reduce(
+      (total, range) => total + (Math.min(range.endMs, duration) - range.startMs),
+      0,
+    );
+  }
+
+  /**
+   * Placeholder entries standing in for the part of the episode that has not been packaged.
+   *
+   * They point at pieces of the card (or a plain black piece when no card can be drawn), so a
+   * player that reaches them sees "Processing…" rather than a stall, and the declared length is
+   * the episode's from the first response.
+   */
+  private async paddingEntries(
+    plan: Plan,
+    key: string,
+    realMs: number,
+  ): Promise<Array<{ uri: string; ms: number }>> {
+    const expected = await this.episodeMs(plan);
+    if (expected === null) return [];
+    const remaining = expected - realMs;
+    if (remaining <= PAD_ENTRY_MS / 2) return [];
+    const media = await this.paddingMedia(key);
+    if (media.length === 0) return [];
+    const count = Math.min(PAD_MAX_ENTRIES, Math.ceil(remaining / PAD_ENTRY_MS));
+    const entries: Array<{ uri: string; ms: number }> = [];
+    for (let i = 0; i < count; i += 1) {
+      const ms = i === count - 1 ? remaining - PAD_ENTRY_MS * (count - 1) : PAD_ENTRY_MS;
+      if (ms <= 0) continue;
+      entries.push({ uri: `seg?f=${encodeURIComponent(key)}/${media[i % media.length]!}`, ms });
+    }
+    return entries;
+  }
+
+  /**
+   * What the padding points at: the card's own pieces when it has drawn any, so a player that
+   * outruns the packaging sees the card, otherwise one plain black piece.
+   */
+  private async paddingMedia(key: string): Promise<string[]> {
+    const card = await this.readSplashList(key);
+    if (card.length > 0) return card.slice(-8).map((entry) => entry.name);
+    const fallback = await generatePadPiece(this.settings, this.dirFor(key));
+    return fallback ? [fallback.name] : [];
   }
 
   /** The pieces of the card drawn for this key, oldest first. */
@@ -515,9 +619,51 @@ export class PackageEngine {
     }
   }
 
+  /**
+   * Learn and remember the source's own length.
+   *
+   * The playlist has to declare the whole episode from its first response, or a player that
+   * reaches the end of what has been packaged decides the episode is over -- Stremio marks it
+   * watched and jumps to the next one. One `ffprobe` per key, paid by the playback that starts
+   * the packaging rather than by every poll.
+   */
+  async rememberDuration(key: string, target: string): Promise<number | null> {
+    const known = await this.readDuration(key);
+    if (known !== null) return known;
+    if (!KEY_RE.test(key)) return null;
+    const probe = await run(
+      this.settings.ffprobePath,
+      ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", target],
+      30_000,
+    );
+    const seconds = Number(probe.stdout.trim());
+    if (probe.code !== 0 || !Number.isFinite(seconds) || seconds <= 0) return null;
+    const ms = Math.round(seconds * 1000);
+    try {
+      await mkdir(this.dirFor(key), { recursive: true });
+      await writeFile(path.join(this.dirFor(key), DURATION), JSON.stringify({ ms }));
+    } catch {
+      // Not fatal: without it the playlist cannot pad, and the caller still gets to play.
+    }
+    return ms;
+  }
+
+  private async readDuration(key: string): Promise<number | null> {
+    try {
+      const parsed = JSON.parse(await readFile(path.join(this.dirFor(key), DURATION), "utf8")) as {
+        ms?: number;
+      };
+      return typeof parsed.ms === "number" && parsed.ms > 0 ? parsed.ms : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** A path inside this key's package, or null when the name is not one of ours. */
   segmentPath(key: string, name: string): string | null {
-    if (!KEY_RE.test(key) || !(SEGMENT_RE.test(name) || SPLASH_RE.test(name))) return null;
+    if (!KEY_RE.test(key) || !(SEGMENT_RE.test(name) || SPLASH_RE.test(name) || PAD_RE.test(name))) {
+      return null;
+    }
     this.used.set(key, Date.now());
     return path.join(this.dirFor(key), name);
   }

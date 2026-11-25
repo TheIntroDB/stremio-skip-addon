@@ -17,6 +17,8 @@ services:
       TIDB_API_KEY: ${TIDB_API_KEY:?set TIDB_API_KEY}
       CUTS: ${CUTS:-blocking}
       SKIP_MARGIN_SECONDS: ${SKIP_MARGIN_SECONDS:-2}
+      # Seconds of the episode that must be ready before playback starts (see .env.example).
+      PREROLL_SECONDS: ${PREROLL_SECONDS:-10}
       CACHE_MAX_GB: ${CACHE_MAX_GB:-50}
       PRECUT_SOURCES: ${PRECUT_SOURCES:-2}
       TZ: ${TZ:-UTC}

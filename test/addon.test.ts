@@ -272,6 +272,7 @@ function testSettings(overrides: Partial<Settings> = {}): Settings {
     cuts: "off",
     skipMarginSeconds: 0,
     splash: false,
+    prerollSeconds: 10,
     cutWaitSeconds: 0,
     cutConcurrency: 1,
     precutSources: 2,

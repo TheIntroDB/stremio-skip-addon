@@ -41,6 +41,7 @@ const settings: Settings = {
   cuts: "blocking",
   skipMarginSeconds: 3,
   splash: true,
+  prerollSeconds: 10,
   cutWaitSeconds: 120,
   cutConcurrency: 1,
   precutSources: 0,

@@ -29,6 +29,8 @@ export const SPLASH_SECONDS = 2;
 export const SPLASH_PIECE_MS = SPLASH_SECONDS * 1000;
 /** `splash00000.ts`, kept beside the package's own segments. */
 export const SPLASH_RE = /^splash\d{5}\.ts$/;
+/** `pad00000.ts`: a plain piece the padding falls back to when no card can be drawn. */
+export const PAD_RE = /^pad\d{5}\.ts$/;
 
 const WIDTH = 1280;
 const HEIGHT = 720;
@@ -209,6 +211,46 @@ export async function generateSplashPiece(
     return { ok: true, name, bytes: info.size };
   } catch {
     return { ok: false, error: "ffmpeg wrote no piece" };
+  }
+}
+
+/**
+ * A plain black two seconds with silence, for padding a playlist when no card can be drawn.
+ *
+ * The padding exists to make the playlist's declared length the episode's, so it must work
+ * wherever the card does not: no font, no badge, nothing to read.
+ */
+export async function generatePadPiece(
+  settings: Settings,
+  dir: string,
+): Promise<{ name: string } | null> {
+  const name = "pad00000.ts";
+  const out = path.join(dir, name);
+  try {
+    if ((await stat(out)).size > 0) return { name };
+  } catch {
+    // Not made yet.
+  }
+  const result = await run(
+    settings.ffmpegPath,
+    [
+      "-nostdin", "-hide_banner", "-v", "error", "-y",
+      "-f", "lavfi", "-i", `color=c=${BACKDROP}:s=${WIDTH}x${HEIGHT}:r=${FPS}`,
+      "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
+      "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+      "-c:a", "aac", "-b:a", "48k",
+      "-muxdelay", "0", "-muxpreload", "0",
+      "-t", String(SPLASH_SECONDS),
+      "-f", "mpegts",
+      out,
+    ],
+    60_000,
+  );
+  if (result.code !== 0) return null;
+  try {
+    return (await stat(out)).size > 0 ? { name } : null;
+  } catch {
+    return null;
   }
 }
 

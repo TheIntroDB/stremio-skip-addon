@@ -36,10 +36,16 @@ export interface Settings extends Env {
   skipMarginSeconds: number;
   /**
    * Whether a cold playback is shown the processing card (see `splash.ts`) instead of
-   * being held until the first segment of the episode is written. An install URL may turn
-   * it off for itself.
+   * being held until the first segment of the episode is written.
    */
   splash: boolean;
+  /**
+   * How much of the episode must be ready before playback starts on it.
+   *
+   * Starting on a few seconds is what made Stremio decide an episode had ended, mark it
+   * watched and jump to the next one; the card is played until this much real video exists.
+   */
+  prerollSeconds: number;
   cutWaitSeconds: number;
   cutConcurrency: number;
   /**
@@ -73,6 +79,7 @@ export function loadSettings(): Settings {
     cacheDir: process.env.CACHE_DIR ?? "./cache",
     cacheMaxBytes: Math.max(0, numberFrom("CACHE_MAX_GB", 50) * 1024 ** 3),
     cuts: cutMode(),
+    prerollSeconds: Math.min(60, Math.max(0, Math.round(numberFrom("PREROLL_SECONDS", 10)))),
     splash: !/^(off|false|0|no)$/i.test((process.env.SPLASH ?? "").trim()),
     skipMarginSeconds: Math.min(
       MAX_MARGIN_SECONDS,
@@ -94,6 +101,7 @@ export function describeSettings(settings: Settings): Record<string, unknown> {
     cuts: settings.cuts,
     skipMarginSeconds: settings.skipMarginSeconds,
     splash: settings.splash,
+    prerollSeconds: settings.prerollSeconds,
     cacheDir: settings.cuts === "off" ? null : settings.cacheDir,
     cacheMaxGb: settings.cuts === "off" ? null : Math.round(settings.cacheMaxBytes / 1024 ** 3),
     cutConcurrency: settings.cuts === "off" ? null : settings.cutConcurrency,
