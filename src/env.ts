@@ -94,6 +94,15 @@ export interface Settings extends Env {
    */
   subtitlesIdleSeconds: number;
   /**
+   * Which audio track of a source to recognise, by language code.
+   *
+   * The recogniser is trained on English, so a dub fed to it as English is noise -- a file with a
+   * second audio track produced an empty track. An install may ask for another language; when it
+   * is not in the file, English is used, and when there is no English either the file's own
+   * default track is. This is the deployment's default for installs that ask for nothing.
+   */
+  subtitlesAudioLanguage: string;
+  /**
    * How much of the episode must be ready before playback starts on it.
    *
    * Starting on a few seconds is what made Stremio decide an episode had ended, mark it
@@ -141,6 +150,7 @@ export function loadSettings(): Settings {
       3600,
       Math.max(0, Math.round(numberFrom("SUBTITLES_IDLE_SECONDS", 120))),
     ),
+    subtitlesAudioLanguage: (process.env.SUBTITLES_AUDIO_LANGUAGE ?? "en").trim().toLowerCase(),
     // Off only when it is explicitly turned off: the sources people actually use are debrid.
     proxy: !/^(off|false|0|no)$/i.test((process.env.PROXY ?? "").trim()),
     prerollSeconds: Math.min(60, Math.max(0, Math.round(numberFrom("PREROLL_SECONDS", 10)))),
@@ -168,6 +178,7 @@ export function describeSettings(settings: Settings): Record<string, unknown> {
     subtitlesLanguage: settings.subtitlesLanguage,
     subtitlesTtlHours: settings.subtitlesTtlHours,
     subtitlesIdleSeconds: settings.subtitlesIdleSeconds,
+    subtitlesAudioLanguage: settings.subtitlesAudioLanguage,
     splash: settings.splash,
     prerollSeconds: settings.prerollSeconds,
     cacheDir: settings.cacheDir,

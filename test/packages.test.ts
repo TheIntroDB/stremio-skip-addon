@@ -47,6 +47,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     subtitlesChunkSeconds: 300,
   subtitlesTtlHours: 24,
   subtitlesIdleSeconds: 120,
+  subtitlesAudioLanguage: "en",
     skipMarginSeconds: 0,
     splash: false,
     prerollSeconds: 10,

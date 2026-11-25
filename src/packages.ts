@@ -662,7 +662,9 @@ export class PackageEngine {
       this.settings.ffprobePath,
       [
         "-v", "error",
-        "-show_entries", "format=duration,bit_rate:stream=codec_type,codec_name,profile,level,width,height",
+        "-show_entries",
+        "format=duration,bit_rate:stream=index,codec_type,codec_name,profile,level,width,height" +
+          ":stream_tags=language:stream_disposition=default",
         "-of", "json",
         target,
       ],

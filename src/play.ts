@@ -19,7 +19,7 @@
 
 import { getHttpCache } from "./cache.js";
 import { cardSeconds } from "./splash.js";
-import { masterPlaylist } from "./streaminfo.js";
+import { chooseAudio, masterPlaylist } from "./streaminfo.js";
 import type { ManifestView, PackageEngine } from "./packages.js";
 import type { SubtitleEngine } from "./subtitles.js";
 import type { Settings } from "./env.js";
@@ -298,8 +298,12 @@ async function packageOrProxy(
   lookupReason: string,
 ): Promise<Response> {
   const key = context.packages.keyFor(target, windows, streamKey);
+  // The audio track is part of the track's identity (see `trackKeyOf`), so it is resolved before
+  // anything answers. On a key seen for the first time the probe below is what lists the tracks,
+  // so it is resolved again after that.
+  let audio = await audioFor(context, key);
   const ready = await context.packages.manifest(key);
-  if (ready) return packageResponse(context, ready, key, lookupReason);
+  if (ready) return packageResponse(context, ready, key, lookupReason, audio);
 
   // Generated subtitles are wanted for this install, and planning them needs the source's own
   // length (see below), so ask for it either way.
@@ -311,12 +315,15 @@ async function packageOrProxy(
   // Only mkvs get here, and a package always waits for its first segment, so the length is
   // always worth learning: the playlist declares it from its first response.
   const durationMs = await context.packages.rememberDuration(key, target);
+  // The probe that learnt the length also listed the audio tracks, which is only available now on
+  // a key seen for the first time.
+  if (!audio) audio = await audioFor(context, key);
   context.packages.schedule(target, windows, streamKey, durationMs);
-  if (context.episodeId) context.subtitles.note(context.episodeId, key);
+  if (context.episodeId) context.subtitles.note(context.episodeId, trackKeyOf(key, audio));
   // The card is the pre-roll the deployment configured, and the film starts after it, so that is
   // the offset a generated track is timed from. (With the card off, the film starts at zero.)
   context.subtitles.ensure(
-    key,
+    trackKeyOf(key, audio),
     target,
     {
       durationMs,
@@ -324,20 +331,43 @@ async function packageOrProxy(
       cardMs: context.settings.splash ? cardSeconds(context.settings) * 1000 : 0,
     },
     wantsSubtitles,
+    audio ?? undefined,
   );
   // Nothing of the episode is ready yet, so show the processing card rather than holding
   // the request: a player handed a playlist starts at once and sees what is happening,
   // where a player handed nothing shows a spinner and then gives up on the stream. The
   // card's pieces form the start of the same playlist the episode is appended to.
   const card = await context.packages.splashView(key, windows, wantsSubtitles);
-  if (card) return packageResponse(context, card, key, lookupReason);
+  if (card) return packageResponse(context, card, key, lookupReason, audio);
 
   const waited = await context.packages.waitForFirstSegment(
     key,
     context.settings.cutWaitSeconds * 1000,
   );
-  if (waited) return packageResponse(context, waited, key, lookupReason);
+  if (waited) return packageResponse(context, waited, key, lookupReason, audio);
   return passThrough(context, target, "package_slow", lookupReason);
+}
+
+/** The audio track an install asked for, if the probe has listed them. */
+async function audioFor(
+  context: PlayContext,
+  key: string,
+): Promise<{ index: number; language: string } | null> {
+  const info = await context.packages.sourceInfo(key);
+  const preferred = context.config.audioLang || context.settings.subtitlesAudioLanguage;
+  const chosen = chooseAudio(info?.audio, preferred, "en");
+  return chosen ? { index: chosen.index, language: chosen.language } : null;
+}
+
+/**
+ * A track's identity, which is not the package's.
+ *
+ * The same file can be recognised from a different audio track, and a track made from a dub is
+ * not the track for an install that asked for English -- so the chosen stream is part of the key,
+ * and a cached track is never handed to an install that asked for another one.
+ */
+function trackKeyOf(key: string, audio: { index: number } | null): string {
+  return audio ? `${key}.a${audio.index}` : key;
 }
 
 /**
@@ -353,15 +383,18 @@ async function packageResponse(
   view: ManifestView,
   key: string,
   lookupReason: string,
+  audio: { index: number } | null = null,
 ): Promise<Response> {
   const url = new URL(context.request.url);
   const enabled = context.subtitles?.enabled(context.config) === true;
   if (enabled) context.subtitles!.served.wanted += 1;
   // Only when a track is actually being made: a master that points at a rendition with nothing
-  // behind it is a track a player will drop, or worse, a master it will refuse.
+  // behind it is a track a player will drop, or worse, a master it will refuse. The track is
+  // keyed by the audio stream it is made from, not by the package.
+  const track = trackKeyOf(key, audio);
   const wants =
     enabled &&
-    context.subtitles!.tracking(key) &&
+    context.subtitles!.tracking(track) &&
     url.searchParams.get("m") !== "1";
   if (!wants) return mediaResponse(view, key, lookupReason);
   context.subtitles!.served.masters += 1;
@@ -370,7 +403,7 @@ async function packageResponse(
   media.searchParams.set("m", "1");
   const master = masterPlaylist({
     mediaUri: `${media.pathname}${media.search}`,
-    subtitleUri: `subs.m3u8?f=${encodeURIComponent(key)}`,
+    subtitleUri: `subs.m3u8?f=${encodeURIComponent(track)}`,
     language: context.settings.subtitlesLanguage || "en",
     name: "TheIntroDB",
     info: await context.packages.sourceInfo(key),

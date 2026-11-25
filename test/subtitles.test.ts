@@ -21,7 +21,7 @@ import { encodeConfig } from "../src/config.js";
 import { run } from "../src/ffmpeg.js";
 import { handleRequest } from "../src/index.js";
 import { PackageEngine } from "../src/packages.js";
-import { masterPlaylist } from "../src/streaminfo.js";
+import { chooseAudio, masterPlaylist, parseProbe } from "../src/streaminfo.js";
 import { handleSubtitleChunk, handleSubtitlePlaylist, SubtitleEngine } from "../src/subtitles.js";
 import type { Transcriber } from "../src/transcribe.js";
 import type { Settings } from "../src/env.js";
@@ -168,6 +168,132 @@ test("a track nobody is watching stops, and keeps what it made", async () => {
   );
 });
 
+/**
+ * Peak amplitude of a 16-bit PCM wav, which is how two audio tracks are told apart here: one is
+ * silence and the other is a tone, so the peak says which stream ffmpeg actually read.
+ */
+async function peakAmplitude(file: string): Promise<number> {
+  const buf = await readFile(file);
+  let offset = 12;
+  while (offset + 8 <= buf.length) {
+    const id = buf.toString("ascii", offset, offset + 4);
+    const size = buf.readUInt32LE(offset + 4);
+    if (id === "data") {
+      let peak = 0;
+      const end = Math.min(buf.length, offset + 8 + size);
+      for (let i = offset + 8; i + 1 < end; i += 2) {
+        peak = Math.max(peak, Math.abs(buf.readInt16LE(i)));
+      }
+      return peak;
+    }
+    offset += 8 + size + (size % 2);
+  }
+  return 0;
+}
+
+/** A file with two audio tracks: silence tagged Spanish, a tone tagged English. */
+async function twoAudioFixture(): Promise<{ file: string; cacheDir: string; settings: Settings }> {
+  const dir = await mkdtemp(path.join(tmpdir(), "tidb-two-audio-"));
+  const file = path.join(dir, "two-audio.mkv");
+  const made = await run("ffmpeg", [
+    "-nostdin", "-hide_banner", "-v", "error", "-y",
+    "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=5:duration=24",
+    "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono",
+    "-f", "lavfi", "-i", "sine=frequency=440:duration=24",
+    "-t", "24", "-map", "0:v", "-map", "1:a", "-map", "2:a",
+    "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
+    "-metadata:s:a:0", "language=spa", "-metadata:s:a:1", "language=eng",
+    file,
+  ], 120_000);
+  assert.equal(made.code, 0, `could not make the fixture: ${made.stderr}`);
+  return {
+    file,
+    cacheDir: dir,
+    settings: {
+      cacheDir: dir,
+      ffmpegPath: "ffmpeg",
+      ffprobePath: "ffprobe",
+      subtitles: true,
+      subtitlesLanguage: "en",
+      subtitlesTtlHours: 24,
+      subtitlesIdleSeconds: 0,
+      subtitlesChunkSeconds: 30,
+      splash: false,
+    } as unknown as Settings,
+  };
+}
+
+test("the audio track is chosen by language, and English is the fallback", async () => {
+  const { file } = await twoAudioFixture();
+  const probe = await run("ffprobe", [
+    "-v", "error",
+    "-show_entries",
+    "format=duration,bit_rate:stream=index,codec_type,codec_name,profile,level,width,height" +
+      ":stream_tags=language:stream_disposition=default",
+    "-of", "json",
+    file,
+  ], 30_000);
+  const info = parseProbe(probe.stdout)!;
+  assert.deepEqual(
+    info.audio?.map((track) => track.language),
+    ["es", "en"],
+    "the container's tags normalised to two letters",
+  );
+
+  assert.equal(chooseAudio(info.audio, "en")!.language, "en", "what the model is trained on");
+  assert.equal(chooseAudio(info.audio, "spa")!.language, "es", "a three-letter request still matches");
+  assert.equal(chooseAudio(info.audio, "de")!.language, "en", "missing: English instead");
+  // No English in the file at all: the file's own default track, then its first.
+  const german = [{ index: 7, language: "de", isDefault: true }];
+  assert.equal(chooseAudio(german, "en")!.index, 7, "no English: the file's default track");
+  assert.equal(chooseAudio([{ index: 9, language: "fr", isDefault: false }], "en")!.index, 9,
+    "no English and no default: its first track");
+  assert.equal(chooseAudio(undefined, "en"), null, "an unreadable probe leaves it to ffmpeg");
+});
+
+test("the recogniser is fed the chosen stream, not ffmpeg's own preference", async () => {
+  const { file, settings } = await twoAudioFixture();
+  const info = parseProbe(
+    (await run("ffprobe", [
+      "-v", "error",
+      "-show_entries",
+      "format=duration,bit_rate:stream=index,codec_type,codec_name,profile,level,width,height" +
+        ":stream_tags=language:stream_disposition=default",
+      "-of", "json",
+      file,
+    ], 30_000)).stdout,
+  )!;
+  const englishTrack = chooseAudio(info.audio, "en")!;
+  const spanishTrack = chooseAudio(info.audio, "spa")!;
+  assert.notEqual(englishTrack.index, spanishTrack.index, "two different streams to tell apart");
+
+  const peaks = new Map<string, number>();
+  const recording = (label: string) =>
+    ({
+      lastError: null,
+      available: async () => true,
+      transcribe: async (wav: string) => {
+        peaks.set(label, await peakAmplitude(wav));
+        return { text: "", words: [], realtimeFactor: 1, engine: "stub", language: "en" };
+      },
+      refine: async (_wav: string, words: unknown) => words,
+    }) as unknown as Transcriber;
+
+  const plan = { durationMs: 24_000, windows: [], cardMs: 0 };
+  const english = new SubtitleEngine(settings, recording("en"));
+  english.ensure("k-en", file, plan, true, englishTrack);
+  const spanish = new SubtitleEngine(settings, recording("es"));
+  spanish.ensure("k-es", file, plan, true, spanishTrack);
+
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline && (peaks.size < 2 || english.working() || spanish.working())) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+
+  assert.ok((peaks.get("en") ?? 0) > 1000, `the English track was read (peak ${peaks.get("en")})`);
+  assert.equal(peaks.get("es"), 0, "and the Spanish one is the silence it actually is");
+});
+
 test("a segment holds cues relative to itself, which is what HLS requires", async () => {
   const { audio, settings } = await fixture();
   const engine = new SubtitleEngine(settings, stubTranscriber());
@@ -263,6 +389,31 @@ test("a player that asks too early gets a valid playlist, not a 404", async () =
   assert.ok(!body.includes("#EXT-X-ENDLIST"), "and has not finished");
   assert.ok(body.includes("#EXT-X-TARGETDURATION"), "with a reload cadence");
   assert.equal(engine.served.playlists, 1, "and it is counted, so /health can see it");
+});
+
+test("a rendition with nothing in it yet still carries a segment", async () => {
+  // A player fixes its subtitle stream list when it loads the rendition, and an *empty* EVENT
+  // playlist makes ffmpeg create no subtitle stream at all -- measured: video and audio only. So
+  // the answer before the first chunk exists is one zero-length placeholder, which moves no
+  // position on the timeline.
+  const { settings } = await fixture();
+  const engine = new SubtitleEngine(settings, stubTranscriber());
+  const empty = await handleSubtitlePlaylist(
+    { settings, subtitles: engine, request: new Request("http://localhost/cfg/subs.m3u8?f=nothing") },
+    0,
+  );
+  const body = await empty.text();
+  assert.equal(empty.status, 200, "never a 404");
+  assert.match(body, /#EXTINF:0\.000,/, "and one segment, of no length");
+  assert.match(body, /subs\/placeholder\.vtt\?f=nothing/, "pointing at the placeholder");
+
+  const placeholder = await handleSubtitleChunk(
+    { settings, subtitles: engine, request: new Request("http://localhost/cfg/subs/placeholder.vtt?f=nothing") },
+    "nothing",
+    "placeholder",
+  );
+  assert.equal(placeholder.status, 200, "which is served");
+  assert.equal((await placeholder.text()).trim(), "WEBVTT", "as a subtitle segment with no cues");
 });
 
 test("the rendition and its chunks are reachable through the router", async () => {

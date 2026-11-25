@@ -67,6 +67,11 @@ export function decodeConfig(encoded: string): AddonConfig | null {
 
   if (input.subtitles === true) config.subtitles = true;
 
+  // A language code, not free text: two or three letters, so a hand-edited link cannot inject
+  // anything into the probe or the ffmpeg call it decides.
+  const audioLang = typeof input.audioLang === "string" ? input.audioLang.trim().toLowerCase() : "";
+  if (/^[a-z]{2,3}$/.test(audioLang)) config.audioLang = audioLang;
+
   const name = typeof input.name === "string" ? input.name.trim() : "";
   if (name) config.name = sanitizeName(name);
 
@@ -83,6 +88,7 @@ export function encodeConfig(config: AddonConfig): string {
   if (config.cuts) packed.cuts = config.cuts;
   if (typeof config.margin === "number") packed.margin = config.margin;
   if (config.subtitles) packed.subtitles = true;
+  if (config.audioLang) packed.audioLang = config.audioLang;
   if (config.name) packed.name = sanitizeName(config.name);
   return toBase64Url(JSON.stringify(packed));
 }

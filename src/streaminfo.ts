@@ -16,6 +16,16 @@
  * out rather than guessed.
  */
 
+/** One audio track of the source, as the probe sees it. */
+export interface AudioStream {
+  /** The stream's index in the container: what `-map 0:<index>` needs. */
+  index: number;
+  /** The container's language tag, normalised to ISO 639-1 where it can be ("eng" -> "en"). */
+  language: string;
+  /** Whether the file marks this track as the default one. */
+  isDefault: boolean;
+}
+
 /** The parts of a probe a master playlist needs. */
 export interface StreamInfo {
   /** The film's length, which the playlist also declares as its own. */
@@ -26,15 +36,44 @@ export interface StreamInfo {
   height: number;
   /** An `RFC 6381` codec string, or "" when it cannot be spelled correctly. */
   codecs: string;
+  /** Every audio track, in container order. Absent on a package probed before this existed. */
+  audio?: AudioStream[];
 }
 
 interface ProbeStream {
+  index?: number;
   codec_type?: string;
   codec_name?: string;
   profile?: string;
   level?: number;
   width?: number;
   height?: number;
+  tags?: { language?: string };
+  disposition?: { default?: number };
+}
+
+/**
+ * ISO 639-2 (what a container usually says) to ISO 639-1 (what this addon's settings say).
+ *
+ * Matroska and MP4 both normally store the three-letter code, and the ones that have a
+ * two-letter form use it inconsistently -- "fre" and "fra" are both French -- so both are read
+ * as the same language. Anything not listed is compared as-is, lowercased.
+ */
+const ISO_639: Record<string, string> = {
+  eng: "en", spa: "es", fra: "fr", fre: "fr", deu: "de", ger: "de", por: "pt", ita: "it",
+  jpn: "ja", kor: "ko", zho: "zh", chi: "zh", rus: "ru", hin: "hi", ara: "ar", pol: "pl",
+  nld: "nl", dut: "nl", tur: "tr", swe: "sv", dan: "da", nor: "no", nob: "no", fin: "fi",
+  ces: "cs", cze: "cs", ell: "el", gre: "el", heb: "he", hun: "hu", ind: "id", ron: "ro",
+  rum: "ro", slk: "sk", slo: "sk", ukr: "uk", vie: "vi", tha: "th", cat: "ca",
+  mul: "", und: "", mis: "",
+};
+
+/** A container language tag as the two-letter code the settings use. Empty when unknown. */
+export function normalizeLanguage(tag: string | undefined): string {
+  const value = (tag ?? "").trim().toLowerCase();
+  if (value === "") return "";
+  if (value.length === 2) return value;
+  return ISO_639[value] ?? value;
 }
 
 /** The `avc1` profile byte for the profiles ffprobe names. */
@@ -95,7 +134,40 @@ export function parseProbe(text: string): StreamInfo | null {
     width: Number(video?.width) || 0,
     height: Number(video?.height) || 0,
     codecs: codecsFor(video, audio),
+    audio: streams
+      .filter((stream) => stream.codec_type === "audio" && Number.isInteger(stream.index))
+      .map((stream) => ({
+        index: Number(stream.index),
+        language: normalizeLanguage(stream.tags?.language),
+        isDefault: Number(stream.disposition?.default) === 1,
+      })),
   };
+}
+
+/**
+ * Which audio track to recognise, from an install's preference.
+ *
+ * The model is trained on English, so a dub recognised as English is noise -- every file with a
+ * second audio track was producing an empty track. The order is the one the preference implies:
+ * the language asked for, then English, then whatever the file marks as its default (and failing
+ * a default flag, its first track). `null` means "let ffmpeg decide", which is what happens when
+ * the probe could not read the audio tracks at all.
+ */
+export function chooseAudio(
+  audio: AudioStream[] | undefined,
+  preferred: string,
+  fallback = "en",
+): AudioStream | null {
+  if (!Array.isArray(audio) || audio.length === 0) return null;
+  const want = normalizeLanguage(preferred);
+  const first = normalizeLanguage(fallback);
+  return (
+    (want ? audio.find((track) => track.language === want) : undefined) ??
+    (first ? audio.find((track) => track.language === first) : undefined) ??
+    audio.find((track) => track.isDefault) ??
+    audio[0] ??
+    null
+  );
 }
 
 /** `#EXT-X-STREAM-INF` attributes for a variant, with only what is known. */

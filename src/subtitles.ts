@@ -71,6 +71,8 @@ interface Job extends TrackStatus {
   lastAt: number;
   /** When this job was last asked for, by either end of the track. */
   lastSeen: number;
+  /** The container stream index to recognise, and what language it is, for /health. */
+  audio?: { index: number; language: string };
 }
 
 export class SubtitleEngine {
@@ -110,7 +112,13 @@ export class SubtitleEngine {
    *
    * Idempotent: the playback that starts the packaging calls this, and so does every later play.
    */
-  ensure(key: string, target: string, plan: TrackPlan, wanted: boolean): TrackStatus | null {
+  ensure(
+    key: string,
+    target: string,
+    plan: TrackPlan,
+    wanted: boolean,
+    audio?: { index: number; language: string },
+  ): TrackStatus | null {
     if (!this.settings.subtitles) return null;
     const existing = this.jobs.get(key);
     if (existing) {
@@ -136,6 +144,7 @@ export class SubtitleEngine {
       error: null,
       lastAt: Date.now(),
       lastSeen: Date.now(),
+      ...(audio ? { audio } : {}),
     };
     job.chunks = job.stretches.reduce((total, stretch) => total + stretch.chunks.length, 0);
     if (job.chunks === 0) return null;
@@ -204,6 +213,9 @@ export class SubtitleEngine {
           cues: job.cues,
           error: job.error,
           idle: job.idle === true,
+          // Which audio track this track is being made from: the one thing that explains an
+          // empty result when everything else looks right.
+          audio: job.audio?.language || null,
         })),
     };
   }
@@ -354,6 +366,10 @@ export class SubtitleEngine {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
         const seconds = (chunk.sourceEndMs - chunk.sourceStartMs) / 1000;
+        // `-map` before the input selection: without it ffmpeg takes its own preferred audio
+        // stream, which on a release with a dub is the loudest one and not the one the model can
+        // read. The chosen stream is the same for every chunk of a job, so the track is coherent.
+        const mapping = job.audio ? ["-map", `0:${job.audio.index}`] : [];
         const extracted = await run(
           this.settings.ffmpegPath,
           [
@@ -363,6 +379,7 @@ export class SubtitleEngine {
             "-ss", (chunk.sourceStartMs / 1000).toFixed(3),
             "-t", seconds.toFixed(3),
             "-i", job.target,
+            ...mapping,
             "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
             wav,
           ],
@@ -504,12 +521,27 @@ export async function handleSubtitlePlaylist(context: TrackRequest, cardMs: numb
   const url = new URL(context.request.url);
   const key = url.searchParams.get("f") ?? "";
   const playlist = context.subtitles ? await context.subtitles.playlist(key, cardMs) : null;
-  // Never a 404, even before the first chunk exists: a player reads the rendition as soon as it
-  // loads the master, and a missing playlist at that moment means a track it drops for good.
-  // An empty EVENT playlist is legal and says "nothing yet, keep asking".
+  // Never a 404, and never *empty* either. A player reads this rendition once as it loads and
+  // fixes its stream list from what it finds: an EVENT playlist with no segments makes ffmpeg
+  // create no subtitle stream at all, and then no amount of chunks arriving later puts one in the
+  // menu. Measured against ffmpeg 8: an empty rendition yields video and audio only; the same
+  // playlist with one 0.000s segment yields `Subtitle: webvtt` and plays normally.
+  //
+  // So an answer with nothing to say is a single zero-length placeholder: it costs the timeline
+  // nothing (a 0-second segment moves no position), and it makes the track exist. The real one
+  // replaces it on the next poll, which is what EVENT means.
   const body =
     playlist?.body ??
-    "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:10\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-MEDIA-SEQUENCE:0\n";
+    [
+      "#EXTM3U",
+      "#EXT-X-VERSION:7",
+      "#EXT-X-TARGETDURATION:10",
+      "#EXT-X-PLAYLIST-TYPE:EVENT",
+      "#EXT-X-MEDIA-SEQUENCE:0",
+      "#EXTINF:0.000,",
+      `subs/placeholder.vtt?f=${encodeURIComponent(key)}`,
+      "",
+    ].join("\n");
   if (key) context.subtitles?.markPlaylist(key);
   return new Response(body, {
     status: 200,
@@ -533,6 +565,18 @@ export async function handleSubtitleChunk(
   index: string,
 ): Promise<Response> {
   if (context.subtitles) context.subtitles.markChunk(key);
+  // The placeholder a rendition is born with (see `handleSubtitlePlaylist`): a valid WebVTT with
+  // no cues, so the first poll can carry a segment without inventing a cue.
+  if (index === "placeholder") {
+    return new Response("WEBVTT\n\n", {
+      status: 200,
+      headers: {
+        "content-type": "text/vtt; charset=utf-8",
+        "cache-control": "no-cache",
+        ...CORS_HEADERS,
+      },
+    });
+  }
   const file = context.subtitles ? await context.subtitles.chunkFile(key, index) : null;
   if (!file) return new Response("", { status: 404 });
   let body: string;

@@ -95,6 +95,13 @@ export interface AddonConfig {
   name?: string;
   /** This install's own request to generate subtitles for the cut video. */
   subtitles?: boolean;
+  /**
+   * Which audio track to recognise, by language code (`en`, `es`, ...).
+   *
+   * Absent means the deployment's default. Whatever is asked for, English is preferred next and
+   * the file's own default track is the last resort, because the recogniser is trained on English.
+   */
+  audioLang?: string;
 }
 
 /** Environment variables this service reads. See `.env.example`. */
