@@ -14,6 +14,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # test/cut.test.ts generates a video and cuts it for real, so the runner
+      # needs ffmpeg. The published image gets it from Debian (see Dockerfile).
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
