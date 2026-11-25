@@ -328,7 +328,10 @@ running this, and each line is re-timed to where it lands in what is playing.
 
 It is an **install** option ("Generate subtitles for the cut video"), off by default, because the
 first play of a title is what pays for it. Nothing is sent anywhere: the speech models run here.
-What is used:
+What that costs, measured on this project's own machine (`scripts/measure-transcribe.ts`):
+recognition runs about **5–12× faster than realtime** on CPU, so a 45-minute episode is **4–9
+minutes of CPU, once** — not while the episode plays, but well before the next time it is opened,
+and then the track is cached for a day. What is used:
 
 - **Voz** recognises the speech and gives each word a start and an end; **Align** moves those
   boundaries onto the waveform (word timings are the difference between a caption that lights up on
