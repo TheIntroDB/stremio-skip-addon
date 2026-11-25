@@ -47,6 +47,8 @@ interface KeptRange {
 
 const MIN_KEPT_MS = 500;
 const CACHE_META = ".tidb-cut-cache.json";
+/** Where a cut is assembled before it is renamed into place. */
+const PART_PREFIX = ".parts-";
 
 export class CutEngine {
   private readonly states = new Map<string, CutState>();
@@ -68,6 +70,17 @@ export class CutEngine {
     } catch (error) {
       this.available = false;
       return { ok: false, detail: `cache dir unusable: ${errorText(error)}` };
+    }
+    // A process killed mid-cut leaves a half-written part directory behind, and
+    // something has to clean it up: at boot nothing is using the cache.
+    try {
+      for (const name of await readdir(this.settings.cacheDir)) {
+        if (name.startsWith(PART_PREFIX)) {
+          await rm(path.join(this.settings.cacheDir, name), { recursive: true, force: true });
+        }
+      }
+    } catch {
+      // Not fatal: the worst case is a stale directory that the next cut replaces.
     }
     const probe = await run(this.settings.ffmpegPath, ["-version"], 10_000);
     this.available = probe.code === 0;
@@ -144,8 +157,10 @@ export class CutEngine {
 
   stats(): Record<string, unknown> {
     const byStatus: Record<string, number> = {};
+    let lastError: { key: string; error: string } | null = null;
     for (const state of this.states.values()) {
       byStatus[state.status] = (byStatus[state.status] ?? 0) + 1;
+      if (state.status === "failed" && state.error) lastError = { key: state.key, error: state.error };
     }
     return {
       mode: this.settings.cuts,
@@ -155,6 +170,9 @@ export class CutEngine {
       active: this.active,
       queued: this.queue.length,
       known: byStatus,
+      // Only the newest one: this is what an operator needs to see, and /health
+      // stays small.
+      lastError,
     };
   }
 
@@ -207,7 +225,7 @@ export class CutEngine {
       }
 
       const target = path.join(this.settings.cacheDir, `${state.key}.${probe.container}`);
-      const partDir = path.join(this.settings.cacheDir, `.parts-${state.key}`);
+      const partDir = path.join(this.settings.cacheDir, `${PART_PREFIX}${state.key}`);
       await mkdir(partDir, { recursive: true });
       const parts: string[] = [];
       try {

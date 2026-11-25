@@ -11,7 +11,7 @@
 
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-import { mkdtemp, readFile, rm, stat, utimes } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -234,6 +234,18 @@ test("cuts can be switched off entirely", async () => {
   const status = await cuts.start();
   assert.equal(status.ok, true);
   assert.equal(cuts.enabled, false);
+});
+
+test("a part directory left behind by a killed run is cleaned up at boot", async () => {
+  const value = settings({ cacheDir: path.join(workDir, "cache-boot") });
+  const stale = path.join(value.cacheDir, ".parts-deadbeef");
+  await mkdir(stale, { recursive: true });
+  await writeFile(path.join(stale, "part0.mkv"), "half a file");
+
+  const cuts = new CutEngine(value);
+  await cuts.start();
+  assert.equal(cuts.enabled, true);
+  await assert.rejects(stat(stale), "the leftover part directory is gone");
 });
 
 test("eviction keeps the cache under its limit, oldest file first", async () => {
