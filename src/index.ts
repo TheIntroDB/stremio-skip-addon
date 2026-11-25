@@ -215,14 +215,15 @@ async function handleStreams(
   // what makes the "no timings" case a pure pass-through with no wrapping at all.
   const lookup = await lookupSkipWindows(settings, config, id);
 
-  // The key is required, so a deployment without one gets a loud answer rather than
-  // a silent pass-through that looks like "TheIntroDB has no timings for this".
+  // No key anywhere is not a silent pass-through that looks like "TheIntroDB has no timings
+  // for this": it is a configuration the user can fix in one step.
   if (lookup.reason === "missing_api_key") {
     return errorResponse(
       403,
       "missing_api_key",
       "This service has no TheIntroDB API key, so it cannot look up timings. " +
-        "Set TIDB_API_KEY in the environment (or add one on the configuration page), then reinstall.",
+        "Paste one on the configuration page and reinstall (it rides in the install link), " +
+        "or set TIDB_API_KEY in this service's environment.",
     );
   }
 

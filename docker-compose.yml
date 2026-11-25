@@ -1,6 +1,6 @@
 # TheIntroDB Stremio addon, for a stack you run yourself.
 #
-#   cp .env.example .env      # then put your TheIntroDB API key in it
+#   cp .env.example .env      # only for the optional settings (see .env.example)
 #   docker compose up -d
 #
 # It builds the image in this directory (skipping the build with `--pull`-style runs
@@ -14,14 +14,9 @@ services:
     ports:
       - "8787:8787"
     environment:
-      # Required: lookups without a key are rate limited per IP. Compose reads the
-      # .env file next to this one, so `cp .env.example .env` is the whole setup.
-      TIDB_API_KEY: ${TIDB_API_KEY:?set TIDB_API_KEY}
-      # blocking  wait for the first segment (a couple of seconds), so the intro is
-      #           gone from the very first play
-      # on        play the source immediately and cut from the next playback
-      # off       splice HLS playlists only: no video copied, no disk use
-      CUTS: ${CUTS:-mkv}
+      # Optional: one TheIntroDB API key for the whole deployment. Leave it empty and paste
+      # a key on the configuration page instead -- it then rides in that install's link.
+      TIDB_API_KEY: ${TIDB_API_KEY:-}
       # Seconds left alone at each end of every window (see .env.example).
       SKIP_MARGIN_SECONDS: ${SKIP_MARGIN_SECONDS:-2}
       # Seconds of the episode that must be ready before playback starts (see .env.example).

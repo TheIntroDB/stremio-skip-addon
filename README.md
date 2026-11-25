@@ -27,7 +27,7 @@ Intros, recaps, credits and previews are gone from the timeline, on every platfo
 
 Nobody hosts this for you. It is a small Node service that relays streams from a source addon you already have, so it runs where your bandwidth is: a NAS, a home server, a VPS, or any Docker host.
 
-You need three things: **Docker** (or Node 22 plus **ffmpeg**, if you would rather not containerise), a **TheIntroDB API key**, and an address Stremio can reach over HTTPS.
+You need three things: **Docker** (or Node 22 plus **ffmpeg**, if you would rather not containerise), an address Stremio can reach over HTTPS, and a **TheIntroDB API key** — which you paste on the configuration page rather than into the deployment, unless you would rather set one for the whole service.
 
 > **Run it on your own network, not on a cloud platform.** Two things break otherwise, and both are properties of the sources rather than of this addon:
 >
@@ -43,11 +43,11 @@ You need three things: **Docker** (or Node 22 plus **ffmpeg**, if you would rath
 One command, from a clone of this repository:
 
 ```bash
-cp .env.example .env      # put TIDB_API_KEY in it
+cp .env.example .env      # optional: only for the settings you want to change
 docker compose up -d
 ```
 
-That is `docker-compose.yml` in this repository: it builds the image, publishes `:8787`, and keeps the segment cache in a named volume.
+That is `docker-compose.yml` in this repository: it builds the image, publishes `:8787`, and keeps the segment cache in a named volume. Nothing has to be filled in first — the API key can be pasted on the configuration page instead (see [API key](#api-key)).
 
 If the host cannot build — a resolver that will not answer for Docker Hub's CDN, no BuildKit, a locked-down server — use the published image instead, which only needs a pull:
 
@@ -64,10 +64,11 @@ Without compose (Node 22 plus ffmpeg in the image, about 200 MB):
 docker build -t tidb-skip .
 docker run -d --name tidb-skip \
   -p 8787:8787 \
-  -e TIDB_API_KEY=<your key> \
   -v tidb-cut-cache:/cache \
   tidb-skip
 ```
+
+No key is needed on the command line: open `http://localhost:8787/`, paste your key there, and install from the link it gives you. `-e TIDB_API_KEY=<your key>` still works if you would rather the service hold one for every install.
 
 **Mount `/cache`.** The image creates it, but without a volume your packages live in the container's writable layer and are lost when it is recreated — you would fetch the same episode again on every update. Any of `-v tidb-cut-cache:/cache` (named volume), `-v ./cache:/cache` (a directory on the host) or `-v /mnt/media/tidb-cache:/cache` (a NAS share) works.
 
@@ -86,7 +87,7 @@ git clone https://github.com/TheIntroDB/stremio-skip-addon.git
 cd stremio-skip-addon
 npm ci
 npm run build
-TIDB_API_KEY=<your key> CUTS=blocking node dist/server.js
+node dist/server.js
 ```
 
 It listens on `:8787` and prints its own configuration on boot, including whether ffmpeg was found:
@@ -95,8 +96,9 @@ It listens on `:8787` and prints its own configuration on boot, including whethe
 TheIntroDB Stremio addon v1.0.0
   listening      http://localhost:8787
   config page    http://localhost:8787/
-  api key        configured
-  cuts           on (./cache, max 50 GB, 2 at a time)
+  health         http://localhost:8787/health
+  api key        not set - paste one on the configuration page, or set TIDB_API_KEY
+  cutting files  on demand (./cache, max 50 GB, 2 at a time) - each install link chooses whether files are cut
   ffmpeg         ffmpeg version 7.1.5-0+deb13u1 -> ./cache
 ```
 
@@ -110,9 +112,9 @@ Open your deployment's URL in a browser. The page builds your install link:
 
 1. **Paste your stream addon URL** — AIOStreams, Torrentio, Comet, MediaFusion, anything that serves Stremio streams (the `manifest.json` URL). One per line; they are tried in order and the first that answers with streams is used, so a second URL is a fallback.
 2. **Pick the segments to cut.** Intro, recap and credits are on; previews are off. Credits and previews run to the end of the file when TheIntroDB does not close them, so they are the destructive ones.
-3. **Pick the cutting mode** — *always cut* (the default: the first play waits a couple of seconds for the first segment, so the intro is gone from the start), *start playing first* (the source plays immediately and the cut applies from the next playback), or *never cut files* (playlists only, nothing copied). It lives in the install link, so your installs can differ.
+3. **Pick the cutting mode** — *cut .mkv files too* (the default: a file with no playlist of its own is packaged as HLS on demand, with the processing card in front), or *only cut HLS playlists* (nothing is copied and no disk is used). It lives in the install link, so your installs can differ.
 4. **Set the margin** below it — the seconds left alone at each end of every window (2 by default). If an intro cut feels too aggressive, this is the dial.
-5. **The API key** is already handled if the service has one in its environment; paste one here only if you would rather carry it in the install URL. See [API key](#api-key).
+5. **The API key** — paste yours here unless the service already holds one in its environment; the field is marked *optional* when it does. See [API key](#api-key).
 6. **Install** — the `stremio://` link opens the desktop or mobile app; *Open in Stremio Web* handles the browser player.
 
 Your settings live in the install URL itself (base64url of a small JSON object), which is the only place a Stremio addon can keep per-user settings. **Keep that URL private:** anyone who has it can use your deployment.
@@ -125,15 +127,20 @@ There is no account, no database and nothing to look up server-side: the page is
 
 ### API key
 
-A TheIntroDB API key is **required**, not optional. Anonymous lookups are rate limited *per IP*, and a self-hosted deployment is not alone on its address — a home connection or a VPS shares it with everything else that runs there. Without a key this addon does no lookups at all: the config page will not give you an install link, and a stream request answers `403 missing_api_key` instead of pretending.
+A key is **required for the addon to work, but it is not required at setup**. There are two places to put one:
 
-Get one at [theintrodb.org/docs](https://theintrodb.org/docs), then set it in the environment so it stays out of your install URL:
+- **The configuration page** (the key field). This is the normal way: the key is embedded in the install link and stored by Stremio, so the deployment never holds it. The field is marked *required* when the service has no key of its own, and *optional* when it does.
+- **The deployment's environment** (`TIDB_API_KEY`), for a service that should serve every install with one key. It is optional — leave it empty and nothing breaks at boot.
+
+Whichever way, a key has to be there before anything is cut: anonymous lookups are rate limited *per IP*, and a self-hosted deployment is not alone on its address — a home connection or a VPS shares it with everything else that runs there. Without a key the page will not give you an install link, and a stream request answers `403 missing_api_key` instead of pretending.
+
+Get one at [theintrodb.org/docs](https://theintrodb.org/docs). If you want the deployment to hold it, put it in the environment so it stays out of every install URL:
 
 ```bash
 TIDB_API_KEY=...        # docker run -e TIDB_API_KEY=...   (or a .env next to docker-compose.yml)
 ```
 
-A key can also be pasted into the config page, in which case it is embedded in the install URL and stored by Stremio — useful if you want a different key than the deployment's own, or if you are sharing one deployment between accounts.
+A key pasted on the page wins over the deployment's own for that install — useful if you want a different key per install, or if you are sharing one deployment between accounts.
 
 `GET /health` reports `apiKeyConfigured`, so it is one request to check.
 
@@ -232,7 +239,7 @@ Because the cut is keyframe-limited, and because TheIntroDB's timings describe *
 
 If a cut still lands in the wrong place, it is the timings that differ from your file rather than the skipping: `/v4/media` can answer from the release cluster nearest the file when the caller sends its `duration_ms`, which this addon does not do yet. A larger margin is the blunt but effective answer until then.
 
-The first playback is a question of policy, and there are two: **cut `.mkv` files too** (the default) or **only cut HLS playlists**. `CUTS` sets the deployment's default and **the configuration page lets each install choose its own**:
+The first playback is a question of policy, and there are two: **cut `.mkv` files too** (the default) or **only cut HLS playlists**. This is the *install's* choice, not the deployment's — it is the **Cutting** dropdown on the configuration page, and it rides in the install link, so two installs on one service can differ:
 
 | mode | `.mkv`/`.mp4` sources | HLS sources |
 | --- | --- | --- |
@@ -253,7 +260,7 @@ A package is only started when the source's own reported size fits with a tenth 
 
 Unlike the file copy it replaced, packaging reads the source **once**: the segments written are the segments served, so proxying and cutting do not each fetch the video.
 
-Setting `CUTS=off` means no disk use at all and no video through the service — except that with proxying on the video does still flow through, it is just never cut (so a file keeps its intro).
+An install that chose **Only cut HLS** uses no disk at all and never pulls video through the service — except that with proxying on the video does still flow through, it is just never cut (so a file keeps its intro).
 
 ### Playback fails with "this stream link only works on the internet connection that requested it"
 
@@ -286,7 +293,7 @@ Every `/play` response says what it did, which is the fastest way to see whether
 | `x-tidb-cuts` | The windows that applied to a playlist, e.g. `intro 3:48-4:06, credits 57:12-end` |
 | `x-tidb-dropped-segments`, `x-tidb-dropped-ms`, `x-tidb-duration-ms` | What was removed from a playlist, and its length |
 
-`/health` reports the version, which API it talks to, whether the deployment has a key, the cutting mode and cache directory, and how many packages are queued, being built, finished or failed (`cutsStatus.segments`, `cutsStatus.bytes` and `cutsStatus.packages`).
+`/health` reports the version, which API it talks to, whether the deployment has a key, the cache directory, and how many packages are queued, being built, finished or failed (`cutsStatus.segments`, `cutsStatus.bytes` and `cutsStatus.packages`).
 
 ---
 
@@ -313,12 +320,11 @@ Everything is an environment variable; there is nothing to edit in the image.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `TIDB_API_KEY` | *(none)* | **Required.** TheIntroDB API key. Without it, lookups refuse with `403`. |
+| `TIDB_API_KEY` | *(none)* | **Optional.** TheIntroDB API key for the whole deployment. Without one, a key has to come from the configuration page (it then rides in the install link), and a request with no key anywhere refuses with `403`. See [API key](#api-key). |
 | `PORT` | `8787` | Port to listen on. |
-| `CUTS` | `mkv` | `mkv` (cut everything, including files with no playlist) or `hls` (splice playlists only, never touch a `.mkv`) — the deployment's default; an install link can override it. See [Cutting a file](#cutting-a-file). |
 | `CACHE_DIR` | `./cache` (`/cache` in the image) | Where package segments are kept. |
 | `CACHE_MAX_GB` | `50` | Disk budget for packages, evicted oldest-first. |
-| `CUT_WAIT_SECONDS` | `120` | `blocking` mode only: how long a play request waits for the first segment. A couple of seconds is the normal answer; the bound only matters when a source is slow. |
+| `CUT_WAIT_SECONDS` | `120` | How long a play request waits for the first segment of a file being packaged. A couple of seconds is the normal answer; the bound only matters when a source is slow. |
 ## Subtitles
 
 Cutting removes whole stretches, so a subtitle track recorded against the original timeline drifts

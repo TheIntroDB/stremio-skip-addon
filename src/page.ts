@@ -201,8 +201,8 @@ export function renderConfigPage(options: PageOptions): string {
     </div>
 
     <div class="field">
-      <label for="key">TheIntroDB API key <span class="badge">required</span></label>
-      <input type="password" id="key" spellcheck="false" autocomplete="off" placeholder="set TIDB_API_KEY in the environment, or paste a key here">
+      <label for="key">TheIntroDB API key <span class="badge" id="key-badge">required</span></label>
+      <input type="password" id="key" spellcheck="false" autocomplete="off" placeholder="paste your key here, or leave it empty if this service has one">
       <p class="hint" id="key-hint"></p>
     </div>
 
@@ -257,7 +257,7 @@ export function renderConfigPage(options: PageOptions): string {
     <h2>Know before you install</h2>
     <ul>
       <li>Cuts land on a keyframe for a file and on a segment boundary for HLS. Nothing is ever re-encoded, so the cut is only as precise as the keyframe grid and a moment of the skipped window can be kept — <i>never</i> the other way round: footage you should hear is not dropped.</li>
-      <li>For a file, only the stretches that survive are fetched, in the order they are watched: an episode is read once, as it plays, and the segments are kept for the next playback. Set <span class="mono">CUTS=off</span> to relay only HLS and never touch video.</li>
+      <li>For a file, only the stretches that survive are fetched, in the order they are watched: an episode is read once, as it plays, and the segments are kept for the next playback. Pick <span class="mono">Only cut HLS playlists</span> above to relay only HLS and never touch video.</li>
       <li>Segments are kept per title and evicted oldest-first once <span class="mono">CACHE_MAX_GB</span> is reached, so a large library settles into a cache of what you actually watch.</li>
       <li>Sources that need custom headers are not relayed, and a source that is a torrent (<span class="mono">infoHash</span>) has no URL to cut — both are passed through.</li>
       <li>Timings come from TheIntroDB only. There is no chapter detection and no second skip database.</li>
@@ -304,7 +304,7 @@ export function renderConfigPage(options: PageOptions): string {
     }
     var key = document.getElementById("key").value.trim();
     if (!key && !data.serverKeyConfigured) {
-      return showError("This service has no TheIntroDB API key. Set TIDB_API_KEY in its environment, or paste a key above.");
+      return showError("This service has no TheIntroDB API key of its own, so paste one above — it is stored in your install link.");
     }
     var types = SEGMENTS.filter(function (type) {
       return document.getElementById("type-" + type).checked;
@@ -340,8 +340,8 @@ export function renderConfigPage(options: PageOptions): string {
   document.getElementById("version").textContent = "v" + data.version;
 
   var cuts = data.cuts;
-  // The deployment's own default is what a new install gets unless it says otherwise.
-  document.getElementById("cuts").value = cuts.mode || "blocking";
+  // No deployment-wide default: the first option is what a new install gets, and every link
+  // this page builds carries the choice explicitly.
   // A fixed set of choices, built here rather than left to a number somebody has to guess.
   var marginSelect = document.getElementById("margin");
   for (var seconds = 0; seconds <= 5; seconds++) {
@@ -355,26 +355,29 @@ export function renderConfigPage(options: PageOptions): string {
     cuts.skipMarginSeconds === undefined || cuts.skipMarginSeconds === null ? 2 : cuts.skipMarginSeconds
   );
   document.getElementById("cuts-mode").textContent =
-    cuts.mode === "off"
-      ? "off — files are passed through"
-      : cuts.mode +
+    cuts.available === false
+      ? "cannot be cut here — ffmpeg is not available, so files play exactly as they came"
+      : "packaged as HLS on demand" +
         (cuts.segments ? " — " + cuts.segments + " segments (" + Math.round((cuts.bytes || 0) / 1048576) + " MB)" : "");
   document.getElementById("cuts-margin").textContent =
     (cuts.skipMarginSeconds || 0) + "s — the skip starts after, and ends before, the reported window";
   document.getElementById("cuts-cache").textContent =
-    cuts.mode === "off"
-      ? "disabled"
-      : cuts.cacheDir + " (max " + cuts.cacheMaxGb + " GB, " + cuts.cutConcurrency + " packing at a time)";
+    cuts.available === false
+      ? "unused — files are passed through"
+      : cuts.cacheDir + " (max " + cuts.cacheMaxGb + " GB, " + cuts.cutConcurrency + " packaging at a time)";
   document.getElementById("proxy-relay").textContent =
     cuts.proxy === false ? "off — the player fetches from the source" : "on — the player fetches from here";
   document.getElementById("cuts-ffmpeg").textContent =
     cuts.available === true ? "available" : cuts.available === false ? "NOT available — files cannot be cut" : "unknown";
 
   var keyHint = document.getElementById("key-hint");
+  var keyBadge = document.getElementById("key-badge");
   if (data.serverKeyConfigured) {
+    keyBadge.textContent = "optional";
     keyHint.textContent = "This service already has a key in its environment, so you can leave this empty. A key pasted here is embedded in your install link and stored by Stremio.";
   } else {
-    keyHint.textContent = "This service has no key yet, and TheIntroDB lookups need one: anonymous lookups are limited per IP. Set TIDB_API_KEY in the environment, or paste a key here.";
+    keyBadge.textContent = "required";
+    keyHint.textContent = "This service has no key of its own, so a key goes here: it is embedded in your install link and stored by Stremio. TheIntroDB lookups need one, because anonymous lookups are limited per IP. Get one at theintrodb.org/docs.";
   }
   if (data.insecure) {
     showError("This instance is served over plain http on a local address; Stremio will only install a server it can reach.");
