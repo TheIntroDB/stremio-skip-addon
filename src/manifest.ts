@@ -22,8 +22,10 @@ const DESCRIPTION =
   "Removes intro, recap, credits and preview segments from your Stremio streams using " +
   "community timings from TheIntroDB (theintrodb.org). HLS sources are cut by rewriting " +
   "their playlists; progressive .mkv/.mp4 sources are remuxed (no re-encode) and served " +
-  "from this server. Streams are relayed from the source addon you configure; when " +
-  "TheIntroDB has no timings for an episode, the stream is passed through untouched.";
+  "from this server. Sources that bind a link to the address that requested it can be " +
+  "proxied through this server too, which is what makes a debrid source playable from " +
+  "another connection. When TheIntroDB has no timings for an episode, the stream is " +
+  "passed through untouched.";
 
 export interface ManifestShape {
   id: string;

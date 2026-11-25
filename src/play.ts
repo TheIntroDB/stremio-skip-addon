@@ -29,7 +29,7 @@ import {
   spliceMediaPlaylist,
   type UriRewriters,
 } from "./hls.js";
-import { playlist, redirectTo, text } from "./http.js";
+import { CORS_HEADERS, playlist, redirectTo, text } from "./http.js";
 import { lookupSkipWindows } from "./introdb.js";
 import { isPrivateHost } from "./upstream.js";
 import type { AddonConfig, SkipWindow } from "./types.js";
@@ -82,24 +82,40 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
     }
   }
 
-  // A HEAD probe, or a byte range the player already knows it wants: nothing to
-  // rewrite. A playlist is never range-requested in practice, and a progressive
-  // file is range-requested on every seek.
-  if (context.request.method === "HEAD" || requestUrl.searchParams.has("whole")) {
-    return redirectTo(target, "pass_through");
-  }
-  if (context.request.headers.has("range") && !cutKey) {
-    return redirectTo(target, "range_request");
-  }
-
+  const proxyOn = context.config.proxy === true;
   const cache = getHttpCache();
   const verdictKey = `play:verdict:${target}`;
 
-  if (looksLikeProgressiveFile(target)) {
-    return handleProgressive(context, target, windows, cutKey, "not_hls");
-  }
-  if (await cache.match(verdictKey)) {
-    return handleProgressive(context, target, windows, cutKey, "not_a_playlist_cached");
+  if (proxyOn) {
+    // With proxying on, the player never touches the source addon. That is not only
+    // about segments: a debrid link is minted for the address that asked for it, and
+    // this service is that address, so a file has to be streamed from here too --
+    // otherwise the player opens the link from its own network and the source answers
+    // "this stream link only works on the internet connection that requested it".
+    if (looksLikeProgressiveFile(target)) {
+      warmCut(context, target, windows, cutKey);
+      return streamThrough(context.request, target, {
+        cacheControl: "no-store",
+        timeoutMs: null,
+        debug: proxyHeaders("proxied_file", lookup?.reason ?? ""),
+      });
+    }
+  } else {
+    // A HEAD probe, or a byte range the player already knows it wants: nothing to
+    // rewrite. A playlist is never range-requested in practice, and a progressive
+    // file is range-requested on every seek.
+    if (context.request.method === "HEAD" || requestUrl.searchParams.has("whole")) {
+      return redirectTo(target, "pass_through");
+    }
+    if (context.request.headers.has("range") && !cutKey) {
+      return redirectTo(target, "range_request");
+    }
+    if (looksLikeProgressiveFile(target)) {
+      return handleProgressive(context, target, windows, cutKey, "not_hls");
+    }
+    if (await cache.match(verdictKey)) {
+      return handleProgressive(context, target, windows, cutKey, "not_a_playlist_cached");
+    }
   }
 
   const rewriters: UriRewriters = {
@@ -134,6 +150,17 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
       { status: 302, body: "not_a_playlist", contentType: "text/plain" },
       NOT_PLAYLIST_TTL_SECONDS,
     );
+    if (proxyOn) {
+      // A file behind a URL with no extension (a debrid `/playback/<token>`, for
+      // instance): the prefix read above already had to come from here, so the rest
+      // does too.
+      warmCut(context, target, windows, cutKey);
+      return streamThrough(context.request, target, {
+        cacheControl: "no-store",
+        timeoutMs: null,
+        debug: proxyHeaders("proxied_file", lookup?.reason ?? ""),
+      });
+    }
     return handleProgressive(context, target, windows, cutKey, "not_a_playlist");
   }
 
@@ -224,10 +251,11 @@ function serveCut(
 }
 
 /**
- * `/seg` -- optional passthrough for the media resources of a playlist.
+ * `/seg` -- passthrough for the media resources of a playlist.
  *
- * Used only when the config asks for it (a source that needs the same headers or
- * cookies for every segment).
+ * Used when the config asks for proxying: the player fetches every segment from here
+ * instead of from the source, which is what makes a source that binds its links to
+ * the requesting address work.
  */
 export async function handleSegment(context: PlayContext): Promise<Response> {
   const requestUrl = new URL(context.request.url);
@@ -236,44 +264,91 @@ export async function handleSegment(context: PlayContext): Promise<Response> {
   const blocked = targetRejection(target, context.settings);
   if (blocked) return text(blocked, { status: 400 });
 
+  return streamThrough(context.request, target, {
+    // A segment is small and immutable, unlike a whole film.
+    cacheControl: "public, max-age=3600",
+    debug: { "x-tidb-seg": "streamed" },
+  });
+}
+
+interface StreamOptions {
+  cacheControl: string;
+  debug?: Record<string, string>;
+  /**
+   * Abort the upstream request after this long. `null` means no timeout: a whole film
+   * can stream for minutes, and the player closing the connection is what ends it
+   * (the response body is cancelled, which tears the upstream request down).
+   */
+  timeoutMs?: number | null;
+}
+
+/**
+ * Fetch a source and hand its bytes to the player unchanged.
+ *
+ * The body is streamed, never buffered, and the range headers go both ways, so
+ * seeking works exactly as it would against the source. Only the headers a player has
+ * any use for are passed through: a length is relayed only when nothing re-encoded
+ * the body in between.
+ */
+async function streamThrough(
+  request: Request,
+  target: string,
+  options: StreamOptions,
+): Promise<Response> {
   const headers: Record<string, string> = {};
   for (const name of ["range", "user-agent", "accept", "accept-language"]) {
-    const value = context.request.headers.get(name);
+    const value = request.headers.get(name);
     if (value) headers[name] = value;
   }
 
   let upstream: Response;
   try {
     upstream = await fetch(target, {
-      method: context.request.method === "HEAD" ? "HEAD" : "GET",
+      method: request.method === "HEAD" ? "HEAD" : "GET",
       headers,
       redirect: "follow",
-      signal: AbortSignal.timeout(SEGMENT_TIMEOUT_MS),
+      ...(options.timeoutMs === null
+        ? {}
+        : { signal: AbortSignal.timeout(options.timeoutMs ?? SEGMENT_TIMEOUT_MS) }),
     });
   } catch {
-    return text("Upstream unreachable", { status: 502 });
+    return text("Upstream unreachable", {
+      status: 502,
+      headers: { "x-tidb-proxy": "unreachable", ...options.debug },
+    });
   }
 
-  const passthrough = new Headers();
-  passthrough.set("access-control-allow-origin", "*");
-  passthrough.set("cache-control", "public, max-age=3600");
-  for (const name of [
-    "content-type",
-    "content-range",
-    "accept-ranges",
-    "etag",
-    "last-modified",
-  ]) {
+  const passthrough = new Headers(CORS_HEADERS);
+  passthrough.set("cache-control", options.cacheControl);
+  passthrough.set("x-tidb-proxy", "streamed");
+  passthrough.set("x-tidb-upstream-status", String(upstream.status));
+  for (const [name, value] of Object.entries(options.debug ?? {})) passthrough.set(name, value);
+  for (const name of ["content-type", "content-range", "accept-ranges", "etag", "last-modified"]) {
     const value = upstream.headers.get(name);
     if (value) passthrough.set(name, value);
   }
-  // Only relay the length when the body is not re-encoded in between.
   if (!upstream.headers.get("content-encoding")) {
     const length = upstream.headers.get("content-length");
     if (length) passthrough.set("content-length", length);
   }
 
   return new Response(upstream.body, { status: upstream.status, headers: passthrough });
+}
+
+/** Debug headers for a streamed play response. */
+function proxyHeaders(play: string, lookupReason: string): Record<string, string> {
+  return { "x-tidb-play": play, "x-tidb-lookup": lookupReason };
+}
+
+/** Start a background cut, when there is one to start, so a later play is cut too. */
+function warmCut(
+  context: PlayContext,
+  target: string,
+  windows: readonly SkipWindow[],
+  cutKey: string | null,
+): void {
+  if (!cutKey) return;
+  context.cuts.schedule(target, windows);
 }
 
 /** Read a playlist body, sniffing anything whose content type does not say so. */

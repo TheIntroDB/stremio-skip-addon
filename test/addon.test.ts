@@ -190,6 +190,10 @@ before(async () => {
     if (path === "/hls/movie.mp4" || path === "/blob") {
       return send(response, 200, "NOT-A-PLAYLIST-AT-ALL".padEnd(64, "."), "application/octet-stream");
     }
+    if (path === "/echo") {
+      // Answers with what it was asked for, so a forwarded range header is visible.
+      return send(response, 200, `range=${request.headers.range ?? "none"}`, "text/plain");
+    }
     if (/^\/hls\/seg\d+\.ts$/.test(path)) {
       return send(response, 200, "SEGMENT-BYTES", "video/mp2t");
     }
@@ -309,6 +313,7 @@ test("the Worker serves a config page, a health check and a bare manifest", asyn
   for (const field of ["mode", "available", "cacheDir", "cacheMaxGb", "cutConcurrency"]) {
     assert.ok(field in parsed.cuts, `the page's cut data has ${field}`);
   }
+  assert.match(body, /id="proxy"[^>]*checked/, "proxying is on by default: it is what debrid sources need");
   for (const id of ["cuts-mode", "cuts-cache", "cuts-ffmpeg", "api", "origin"]) {
     assert.ok(body.includes(`id="${id}"`), `the page has the #${id} element the script writes to`);
   }
@@ -578,6 +583,43 @@ test("timings that do not fit the file are not applied", async () => {
   assert.equal(kept.length, SHORT_PLAYLIST_SEGMENTS - 5);
   assert.deepEqual(kept.slice(8, 12), [8, 9, 15, 16]);
   assert.equal(kept[kept.length - 1], SHORT_PLAYLIST_SEGMENTS - 1);
+});
+
+test("with proxying on, files are streamed through this service", async () => {
+  // A source that mints a link for the address that asked for it (ElfHosted Comet,
+  // any debrid) cannot be reached by the player directly: every fetch has to come from
+  // here, files included.
+  const file = await call(playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1", proxyConfig));
+  assert.equal(file.status, 200);
+  assert.equal(file.headers.get("x-tidb-play"), "proxied_file");
+  assert.equal(file.headers.get("x-tidb-proxy"), "streamed");
+  assert.equal(file.headers.get("x-tidb-upstream-status"), "200");
+  assert.equal(file.headers.get("cache-control"), "no-store", "a token-bound stream is not cacheable");
+  assert.match(await file.text(), /^NOT-A-PLAYLIST-AT-ALL/);
+
+  // A URL with no extension is what a debrid playback link looks like: still sniffed
+  // (it could have been a playlist), and proxied once it is known not to be one.
+  const blob = await call(playPath(`${base}/blob`, "tt0903747:1:1", proxyConfig));
+  assert.equal(blob.headers.get("x-tidb-play"), "proxied_file");
+  assert.match(await blob.text(), /^NOT-A-PLAYLIST-AT-ALL/);
+
+  // A HEAD probe and a range request are answered here too, so nothing the player
+  // does sends it to the source on its own address.
+  const head = await call(playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1", proxyConfig), testSettings(), {
+    method: "HEAD",
+  });
+  assert.equal(head.status, 200);
+  assert.equal(await head.text(), "");
+
+  const ranged = await call(playPath(`${base}/echo`, "tt0903747:1:1", proxyConfig), testSettings(), {
+    headers: { range: "bytes=100-200" },
+  });
+  assert.equal(await ranged.text(), "range=bytes=100-200", "the range is relayed to the source");
+
+  // The same file without proxying is still handed to the player untouched.
+  const direct = await call(playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1"));
+  assert.equal(direct.status, 302);
+  assert.equal(direct.headers.get("x-tidb-play"), "not_hls");
 });
 
 test("a progressive file is handed straight to the source", async () => {

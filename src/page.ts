@@ -177,8 +177,9 @@ export function renderConfigPage(options: PageOptions): string {
     </div>
 
     <div class="field">
-      <label class="check" style="max-width:420px"><input type="checkbox" id="proxy"> Proxy HLS segments through this Worker</label>
-      <p class="hint">Off by default: only playlists pass through this service, and segment URLs are handed to the player as-is. Turn this on if your source needs the same headers or cookies for every segment. Debrid links are usually bound to the requesting IP, so a relay from another IP can be refused by the source.</p>
+      <label class="check" style="max-width:520px"><input type="checkbox" id="proxy" checked> Proxy streams through this service</label>
+      <p class="hint">On by default, because most sources bind the link to the address that asked for it (ElfHosted Comet and other debrid setups do) — then the player cannot open it from its own connection and shows an error like &quot;this stream link only works on the internet connection that requested it&quot;. With this on, the player fetches your playlists, segments and files from here, which is that address.</p>
+      <p class="hint">Video then uses this deployment's bandwidth: turn it off for a source the player can reach directly (a public HLS stream), and leave it on for a debrid. Cuts still happen either way.</p>
     </div>
 
     <div class="field">

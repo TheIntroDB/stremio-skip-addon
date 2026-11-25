@@ -171,7 +171,7 @@ With timings in hand, the stream offered to Stremio points at `/play` on this se
 - **HLS master playlist** → every variant, audio rendition and trick-play playlist is re-pointed at `/play`, so each one gets cut in turn.
 - **HLS media playlist** → the segments whose time range overlaps a skip window are dropped, `#EXT-X-DISCONTINUITY` marks the jump, and a re-declared `#EXT-X-MAP` keeps fragmented-MP4 streams decodable. Byte-range playlists keep pointing at the same bytes. **No video passes through this service on this path** — the player still fetches every segment from your source.
 - **A progressive file** (`.mkv`, `.mp4`, what a debrid link usually is) → the ranges that survive are copied into a new file with ffmpeg (`-c copy`: no re-encode, no quality loss) and served from here with byte-range support, so seeking works normally.
-- **Anything else** (`302`) → the player is sent to the origin untouched.
+- **Anything else** (`302`) → the player is sent to the origin untouched. With **Proxy streams through this service** on, that case disappears: the file is streamed through the addon instead, which is what a source that binds the link to the requesting address needs.
 
 Measured on Apple's own fragmented-MP4 test stream (`img_bipbop_adv_example_fmp4`, 100 segments / 600s) with the Breaking Bad S1E1 timings:
 
@@ -228,7 +228,22 @@ Cuts live in `CACHE_DIR` (default `/cache` in the container) and are evicted old
 
 A copy is only started when the source's own reported size fits with a tenth of the disk still free, because a cut that fills the volume takes the whole service down with it; the refusal is reported as a `skipped` cut with the reason in `/health`. A source that streams in chunks (many debrid links) reports no size, so it is attempted — those are the sources that need cutting the most.
 
-Setting `CUTS=off` means no disk use at all and no video through the service.
+With **Proxy streams through this service** on, one playback of an uncut file reads it twice from the source: once to stream to the player, and once for the background cut that will replace it. A source that limits concurrent connections per address may refuse the second, in which case `/health` reports the cut as failed and the next playback tries again.
+
+Setting `CUTS=off` means no disk use at all and no video through the service — except that with proxying on the video does still flow through, it is just never cut (so a progressive source keeps its intro).
+
+### Playback fails with "this stream link only works on the internet connection that requested it"
+
+Your source binds the link to the address that asked for it, and ElfHosted's Comet says so with a page naming two IPs: the one it expected, and yours. The expected one is this service's — it fetched the stream list, so the debrid link was minted for it — and the player then opened the link from your own connection, which the source refuses.
+
+The fix is the **Proxy streams through this service** option on the configuration page (it is on by default, and it is stored in your install URL, so an existing install needs its link regenerated or edited):
+
+- with it on, the player asks *this service* for the playlists, the segments and the file itself, and every one of those fetches to the source comes from the same address the link was minted for;
+- with it off, the addon only relays the stream list and the playlists, and hands the video URL to the player, which is exactly the address mismatch above.
+
+Check it with `x-tidb-play: proxied_file` (or `proxied` on a segment) in the response headers, and `x-tidb-proxy: streamed`. The service's own address is stable for a Railway service, but it is not yours to choose: `GET /health` does not report it, so read it from a source that echoes it — `/<config>/seg?u=https://api.ipify.org/?format=json`.
+
+Note that the video now flows through your deployment (see [Disk](#disk) and the Railway notes above for what that costs).
 
 ### Response headers
 
@@ -236,7 +251,10 @@ Every `/play` response says what it did, which is the fastest way to see whether
 
 | Header | Meaning |
 | --- | --- |
-| `x-tidb-play` | `spliced`, `master`, `unchanged`, `rewritten_uris` (proxy mode), `cut_file`, `not_hls`, `not_a_playlist`, `not_a_playlist_cached`, `range_request`, `degenerate_windows`, `pass_through`, `upstream_<status>` |
+| `x-tidb-play` | `spliced`, `master`, `unchanged`, `rewritten_uris` (proxy mode), `cut_file`, `proxied_file`, `not_hls`, `not_a_playlist`, `not_a_playlist_cached`, `range_request`, `degenerate_windows`, `pass_through`, `upstream_<status>` |
+| `x-tidb-proxy` | `streamed` when the bytes came through this service, `unreachable` when the source could not be fetched |
+| `x-tidb-upstream-status` | The status the source answered with, when the bytes were relayed |
+| `x-tidb-seg` | `streamed` on a proxied segment (`/seg`) |
 | `x-tidb-cut` | `ready` when the response is a cut file |
 | `x-tidb-lookup` | `fresh`, `cache_hit`, `media_not_found`, `episode_not_found`, `missing_api_key`, `rate_limited…`, `request_failed…` |
 | `x-tidb-cuts` | The windows that applied, e.g. `intro 3:48-4:06, credits 57:12-end` |
@@ -258,7 +276,7 @@ Worth reading before installing, because these are properties of the approach ra
 - **Torrent streams are not relaid.** A stream that is an `infoHash` (Torrentio and friends without a debrid) has no URL to rewrite, so it is passed through with a note.
 - **Sources that need custom headers are not relaid**, because the relay does not carry them. They are passed through untouched.
 - **Series numbering is the default order.** If your library follows another order — streaming rips, absolute-numbered anime, some specials — the lookup answers from the default numbering and the wrong episode's timings can apply. A Stremio stream request carries no episode-order hint, so this cannot be detected client-side.
-- **Segment proxying is opt-in and often a bad idea.** Turn it on only for a source that needs the same headers or cookies on every segment. Debrid links are usually bound to the requesting IP, so a relay from another IP can be refused by the source.
+- **Proxying is what makes a debrid source work, and it costs bandwidth.** With it on, the player fetches playlists, segments and files from this service, which is the address the source minted the link for — without it a debrid link is opened from the player's own connection and refused. Off is fine (and cheaper) for a source the player can reach directly. See [above](#playback-fails-with-this-stream-link-only-works-on-the-internet-connection-that-requested-it).
 - **The install URL is the credential-ish thing.** It contains your config (and your API key if you pasted one there). Anyone with it can use your deployment; the service refuses to relay to private addresses, but treat the URL as private.
 - **This is not a Stremio `skip` API.** Stremio has no addon API for skip buttons; segments are removed from the stream instead, which is why it works on every platform.
 
