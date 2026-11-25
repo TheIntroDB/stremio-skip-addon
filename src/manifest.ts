@@ -62,7 +62,7 @@ export function buildManifest(config: AddonConfig | null, encodedConfig?: string
     name: config?.name || "TheIntroDB Skip",
     description,
     logo: ADDON_LOGO,
-    resources: ["stream"],
+    resources: ["stream", "subtitles"],
     types: ["movie", "series"],
     idPrefixes: ["tt"],
     catalogs: [],

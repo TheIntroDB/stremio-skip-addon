@@ -51,7 +51,9 @@ ENV NODE_ENV=production \
     CUTS=blocking \
     SKIP_MARGIN_SECONDS=2 \
     PREROLL_SECONDS=10 \
-    PROXY=on
+    PROXY=on \
+    SUBTITLES=on \
+    SUBTITLES_TTL_HOURS=24
 # A platform may inject its own PORT; the service reads PORT and binds to it, so this
 # is the default for a plain `docker run`.
 EXPOSE 8787

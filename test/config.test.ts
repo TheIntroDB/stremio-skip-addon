@@ -100,3 +100,17 @@ test("only IMDb ids, and only well-formed episode addresses, parse", () => {
   assert.equal(parseStremioId("tt0903747:a:b"), null);
   assert.equal(parseStremioId(""), null);
 });
+
+test("generated subtitles are the install's own choice, carried in the link", () => {
+  const base = { src: ["https://aiostreams.example/manifest.json"], types: ["intro" as const] };
+  assert.equal(
+    decodeConfig(encodeConfig({ ...base, subtitles: true }))?.subtitles,
+    true,
+    "an install that wants them says so",
+  );
+  assert.equal(
+    decodeConfig(encodeConfig({ ...base }))?.subtitles,
+    undefined,
+    "and one that does not pays nothing: no models, no CPU, no track",
+  );
+});

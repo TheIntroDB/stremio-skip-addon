@@ -20,12 +20,13 @@
  *   instead of starting a 45-minute episode again.
  */
 
-import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { buildCues, shiftCues, toVtt, type Cue } from "./cues.js";
 import type { Settings } from "./env.js";
 import { run } from "./ffmpeg.js";
+import { CORS_HEADERS } from "./http.js";
 import { planStretches, type ChunkJob, type StretchJob } from "./stretches.js";
 import type { Transcriber } from "./transcribe.js";
 import type { SkipWindow } from "./types.js";
@@ -126,6 +127,7 @@ export class SubtitleEngine {
     if (job.chunks === 0) return null;
     this.jobs.set(key, job);
     this.queue.push(key);
+    void this.sweep();
     void this.pump();
     return job;
   }
@@ -167,6 +169,40 @@ export class SubtitleEngine {
 
   private dirFor(key: string): string {
     return path.join(this.settings.cacheDir, "subs", key);
+  }
+
+  /**
+   * Forget tracks nobody has asked for in the TTL.
+   *
+   * Cheap by design: a track is a WebVTT file per chunk and nothing else -- the audio it was made
+   * from is deleted as the chunk is finished -- so a day's worth is a few megabytes. A running job
+   * is never swept, and neither is a track a player has asked for recently.
+   */
+  private async sweep(): Promise<void> {
+    const root = path.join(this.settings.cacheDir, "subs");
+    const cutoff = Date.now() - this.settings.subtitlesTtlHours * 3_600_000;
+    let names: string[] = [];
+    try {
+      names = await readdir(root);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      const key = name;
+      const job = this.jobs.get(key);
+      if (job) {
+        if (!job.ready || job.lastAt > cutoff) continue;
+          this.jobs.delete(key);
+      }
+      const dir = path.join(root, name);
+      try {
+        const info = await stat(dir);
+        if (info.mtimeMs > cutoff) continue;
+        await rm(dir, { recursive: true, force: true });
+      } catch {
+        // Gone already, or not ours to remove.
+      }
+    }
   }
 
   private chunkName(index: number): string {
@@ -321,4 +357,66 @@ export class SubtitleEngine {
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message || error.name : String(error);
+}
+
+/** What a route handler needs to answer for a track. */
+export interface TrackRequest {
+  settings: Settings;
+  subtitles: SubtitleEngine | null;
+  request: Request;
+  encodedConfig: string;
+  origin?: string;
+}
+
+/**
+ * The track itself.
+ *
+ * A finished track never changes, and it is small -- a WebVTT file for a 45-minute episode is
+ * under 100 KB, and the audio it was made from is already gone -- so a player may keep it for a
+ * day, which is how long this deployment keeps it too (see `subtitlesTtlHours`).
+ */
+export async function handleTrack(context: TrackRequest): Promise<Response> {
+  const url = new URL(context.request.url);
+  const key = url.searchParams.get("f") ?? "";
+  const file = context.subtitles ? await context.subtitles.track(key) : null;
+  if (!file) return new Response("No generated subtitles for that title\n", { status: 404 });
+  let body: string;
+  try {
+    body = await readFile(file, "utf8");
+  } catch {
+    return new Response("That track is no longer cached\n", { status: 404 });
+  }
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "content-type": "text/vtt; charset=utf-8",
+      "cache-control": `public, max-age=${context.settings.subtitlesTtlHours * 3600}`,
+      ...CORS_HEADERS,
+    },
+  });
+}
+
+/**
+ * Stremio's subtitles menu asks for an episode, and gets this install's generated track for it.
+ *
+ * Empty until the track is finished: a player offered a half-written file shows a track that
+ * stops in the middle, while a player offered nothing simply has no track until it asks again.
+ */
+export async function handleSubtitles(context: TrackRequest, episodeId: string): Promise<Response> {
+  const found = context.subtitles ? await context.subtitles.trackForEpisode(episodeId) : null;
+  const origin = (context.origin ?? "").replace(/\/+$/, "");
+  const subtitles = found
+    ? [
+        {
+          id: "tidb-generated",
+          // Named for what it is: the timings are the cut video's, not the source's.
+          url: `${origin}/${context.encodedConfig}/vtt?f=${encodeURIComponent(found.key)}`,
+          lang: context.settings.subtitlesLanguage || "en",
+        },
+      ]
+    : [];
+  return new Response(JSON.stringify({ subtitles }), {
+    status: 200,
+    headers: { "content-type": "application/json; charset=utf-8", ...CORS_HEADERS },
+  });
 }

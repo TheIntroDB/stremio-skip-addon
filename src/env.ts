@@ -60,6 +60,14 @@ export interface Settings extends Env {
   /** How much audio is transcribed in one go; smaller means finer progress and more retries. */
   subtitlesChunkSeconds: number;
   /**
+   * How long a generated track is kept, in hours.
+   *
+   * A track is small -- a WebVTT file of a 45-minute episode is under 100 KB, and that is all that
+   * is kept once the audio it was made from is deleted -- so there is no reason to make a player
+   * pay for the recognition twice in a day. Regenerating is minutes of CPU; keeping it is nothing.
+   */
+  subtitlesTtlHours: number;
+  /**
    * How much of the episode must be ready before playback starts on it.
    *
    * Starting on a few seconds is what made Stremio decide an episode had ended, mark it
@@ -102,6 +110,7 @@ export function loadSettings(): Settings {
     subtitles: !/^(off|false|0|no)$/i.test((process.env.SUBTITLES ?? "").trim()),
     subtitlesLanguage: (process.env.SUBTITLES_LANGUAGE ?? "en").trim(),
     subtitlesChunkSeconds: Math.min(900, Math.max(60, Math.round(numberFrom("SUBTITLES_CHUNK_SECONDS", 300)))),
+    subtitlesTtlHours: Math.min(720, Math.max(1, Math.round(numberFrom("SUBTITLES_TTL_HOURS", 24)))),
     // Off only when it is explicitly turned off: the sources people actually use are debrid.
     proxy: !/^(off|false|0|no)$/i.test((process.env.PROXY ?? "").trim()),
     prerollSeconds: Math.min(60, Math.max(0, Math.round(numberFrom("PREROLL_SECONDS", 10)))),
@@ -128,6 +137,7 @@ export function describeSettings(settings: Settings): Record<string, unknown> {
     proxy: settings.proxy,
     subtitles: settings.subtitles,
     subtitlesLanguage: settings.subtitlesLanguage,
+    subtitlesTtlHours: settings.subtitlesTtlHours,
     splash: settings.splash,
     prerollSeconds: settings.prerollSeconds,
     cacheDir: settings.cuts === "off" ? null : settings.cacheDir,

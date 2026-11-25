@@ -18,7 +18,9 @@
  */
 
 import { getHttpCache } from "./cache.js";
+import { cardSeconds } from "./splash.js";
 import type { ManifestView, PackageEngine } from "./packages.js";
+import type { SubtitleEngine } from "./subtitles.js";
 import type { Settings } from "./env.js";
 import { serveFile } from "./files.js";
 import { describeWindows } from "./format.js";
@@ -56,6 +58,10 @@ export interface PlayContext {
   config: AddonConfig;
   encodedConfig: string;
   origin: string;
+  /** Generated subtitles for the cut video, when this install asked for them. */
+  subtitles: SubtitleEngine;
+  /** The episode id from the play URL, so a track can be offered with the episode it belongs to. */
+  episodeId?: string;
 }
 
 export async function handlePlay(context: PlayContext): Promise<Response> {
@@ -66,6 +72,9 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
   // is keyed on a URL that a debrid source re-mints, which is how a ready cut used to
   // be missed on the next playback.
   const streamKey = requestUrl.searchParams.get("k");
+  // Which episode this is, so its generated subtitles can be found from the addon's subtitles
+  // resource later: the resource is asked for an episode id, not for a stream.
+  context.episodeId = id;
 
   if (!target) return text("Missing u parameter", { status: 400 });
   const blocked = targetRejection(target, context.settings);
@@ -289,18 +298,38 @@ async function packageOrProxy(
   const ready = await context.packages.manifest(key);
   if (ready) return manifestResponse(ready, key, lookupReason);
 
+  // Generated subtitles are wanted for this install, and planning them needs the source's own
+  // length (see below), so ask for it either way.
+  const wantsSubtitles = context.subtitles.enabled(context.config);
+
   // Learn the source's length before answering, so the playlist can declare the whole episode
   // from its first response: a player that reaches the end of a few-second playlist decides the
   // episode is over, marks it watched and jumps to the next one.
-  if (mode === "blocking") await context.packages.rememberDuration(key, target);
-  context.packages.schedule(target, windows, streamKey);
+  const durationMs =
+    mode === "blocking" || wantsSubtitles
+      ? await context.packages.rememberDuration(key, target)
+      : null;
+  context.packages.schedule(target, windows, streamKey, durationMs);
+  if (context.episodeId) context.subtitles.note(context.episodeId, key);
+  // The card is the pre-roll the deployment configured, and the film starts after it, so that is
+  // the offset a generated track is timed from. (With the card off, the film starts at zero.)
+  context.subtitles.ensure(
+    key,
+    target,
+    {
+      durationMs,
+      windows,
+      cardMs: context.settings.splash ? cardSeconds(context.settings) * 1000 : 0,
+    },
+    wantsSubtitles,
+  );
   if (mode !== "blocking") return passThrough(context, target, "package_warming", lookupReason);
 
   // Nothing of the episode is ready yet, so show the processing card rather than holding
   // the request: a player handed a playlist starts at once and sees what is happening,
   // where a player handed nothing shows a spinner and then gives up on the stream. The
   // card's pieces form the start of the same playlist the episode is appended to.
-  const card = await context.packages.splashView(key, windows);
+  const card = await context.packages.splashView(key, windows, wantsSubtitles);
   if (card) return manifestResponse(card, key, lookupReason);
 
   const waited = await context.packages.waitForFirstSegment(

@@ -65,6 +65,8 @@ export function decodeConfig(encoded: string): AddonConfig | null {
   const margin = parseMarginSeconds(input.margin);
   if (margin !== null) config.margin = margin;
 
+  if (input.subtitles === true) config.subtitles = true;
+
   const name = typeof input.name === "string" ? input.name.trim() : "";
   if (name) config.name = sanitizeName(name);
 
@@ -80,6 +82,7 @@ export function encodeConfig(config: AddonConfig): string {
   if (config.key) packed.key = config.key.trim().slice(0, MAX_KEY_LENGTH);
   if (config.cuts) packed.cuts = config.cuts;
   if (typeof config.margin === "number") packed.margin = config.margin;
+  if (config.subtitles) packed.subtitles = true;
   if (config.name) packed.name = sanitizeName(config.name);
   return toBase64Url(JSON.stringify(packed));
 }

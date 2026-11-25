@@ -44,6 +44,7 @@ const settings: Settings = {
 subtitles: false,
 subtitlesLanguage: "en",
 subtitlesChunkSeconds: 300,
+subtitlesTtlHours: 24,
   splash: true,
   prerollSeconds: 10,
   cutWaitSeconds: 120,

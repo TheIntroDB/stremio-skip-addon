@@ -285,6 +285,7 @@ function testSettings(overrides: Partial<Settings> = {}): Settings {
 subtitles: false,
 subtitlesLanguage: "en",
 subtitlesChunkSeconds: 300,
+subtitlesTtlHours: 24,
     skipMarginSeconds: 0,
     splash: false,
     prerollSeconds: 10,
@@ -426,7 +427,11 @@ test("a configured manifest is a stream addon keyed by config", async () => {
   const manifest = (await response.json()) as Record<string, unknown> & {
     behaviorHints: Record<string, unknown>;
   };
-  assert.deepEqual(manifest.resources, ["stream"]);
+  assert.deepEqual(
+    manifest.resources,
+    ["stream", "subtitles"],
+    "streams, and the generated track an install can turn on",
+  );
   assert.deepEqual(manifest.types, ["movie", "series"]);
   assert.deepEqual(manifest.idPrefixes, ["tt"]);
   assert.equal(manifest.behaviorHints.configurationRequired, false);

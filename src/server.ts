@@ -14,6 +14,8 @@ import { createServer, type IncomingMessage } from "node:http";
 import { Readable } from "node:stream";
 
 import { PackageEngine } from "./packages.js";
+import { SubtitleEngine } from "./subtitles.js";
+import { Transcriber } from "./transcribe.js";
 import { loadSettings, type Settings } from "./env.js";
 import { handleRequest } from "./index.js";
 import { ADDON_VERSION } from "./manifest.js";
@@ -29,7 +31,11 @@ export function requestUrl(request: IncomingMessage): string {
   return `${proto}://${host}${path}`;
 }
 
-export function createApp(settings: Settings, packages: PackageEngine) {
+export function createApp(
+  settings: Settings,
+  packages: PackageEngine,
+  subtitles: SubtitleEngine | null = null,
+) {
   return createServer((nodeRequest, nodeResponse) => {
     void (async () => {
       try {
@@ -69,9 +75,12 @@ export function createApp(settings: Settings, packages: PackageEngine) {
 export async function main(): Promise<void> {
   const settings = loadSettings();
   const packages = new PackageEngine(settings);
+  // One transcriber and one engine for the process: the speech models are loaded once and kept,
+  // and the tracks they produce outlive any single request.
+  const subtitles = new SubtitleEngine(settings, new Transcriber(settings));
   const packageStatus = await packages.start();
 
-  const server = createApp(settings, packages);
+  const server = createApp(settings, packages, subtitles);
   server.listen(settings.port, () => {
     const base = `http://localhost:${settings.port}`;
     console.log(`TheIntroDB Stremio addon v${ADDON_VERSION}`);

@@ -75,6 +75,8 @@ export interface SplashCard {
   /** Which stretch ffmpeg is writing, 1-based, and how many there are. */
   pass: number;
   passes: number;
+  /** Whether a subtitle track is being generated, so the card can say so. */
+  subtitles?: boolean;
 }
 
 const TYPE_LABEL: Record<string, string> = {
@@ -123,7 +125,9 @@ export function cardText(card: SplashCard): {
   const where = card.passes > 1 ? `   (${card.pass}/${card.passes})` : "";
   return {
     title: "Processing…",
-    subtitle: "TheIntroDB is currently cutting the segments from your stream",
+    subtitle: card.subtitles
+      ? "TheIntroDB is cutting the segments from your stream and generating subtitles"
+      : "TheIntroDB is currently cutting the segments from your stream",
     count: `${count} ${count === 1 ? "segment" : "segments"}`,
     windows: windows ? `${windows}${where}   ${dots}`.trimEnd() : dots,
     footer: "Go to theintrodb.org to submit or report incorrect segments",

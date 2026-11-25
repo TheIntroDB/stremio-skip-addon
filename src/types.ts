@@ -81,6 +81,8 @@ export interface AddonConfig {
   margin?: number;
   /** Overrides the addon name shown in Stremio. */
   name?: string;
+  /** This install's own request to generate subtitles for the cut video. */
+  subtitles?: boolean;
 }
 
 /** Environment variables this service reads. See `.env.example`. */

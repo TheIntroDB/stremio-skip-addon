@@ -318,6 +318,41 @@ Everything is an environment variable; there is nothing to edit in the image.
 | `CACHE_DIR` | `./cache` (`/cache` in the image) | Where package segments are kept. |
 | `CACHE_MAX_GB` | `50` | Disk budget for packages, evicted oldest-first. |
 | `CUT_WAIT_SECONDS` | `120` | `blocking` mode only: how long a play request waits for the first segment. A couple of seconds is the normal answer; the bound only matters when a source is slow. |
+## Subtitles
+
+Cutting removes whole stretches, so a subtitle track recorded against the original timeline drifts
+behind the picture by everything deleted before the current moment. The fix is not to shift the
+source's own track — it may be burnt in, and its timings belong to a different cut — but to make a
+new one against the cut: the audio of the parts that are *kept* is transcribed on the machine
+running this, and each line is re-timed to where it lands in what is playing.
+
+It is an **install** option ("Generate subtitles for the cut video"), off by default, because the
+first play of a title is what pays for it. Nothing is sent anywhere: the speech models run here.
+What is used:
+
+- **Voz** recognises the speech and gives each word a start and an end; **Align** moves those
+  boundaries onto the waveform (word timings are the difference between a caption that lights up on
+  the word and one that is a beat behind it).
+- The audio is extracted per *kept* stretch with a fast seek, so the deleted parts are never read,
+  in five-minute chunks: a chunk that cannot be recognised is retried once and skipped rather than
+  failing the job, and each chunk's file is the record, so a restart resumes where it stopped.
+- The track is a WebVTT file served at `/<config>/vtt?f=<key>` and offered through the addon's
+  `subtitles` resource, so it appears in Stremio's subtitle menu once it is *finished* — a
+  half-written file would read as a track that stops in the middle.
+- **It is kept for 24 hours** (`SUBTITLES_TTL_HOURS`), which is nothing to keep: a WebVTT file for
+  a 45-minute episode is under 100 KB, and the audio it was made from is deleted as each chunk
+  finishes. The response is cacheable for the same day, so a player that keeps it does not ask
+  again. After that it is regenerated, one chunk at a time.
+- While the first ten seconds of video load, the processing card says so.
+
+The models are ~490 MB installed and their weights (368 MiB) download on first use into
+`DAL_CACHE_ROOT`, which the image points at the cache volume so a container recreate does not fetch
+them again. `SUBTITLES=off` on a deployment means the models are never loaded by it at all.
+
+| `SUBTITLES` | `on` | Whether this deployment offers generated subtitles at all. Off means the models are never loaded. |
+| `SUBTITLES_LANGUAGE` | `en` | The language to recognise and refine. Align only refines the languages it knows; others keep the recogniser's own timings. |
+| `SUBTITLES_TTL_HOURS` | `24` | How long a generated track is kept, and how long a player may cache it. |
+| `SUBTITLES_CHUNK_SECONDS` | `300` | How much audio is transcribed in one go: smaller is finer progress and more retries. |
 | `PROXY` | `on` | Whether the player fetches everything from this service. Off only suits a source the player can reach directly; debrid links need it on. |
 | `PREROLL_SECONDS` | `10` | How much of an episode must be packaged before playback starts on it. The card covers the gap. |
 | `SPLASH` | `on` | Draw the processing card for a cold playback. `off` holds the play request until the first segment exists instead. Everybody gets the card; this is an operator's switch, not an install's. |

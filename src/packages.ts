@@ -389,7 +389,11 @@ export class PackageEngine {
    * only ever exists for a key whose package this path asked for, so a playlist source never
    * gets one.
    */
-  async splashView(key: string, windows: readonly SkipWindow[] = []): Promise<ManifestView | null> {
+  async splashView(
+    key: string,
+    windows: readonly SkipWindow[] = [],
+    subtitles = false,
+  ): Promise<ManifestView | null> {
     if (!this.settings.splash || this.cardOk === false) return null;
     // The plan is written by the job that just started, so it may not be on disk yet: the
     // caller passes the windows it is about to cut, and the plan only adds detail. Without
@@ -399,7 +403,7 @@ export class PackageEngine {
     // once (see `drawCardPiece`): a card whose pieces were zero and whose clock was epoch was
     // swept away by the idle check before it could draw anything.
     this.cards.set(key, this.cards.get(key) ?? { pieces: 0, lastAt: Date.now(), frozen: false });
-    await this.drawCardPiece(key, windows);
+    await this.drawCardPiece(key, windows, subtitles);
     return this.manifest(key);
   }
 
@@ -423,7 +427,11 @@ export class PackageEngine {
    * subtitle track generated for the cut video be shifted by the card's length and stay aligned
    * -- with pieces drawn as the race went, the episode's start time varied by several seconds.
    */
-  private async drawCardPiece(key: string, windows: readonly SkipWindow[]): Promise<void> {
+  private async drawCardPiece(
+    key: string,
+    windows: readonly SkipWindow[],
+    subtitles = false,
+  ): Promise<void> {
     if (this.cardOk === false) return;
     const state = this.cards.get(key);
     if (!state) return;
@@ -442,6 +450,7 @@ export class PackageEngine {
       windows: shown,
       pass: Math.min(passes, stretches.length + 1),
       passes,
+      subtitles,
     });
     if (piece.ok) {
       await this.appendSplashList(key, piece.name, cardSeconds(this.settings) * 1000);

@@ -37,6 +37,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     subtitles: false,
     subtitlesLanguage: "en",
     subtitlesChunkSeconds: 300,
+  subtitlesTtlHours: 24,
     skipMarginSeconds: 0,
     splash: false,
     prerollSeconds: 10,
@@ -90,7 +91,11 @@ test("a bare manifest is served with CORS", async () => {
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("access-control-allow-origin"), "*");
   const manifest = (await response.json()) as Record<string, unknown>;
-  assert.deepEqual(manifest.resources, ["stream"]);
+  assert.deepEqual(
+    manifest.resources,
+    ["stream", "subtitles"],
+    "streams, and the generated track an install can turn on",
+  );
   assert.ok(String(manifest.logo).includes("theintrodb-assets"));
 });
 

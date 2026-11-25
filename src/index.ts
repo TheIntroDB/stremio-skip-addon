@@ -32,6 +32,8 @@ import { lastLookupFailure, lookupSkipWindows } from "./introdb.js";
 import { ADDON_VERSION, buildManifest } from "./manifest.js";
 import { renderConfigPage } from "./page.js";
 import { handlePlay, handleSegment } from "./play.js";
+import { handleSubtitles, handleTrack, SubtitleEngine } from "./subtitles.js";
+import { Transcriber } from "./transcribe.js";
 import type { AddonConfig } from "./types.js";
 import {
   fetchStreams,
@@ -60,6 +62,10 @@ export async function handleRequest(
   request: Request,
   settings: Settings,
   packages: PackageEngine,
+  subtitles: SubtitleEngine | null = null,
+  // One engine per process, whether or not the host wired one: its jobs and the models they use
+  // outlive a request, so it cannot be built per call.
+  engine: SubtitleEngine = subtitles ?? new SubtitleEngine(settings, new Transcriber(settings)),
 ): Promise<Response> {
   const url = new URL(request.url);
   const origin = url.origin;
@@ -82,6 +88,7 @@ export async function handleRequest(
       site: INTRODB_SITE,
       api: `${INTRODB_API_BASE}/${INTRODB_API_VERSION}/media`,
       ...describeSettings(settings),
+      subtitles: engine.status(),
       lastLookupFailure: lastLookupFailure(),
       cutsStatus: packages.stats(),
     });
@@ -124,10 +131,27 @@ export async function handleRequest(
 
     if (route === "manifest.json") return json(buildManifest(config, encoded));
     if (route === "play") {
-      return handlePlay({ request, settings, packages, config, encodedConfig: encoded, origin });
+      return handlePlay({
+        request, settings, packages, subtitles: engine, config, encodedConfig: encoded, origin,
+      });
     }
     if (route === "seg") {
-      return handleSegment({ request, settings, packages, config, encodedConfig: encoded, origin });
+      return handleSegment({
+        request, settings, packages, subtitles: engine, config, encodedConfig: encoded, origin,
+      });
+    }
+    // The generated track itself, and the answer Stremio's subtitles menu asks for. Only a
+    // finished track is offered: a half-written file reads as a broken one, and Stremio asks
+    // again when the player opens its menu, so the entry appears when it is worth choosing.
+    if (route === "vtt") {
+      return handleTrack({ settings, subtitles: engine, request, encodedConfig: encoded });
+    }
+    const subtitleMatch = /^subtitles\/([^/]+)\/(.+)\.json$/.exec(route);
+    if (subtitleMatch) {
+      return handleSubtitles(
+        { settings, subtitles: engine, request, encodedConfig: encoded, origin },
+        decodePathComponent(subtitleMatch[2]!),
+      );
     }
 
     // stream/<type>/<id>.json
