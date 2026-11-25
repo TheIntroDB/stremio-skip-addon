@@ -247,7 +247,7 @@ export function renderConfigPage(options: PageOptions): string {
   <section>
     <h2>Know before you install</h2>
     <ul>
-      <li>Cuts land on a keyframe for a file and on a segment boundary for HLS. Nothing is ever re-encoded, so a cut can take up to a second or two of the adjacent footage with it.</li>
+      <li>Cuts land on a keyframe for a file and on a segment boundary for HLS. Nothing is ever re-encoded, so the cut is only as precise as the keyframe grid and a moment of the skipped window can be kept — <i>never</i> the other way round: footage you should hear is not dropped.</li>
       <li>For a file, only the stretches that survive are fetched, in the order they are watched: an episode is read once, as it plays, and the segments are kept for the next playback. Set <span class="mono">CUTS=off</span> to relay only HLS and never touch video.</li>
       <li>Segments are kept per title and evicted oldest-first once <span class="mono">CACHE_MAX_GB</span> is reached, so a large library settles into a cache of what you actually watch.</li>
       <li>Sources that need custom headers are not relayed, and a source that is a torrent (<span class="mono">infoHash</span>) has no URL to cut — both are passed through.</li>

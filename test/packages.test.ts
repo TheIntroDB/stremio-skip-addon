@@ -464,3 +464,74 @@ test("only names this service generated are served", async () => {
   assert.equal(engine.segmentPath(key, "index.m3u8"), null, "the playlist is written, not fetched");
   assert.equal(await engine.manifest("not-a-key"), null);
 });
+
+test("the segments of a stretch share one timeline, so a player's clock does not restart", async () => {
+  // The bug this exists for: `-reset_timestamps 1` stamped every segment with the
+  // same clock, so a player saw a ten-second item that restarted at each segment --
+  // a looping bar, a one-segment duration, and audio drifting away from the video.
+  // Reading the playlist cannot catch that (it sums #EXTINF and looks right); only
+  // the timestamps a demuxer sees can.
+  const engine = new PackageEngine(settings({ cacheDir: path.join(workDir, "cache-timeline") }));
+  await engine.start();
+  const window = { type: "recap" as const, startMs: 12_000, endMs: 16_000 };
+  const url = `${base}/sample.mkv`;
+  const key = engine.keyFor(url, [window], "stream:timeline");
+  engine.schedule(url, [window], "stream:timeline", SAMPLE_SECONDS * 1000);
+
+  const deadline = Date.now() + 120_000;
+  let view = await engine.manifest(key);
+  while ((!view || !view.complete) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    view = (await engine.manifest(key)) ?? view;
+  }
+  assert.ok(view?.complete, "the package finished");
+
+  // Splitting on the discontinuity gives the stretches: each is its own timeline,
+  // which is what the tag declares.
+  const stretches = view.body
+    .split(/^#EXT-X-DISCONTINUITY$/m)
+    .map((part) =>
+      [...part.matchAll(/^seg\?f=[^/]+\/(seg\d{5}\.ts)$/gm)].map((match) => match[1]!),
+    )
+    .filter((names) => names.length > 0);
+  assert.ok(stretches.length >= 2, `a window in the middle makes two stretches (${stretches.length})`);
+
+  const dir = path.join(workDir, "cache-timeline", "hls", key);
+  const firstVideoPts = async (name: string): Promise<number> => {
+    const result = await run("ffprobe", [
+      "-v", "error", "-select_streams", "v",
+      "-show_entries", "packet=pts_time", "-of", "csv=p=0", path.join(dir, name),
+    ], 60_000);
+    const first = Number(result.stdout.split("\n")[0]?.replace(",", "").trim());
+    assert.ok(Number.isFinite(first), `no timestamp in ${name}: ${result.stdout} ${result.stderr}`);
+    return first;
+  };
+  const firstAudioPts = async (name: string): Promise<number> => {
+    const result = await run("ffprobe", [
+      "-v", "error", "-select_streams", "a",
+      "-show_entries", "packet=pts_time", "-of", "csv=p=0", path.join(dir, name),
+    ], 60_000);
+    return Number(result.stdout.split("\n")[0]?.replace(",", "").trim());
+  };
+
+  for (const stretch of stretches) {
+    let previous = -1;
+    for (const name of stretch) {
+      const video = await firstVideoPts(name);
+      assert.ok(
+        video > previous,
+        `${name} starts at ${video}s, after the previous segment's ${previous}s -- the clock must climb`,
+      );
+      previous = video;
+      // Audio must sit on the same clock, or the player drifts and speeds the video up
+      // to catch up.
+      const audio = await firstAudioPts(name);
+      assert.ok(
+        Math.abs(audio - video) < 0.5,
+        `${name}: video at ${video}s, audio at ${audio}s`,
+      );
+    }
+    // Every stretch begins at the beginning of its own timeline.
+    assert.ok(Math.abs(await firstVideoPts(stretch[0]!) - 0) < 0.5, "a stretch starts at zero");
+  }
+});

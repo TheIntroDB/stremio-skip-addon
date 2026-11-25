@@ -471,7 +471,15 @@ export class PackageEngine {
           "-f", "segment",
           "-segment_time", String(SEGMENT_SECONDS),
           "-segment_format", "mpegts",
-          "-reset_timestamps", "1",
+          // The timestamps must *run* across the segments of a stretch. Resetting
+          // them per segment (`-reset_timestamps 1`) stamps every segment with the
+          // same clock, so a player sees a ten-second item that restarts at every
+          // segment: the bar loops, the duration is one segment long, and audio and
+          // video — reset on different frame boundaries — drift apart.
+          "-muxdelay", "0", "-muxpreload", "0",
+          // Keep the first frame of a stretch at zero rather than negative: ffmpeg
+          // starts a copy at the keyframe *before* the requested point.
+          "-avoid_negative_ts", "make_zero",
           "-segment_list", csv,
           "-segment_list_type", "csv",
           "-segment_start_number", String(recorded),
