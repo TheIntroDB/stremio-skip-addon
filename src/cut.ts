@@ -18,7 +18,7 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { Settings } from "./env.js";
@@ -225,6 +225,15 @@ export class CutEngine {
         return state;
       }
 
+      // A file copy needs as much scratch as the source is big, and filling the disk
+      // would take the whole service (and its logs) down with it. The size is only
+      // known when the source reports one, so an unknown size is attempted as before.
+      if (!hasRoomFor(probe.bytes, await freeBytes(this.settings.cacheDir))) {
+        state.status = "skipped";
+        state.error = `${probe.bytes} bytes needed, not enough free disk in ${this.settings.cacheDir}`;
+        return state;
+      }
+
       const target = path.join(this.settings.cacheDir, `${state.key}.${probe.container}`);
       const partDir = path.join(this.settings.cacheDir, `${PART_PREFIX}${state.key}`);
       await mkdir(partDir, { recursive: true });
@@ -302,6 +311,7 @@ export class CutEngine {
   private async probe(target: string): Promise<{
     isFile: boolean;
     durationMs: number | null;
+    bytes: number | null;
     container: string;
     formatName: string;
   }> {
@@ -309,7 +319,9 @@ export class CutEngine {
       this.settings.ffprobePath,
       [
         "-v", "error",
-        "-show_entries", "format=duration,format_name",
+        // `size` is what the input reports for itself: ffprobe reads it from the
+        // response, so it is known for a plain file and absent for a chunked stream.
+        "-show_entries", "format=duration,format_name,size",
         "-of", "json",
         ...inputOptions(),
         target,
@@ -318,7 +330,7 @@ export class CutEngine {
     );
     if (result.code !== 0) throw new Error(`ffprobe failed: ${result.stderr.trim().slice(0, 200)}`);
 
-    let parsed: { format?: { duration?: string; format_name?: string } };
+    let parsed: { format?: { duration?: string; format_name?: string; size?: string } };
     try {
       parsed = JSON.parse(result.stdout) as typeof parsed;
     } catch {
@@ -328,9 +340,11 @@ export class CutEngine {
     const formatName = parsed.format?.format_name ?? "";
     const isPlaylist = /mpegurl|applehttp|(^|,)hls(,|$)/i.test(formatName);
     const seconds = Number(parsed.format?.duration ?? Number.NaN);
+    const size = Number(parsed.format?.size ?? Number.NaN);
     return {
       isFile: !isPlaylist,
       durationMs: Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : null,
+      bytes: Number.isFinite(size) && size > 0 ? size : null,
       container: containerFor(formatName),
       formatName,
     };
@@ -421,6 +435,38 @@ export class CutEngine {
       }
     }
   }
+}
+
+/**
+ * Free space available to this process, in bytes.
+ *
+ * `bavail` is what an unprivileged user may use, which is what matters here (the
+ * image runs as `node`). Anything unexpected answers Infinity: this guard exists to
+ * prevent a filled disk, not to be a reason a cut cannot run.
+ */
+async function freeBytes(dir: string): Promise<number> {
+  try {
+    const info = await statfs(dir);
+    return info.bavail * info.bsize;
+  } catch {
+    return Number.POSITIVE_INFINITY;
+  }
+}
+
+/**
+ * Whether a copy of `neededBytes` fits, keeping a tenth of the disk for everything
+ * else (logs, the database of another app on the same volume).
+ *
+ * An unknown size is allowed through: a debrid link that streams in chunks reports
+ * none, and refusing those would remove the feature for the sources that need it.
+ */
+export function hasRoomFor(
+  neededBytes: number | null,
+  free: number,
+  headroom = 0.9,
+): boolean {
+  if (neededBytes === null || neededBytes <= 0) return true;
+  return neededBytes <= free * headroom;
 }
 
 /** The ranges that survive, from the windows to remove. */

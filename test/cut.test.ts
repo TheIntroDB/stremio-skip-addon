@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
 
-import { CutEngine, keptRanges, run } from "../src/cut.js";
+import { CutEngine, hasRoomFor, keptRanges, run } from "../src/cut.js";
 import type { Settings } from "../src/env.js";
 import { serveFile } from "../src/files.js";
 
@@ -165,6 +165,20 @@ test("a window that starts past the end of the file is not in this file", () => 
 test("a window that runs past the end of the file is clipped", () => {
   const windows = [{ type: "credits" as const, startMs: 500_000, endMs: 900_000 }];
   assert.deepEqual(keptRanges(windows, 596_480), [{ startMs: 0, endMs: 500_000 }]);
+});
+
+test("a copy is refused when the source does not fit on the disk", () => {
+  // Filling the disk took this service down mid-copy once, so the check happens
+  // before ffmpeg starts rather than after it has written half a file.
+  assert.equal(hasRoomFor(1000, 100_000), true);
+  assert.equal(hasRoomFor(95_000, 100_000), false, "a tenth of the disk stays free");
+  assert.equal(hasRoomFor(90_001, 100_000), false);
+  assert.equal(hasRoomFor(89_000, 100_000), true);
+
+  // An unknown size cannot be refused: a debrid link that streams in chunks never
+  // reports one, and those are the sources that need cutting the most.
+  assert.equal(hasRoomFor(null, 0), true);
+  assert.equal(hasRoomFor(0, 0), true);
 });
 
 test("windows in order leave the pieces between them", () => {

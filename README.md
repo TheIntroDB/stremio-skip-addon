@@ -220,6 +220,8 @@ The stream list is also fetched moments before playback, so a cut for the first 
 
 Cuts live in `CACHE_DIR` (default `/cache` in the container) and are evicted oldest-first once they exceed `CACHE_MAX_GB`. A two-hour 1080p episode is roughly 2-6 GB, so 50 GB is a reasonable starting point and a volume is worth attaching on Railway. Evicting a cut that is being watched is safe — the open file keeps streaming — it is simply cut again next time.
 
+A copy is only started when the source's own reported size fits with a tenth of the disk still free, because a cut that fills the volume takes the whole service down with it; the refusal is reported as a `skipped` cut with the reason in `/health`. A source that streams in chunks (many debrid links) reports no size, so it is attempted — those are the sources that need cutting the most.
+
 Setting `CUTS=off` means no disk use at all and no video through the service.
 
 ### Response headers
