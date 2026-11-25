@@ -35,9 +35,11 @@ import path from "node:path";
 
 import type { Settings } from "./env.js";
 import {
+  cardSeconds,
   generatePadPiece,
   generateSplashPiece,
   PAD_RE,
+  PAD_SECONDS,
   SPLASH_PIECE_MS,
   SPLASH_RE,
   splashAvailable,
@@ -104,7 +106,7 @@ const DURATION = "duration.json";
  * the episode had arrived. One segment's worth keeps it behaving like any other playlist,
  * which is what it is: a two-hour episode is ~1200 entries whether or not some are placeholder.
  */
-const PAD_ENTRY_MS = 6000;
+const PAD_ENTRY_MS = PAD_SECONDS * 1000;
 /** A padded playlist is still a playlist; this bounds a pathological file length. */
 const PAD_MAX_ENTRIES = 2000;
 const PLAN = "plan.json";
@@ -113,7 +115,6 @@ const PASS = "pass-";
 /** How often a waiting play re-reads the CSVs while the first segment is written. */
 const POLL_MS = 250;
 /** How often a new piece of the processing card is drawn while a package is being made. */
-const SPLASH_MIN_INTERVAL_MS = 1000;
 /** How long a card stays part of a key's playlist after the last request for it. */
 const SPLASH_SESSION_MS = 15 * 60_000;
 /** Target segment length. Longer only happens when keyframes are further apart. */
@@ -403,10 +404,9 @@ export class PackageEngine {
   }
 
   /**
-   * Keep an existing card moving, for a request that arrived before the target was known to
-   * be a file.
+   * Leave a drawn card alone; only a key that has none is given one.
    *
-   * Only a key that already has a card is touched, so a playlist source is never given one.
+   * A card's length is part of the playlist's timeline, so it is drawn once and never grows.
    */
   async advanceCard(key: string): Promise<ManifestView | null> {
     if (!this.cards.has(key)) return null;
@@ -415,19 +415,20 @@ export class PackageEngine {
   }
 
   /**
-   * Draw another piece of the card, if one is due and the episode cannot play yet.
+   * Draw the card, once, exactly as long as the pre-roll buffer.
    *
-   * The instant a segment of the episode exists the card stops growing: the player is
-   * already holding this playlist, so it walks off the end of the card into the film, and
-   * the rest of the packaging carries on behind it. Drawing more pieces here would keep
-   * putting "Processing…" in front of the film, which is what waiting for the whole file
-   * looked like.
+   * One piece rather than one per poll, and a fixed length rather than "until the episode can
+   * play": the player spends the same ten seconds on the card however fast the source is, so the
+   * episode always starts at the same point in the playlist. That constant is what lets the
+   * subtitle track generated for the cut video be shifted by the card's length and stay aligned
+   * -- with pieces drawn as the race went, the episode's start time varied by several seconds.
    */
   private async drawCardPiece(key: string, windows: readonly SkipWindow[]): Promise<void> {
     if (this.cardOk === false) return;
     const state = this.cards.get(key);
-    if (!state || state.frozen) return;
-    if (state.pieces > 0 && Date.now() - state.lastAt < SPLASH_MIN_INTERVAL_MS) return;
+    if (!state) return;
+    if (state.pieces > 0) return;
+    if (state.frozen) return;
     this.used.set(key, Date.now());
     this.sweepCards();
 
@@ -436,20 +437,6 @@ export class PackageEngine {
     const passes = plan?.ranges.length ?? 1;
     const stretches = plan ? await this.realStretches(plan, key) : [];
     const written = stretches.reduce((total, stretch) => total + stretch.length, 0);
-    const writtenMs = stretches.reduce(
-      (total, stretch) => total + stretch.reduce((sum, entry) => sum + entry.ms, 0),
-      0,
-    );
-    // A buffer of the episode, but never less than one segment of it: a preroll of zero means
-    // "start as soon as there is anything to start on", not "never draw a card".
-    if (written > 0 && writtenMs >= this.settings.prerollSeconds * 1000) {
-      // Enough of the episode is ready to start on. The card is already in this playlist, so
-      // the player walks off the end of it into the film, and the rest is packaged behind it.
-      // Starting on *nothing* was the other bug: a playlist whose declared length was a few
-      // seconds made Stremio decide the episode had ended and jump to the next one.
-      state.frozen = true;
-      return;
-    }
     const piece = await generateSplashPiece(this.settings, this.dirFor(key), state.pieces, {
       segments: written,
       windows: shown,
@@ -457,7 +444,7 @@ export class PackageEngine {
       passes,
     });
     if (piece.ok) {
-      await this.appendSplashList(key, piece.name, SPLASH_PIECE_MS);
+      await this.appendSplashList(key, piece.name, cardSeconds(this.settings) * 1000);
       state.pieces += 1;
       state.lastAt = Date.now();
       this.cardError = null;
@@ -617,6 +604,22 @@ export class PackageEngine {
       if (!this.running.has(key) && !(await this.existing(key))) return null;
       await delay(POLL_MS);
     }
+  }
+
+  /**
+   * How long the card is in this key's playlist, in milliseconds.
+   *
+   * The card is the stem of the presentation -- the episode starts after it -- so this is the
+   * offset every subtitle generated for the cut video is shifted by. It is a constant for a
+   * given deployment precisely because the card is drawn once and its length is the pre-roll.
+   */
+  async cardMs(key: string): Promise<number> {
+    const pieces = await this.readSplashList(key);
+    if (pieces.length === 0) return 0;
+    return pieces.reduce(
+      (total, piece) => total + (Number.isFinite(piece.ms) ? piece.ms : SPLASH_PIECE_MS),
+      0,
+    );
   }
 
   /**

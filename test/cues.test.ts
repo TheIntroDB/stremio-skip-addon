@@ -1,0 +1,164 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 TheIntroDB
+
+/**
+ * The subtitles' arithmetic, without a speech model anywhere near it.
+ *
+ * These are the parts that decide whether a generated track lines up with the cut video, so they
+ * are tested on their own: a recogniser is unreliable in ways this code has to absorb (see
+ * `src/cues.ts`), and the shift onto the presentation's clock is where a subtitle that looks
+ * "misaligned" would actually come from.
+ */
+
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import { buildCues, shiftCues, toVtt, vttClock } from "../src/cues.js";
+import { planStretches, presentationMs, type ChunkJob } from "../src/stretches.js";
+
+test("a word the recogniser placed before its audio is pulled to zero", () => {
+  // Align genuinely nudges the first word of a chunk a few milliseconds before the first sample
+  // it was given, and a cue that starts below zero is dropped by consumers that validate input.
+  const cues = buildCues([
+    { text: "Previously", start: -0.18, end: 0.32 },
+    { text: "on", start: 0.34, end: 0.5 },
+  ]);
+  assert.equal(cues[0]!.start, 0, "the cue starts at zero");
+  assert.ok(cues[0]!.end > cues[0]!.start, "and is not zero-length");
+  assert.equal(cues[0]!.text, "Previously on");
+});
+
+test("words that arrive out of order make cues in order", () => {
+  const cues = buildCues([
+    { text: "world", start: 4.2, end: 4.6 },
+    { text: "hello", start: 0.4, end: 0.9 },
+  ]);
+  assert.deepEqual(
+    cues.map((cue) => cue.text),
+    ["hello", "world"],
+  );
+  assert.ok(cues[0]!.start < cues[1]!.start);
+});
+
+test("a word with no usable span is repaired, not returned as an invalid cue", () => {
+  // "there" has an end at its start and "backwards" ends before it begins: a consumer that
+  // validates its input rejects a chunk carrying either, so both are given a span instead.
+  const cues = buildCues([
+    { text: "hello", start: 0, end: 0.5 },
+    { text: "there", start: 2, end: 2 },
+    { text: "backwards", start: 8, end: 7 },
+    { text: "   ", start: 3, end: 4 }, // nothing to read
+    { text: "…", start: 5, end: 6 }, // punctuation noise
+    { text: "again", start: Number.NaN, end: 20 },
+  ]);
+  for (const cue of cues) assert.ok(cue.end > cue.start, `${JSON.stringify(cue.text)} has a span`);
+  assert.ok(cues.some((cue) => cue.text === "there"), "the span-less word is still shown");
+  assert.ok(!cues.some((cue) => cue.text.includes("…")), "punctuation alone is not a line");
+  assert.ok(!cues.some((cue) => cue.text.includes("again")), "and a word with no time at all cannot be placed");
+});
+
+test("a cue reaches the minimum, but never into the next one", () => {
+  const cues = buildCues([
+    { text: "Yes", start: 10, end: 10.12 },
+    { text: "well", start: 17, end: 17.4 },
+  ]);
+  assert.ok(cues[0]!.end >= 10.7, "a very short word is held for the minimum");
+  assert.ok(cues[0]!.end <= cues[1]!.start, "and stops before the next cue, not over the silence");
+});
+
+test("a long pause splits a cue and a short one does not", () => {
+  const split = buildCues([
+    { text: "one", start: 0, end: 0.4 },
+    { text: "two", start: 2.5, end: 2.9 },
+  ]);
+  assert.equal(split.length, 2, "a pause this long is a new cue");
+
+  const joined = buildCues([
+    { text: "one", start: 0, end: 0.4 },
+    { text: "two", start: 0.8, end: 1.2 },
+  ]);
+  assert.equal(joined.length, 1, "and this one is not");
+  assert.equal(joined[0]!.text, "one two");
+});
+
+test("a word's position in the cut video is its position in the source, less what was cut", () => {
+  // The intro 228.665-246.498 is deleted from this episode, and the player watches ten seconds of
+  // card first. A word at 300s of the source is therefore at 10 + (300 - 246.498) seconds.
+  const chunk: ChunkJob = { sourceStartMs: 246_000, sourceEndMs: 546_000, editedStartMs: 10_000 };
+  const shifted = shiftCues(
+    [{ text: "later", start: 54, end: 54.5 }], // 54s into the audio that starts at source 246s
+    {
+      editedStartSeconds: chunk.editedStartMs / 1000,
+      durationSeconds: (chunk.sourceEndMs - chunk.sourceStartMs) / 1000,
+    },
+  );
+  assert.equal(shifted.length, 1);
+  assert.equal(shifted[0]!.start, 10 + (300 - 246), "300s of the source lands here");
+  assert.equal(shifted[0]!.end, 10 + (300.5 - 246));
+});
+
+test("a line that falls inside a window that was cut is not in the track", () => {
+  const shifted = shiftCues([{ text: "gone", start: 100, end: 101 }], {
+    editedStartSeconds: 10,
+    durationSeconds: 60, // the audio was only the first minute
+  });
+  assert.deepEqual(shifted, [], "a cue past the end of its own audio is dropped, not shown late");
+});
+
+test("the file it writes is WebVTT a player will parse", () => {
+  const cues = buildCues([
+    { text: "Hello --> world", start: 10, end: 11 },
+    { text: "and one more line", start: 3_725.5, end: 3_726.25 },
+  ]);
+  const vtt = toVtt(cues, "generated by TheIntroDB");
+  assert.ok(vtt.startsWith("WEBVTT\n"), "the signature comes first");
+  assert.ok(vtt.includes("NOTE generated by TheIntroDB"));
+  assert.ok(!vtt.includes("--> world"), "an arrow in the text cannot look like a timecode");
+  const stamps = [...vtt.matchAll(/(\d{2}:\d{2}:\d{2}\.\d{3}) --> (\d{2}:\d{2}:\d{2}\.\d{3})/g)];
+  assert.equal(stamps.length, cues.length, "every cue has a stamp");
+  for (const [, start, end] of stamps) {
+    assert.ok(start! < end!, `${start} is before ${end}`);
+    assert.match(start!, /^\d{2}:\d{2}:\d{2}\.\d{3}$/, "and is a WebVTT timestamp, hours included");
+  }
+  assert.ok(vtt.includes("01:02:05.500 --> 01:02:06.250"), "an hour-long video still reads correctly");
+});
+
+test("the clock never goes backwards past zero", () => {
+  assert.equal(vttClock(-1), "00:00:00.000");
+  assert.equal(vttClock(0.0005), "00:00:00.001");
+  assert.equal(vttClock(59.9999), "00:01:00.000");
+  assert.equal(vttClock(3_599.5), "00:59:59.500");
+});
+
+test("the plan is the source less the windows, each piece where a player will see it", () => {
+  const windows = [{ type: "intro" as const, startMs: 100_000, endMs: 160_000 }];
+  const plan = planStretches(1_000_000, windows, 10_000, 300);
+
+  assert.equal(plan.length, 2, "the window splits the source in two");
+  assert.deepEqual(
+    plan.map((stretch) => [stretch.sourceStartMs, stretch.sourceEndMs, stretch.editedStartMs]),
+    [
+      [0, 100_000, 10_000],
+      [160_000, 1_000_000, 110_000],
+    ],
+    "the second stretch starts ten seconds later in the presentation than the 110s of source before it",
+  );
+  assert.deepEqual(
+    plan[1]!.chunks.map((chunk) => [chunk.sourceStartMs, chunk.editedStartMs]),
+    [
+      [160_000, 110_000],
+      [460_000, 410_000],
+      [760_000, 710_000],
+    ],
+    "and its own chunks follow each other",
+  );
+  assert.equal(presentationMs(1_000_000, windows, 10_000), 950_000, "1000 - 60 seconds of window, + 10 of card");
+});
+
+test("a source of unknown length is not planned at all", () => {
+  // Without the source's length the last window is open-ended, so every offset after it would be
+  // a guess -- and a guessed offset is a misaligned subtitle.
+  assert.deepEqual(planStretches(null, [{ type: "intro", startMs: 1_000, endMs: 2_000 }], 10_000), []);
+  assert.deepEqual(planStretches(0, [], 10_000), []);
+  assert.equal(presentationMs(null, [], 10_000), null);
+});

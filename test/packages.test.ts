@@ -577,11 +577,13 @@ test("a cold play gets the processing card, and hands over as soon as the episod
     );
   }
 
-  // A piece is a real, playable two seconds of video: a player has to be able to fetch it.
+  // The card is real, playable video of a known length: a player has to be able to fetch it, and
+  // the episode's position in the playlist depends on how long it is.
   const first = engine.segmentPath(key, "splash00000.ts");
   assert.ok(first, "a piece is servable by name");
   const pieceMs = await durationOf(first!);
   assert.ok(pieceMs > 1200 && pieceMs < 3_000, `a piece runs ${pieceMs}ms`);
+  assert.equal(await engine.cardMs(key), 2_000, "and the card is exactly the buffer it was asked for");
 
   // Then the episode can play: the card stops, and what the player already holds is the card
   // followed by the film.
@@ -596,15 +598,17 @@ test("a cold play gets the processing card, and hands over as soon as the episod
     "card, a declared jump, then the episode",
   );
 
-  const pieces = view.card;
+  // One piece, always: a card whose length changed as the packaging raced would move the
+  // episode under a player that was already watching it -- and under its subtitles.
   await new Promise((resolve) => setTimeout(resolve, 1200));
   const later = await engine.advanceCard(key);
-  assert.equal(later?.card, pieces, "and no further pieces are drawn once the episode can play");
+  assert.equal(later?.card, 1, "and the card never grows");
+  assert.equal(later?.card, view.card, "so the episode's start in the playlist is a constant");
 });
 
-test("the card keeps moving while nothing of the episode can be played yet", async () => {
-  // A source that never produces a segment: the card is the only thing a player can watch, so
-  // it has to keep up with the work rather than sit still.
+test("the card is drawn once, as long as the buffer, even when nothing can play yet", async () => {
+  // A source that never produces a segment is the case where the old card kept being redrawn:
+  // the player watched "Processing…" move while the episode's start time moved with it.
   const window = { type: "intro" as const, startMs: 30_000, endMs: 36_000 };
   const engine = new PackageEngine(settings({ cacheDir: path.join(workDir, "cache-moving"), splash: true }));
   await engine.start();
@@ -613,20 +617,16 @@ test("the card keeps moving while nothing of the episode can be played yet", asy
   engine.schedule(url, [window], "stream:moving");
 
   const first = await engine.splashView(key, [window]);
-  assert.equal(first?.card, 1, "one piece to start with");
+  assert.equal(first?.card, 1, "one piece");
   assert.equal(first?.segments, 0, "and nothing of the episode, because there is none");
   assert.ok(first?.body.includes("#EXT-X-PLAYLIST-TYPE:EVENT"), "a playlist that keeps growing");
   assert.ok(!first?.body.includes("#EXT-X-ENDLIST"), "with no end while the work goes on");
-  const firstPts = await firstVideoPts(engine.segmentPath(key, "splash00000.ts")!);
+  assert.ok(await firstVideoPts(engine.segmentPath(key, "splash00000.ts")!) >= 0, "and it decodes");
 
   await new Promise((resolve) => setTimeout(resolve, 1200));
   const second = await engine.advanceCard(key);
-  assert.equal(second?.card, 2, "and another while the work is still going");
-  const secondPts = await firstVideoPts(engine.segmentPath(key, "splash00001.ts")!);
-  assert.ok(secondPts > firstPts, "the pieces share one clock, the way a stretch does");
-
-  // The episode, when it does arrive, is appended after a declared jump in the clock.
-  assert.ok(second.body.includes("splash00000.ts") && second.body.includes("splash00001.ts"));
+  assert.equal(second?.card, 1, "still one piece, however long the work goes on");
+  assert.equal(await engine.cardMs(key), 10_000, "and it is the buffer's length");
   assert.equal((await engine.splashView("deadbeefdeadbeef0000")), null, "no package, no card");
 });
 
@@ -650,9 +650,13 @@ test("the playlist declares the whole episode from its first response", async ()
   assert.ok(card, "the card is served");
   assert.equal(card.expectedMs, LONG_SECONDS * 1000 - 6_000, "the episode's length less the window");
   assert.ok(card.padding > 0, "with the remainder padded");
+  // The presentation is the card and then the episode, so its length is both together.
+  const cardMs = await engine.cardMs(key);
+  assert.equal(cardMs, 10_000, "the card is the buffer's length, not a race");
+  const declared = cardMs + card.expectedMs!;
   assert.ok(
-    card.durationMs >= card.expectedMs! - 8_000 && card.durationMs <= card.expectedMs! + 8_000,
-    `the declared length is the episode's (${card.durationMs}ms against ${card.expectedMs}ms)`,
+    card.durationMs >= declared - 8_000 && card.durationMs <= declared + 8_000,
+    `the declared length is the card plus the episode (${card.durationMs}ms against ${declared}ms)`,
   );
 
   // The padding is real, fetchable media rather than a dangling URI: a player that outruns the
@@ -664,9 +668,10 @@ test("the playlist declares the whole episode from its first response", async ()
   assert.ok((await durationOf(path0!)) > 1_000, "and which is real media");
 });
 
-test("the card is played until a buffer of real video exists", async () => {
+test("the card covers the wait for the buffer, and is the buffer's length", async () => {
   // Starting playback on a couple of seconds is what made the player treat the episode as
-  // finished; the card covers the gap until enough of the film is ready to watch.
+  // finished. The card covers the wait, and it is as long as the buffer exactly, so a player
+  // (and a subtitle track) can count on where the film begins.
   const window = { type: "intro" as const, startMs: 30_000, endMs: 36_000 };
   const engine = new PackageEngine(
     settings({ cacheDir: path.join(workDir, "cache-buffer"), splash: true, prerollSeconds: 10 }),
@@ -678,9 +683,13 @@ test("the card is played until a buffer of real video exists", async () => {
 
   const first = await engine.splashView(key, [window]);
   assert.ok(first, "the card is served straight away");
-  await new Promise((resolve) => setTimeout(resolve, 1200));
+  assert.equal(first?.card, 1, "once");
+  assert.equal(await engine.cardMs(key), 10_000, "and it is ten seconds of card, not a race");
+  const pieceMs = await durationOf(engine.segmentPath(key, "splash00000.ts")!);
+  assert.ok(pieceMs > 8_000, `the card itself runs ${pieceMs}ms`);
 
-  // Wait for more than the buffer's worth of the episode, then check the card has stopped.
+  // The episode is packaged behind it, and the playlist says where the film starts: after the
+  // card, and it stays there.
   const deadline = Date.now() + 180_000;
   for (;;) {
     const view = await engine.manifest(key);
@@ -688,10 +697,7 @@ test("the card is played until a buffer of real video exists", async () => {
     assert.ok(Date.now() < deadline, "the episode's own segments arrive");
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
-  const stopped = await engine.advanceCard(key);
-  const pieces = stopped?.card ?? 0;
-  assert.ok(pieces >= 1, "the card is in the playlist");
-  await new Promise((resolve) => setTimeout(resolve, 1200));
-  const later = await engine.advanceCard(key);
-  assert.equal(later?.card, pieces, "and no further pieces once there is a buffer to watch");
+  const later = await engine.manifest(key);
+  assert.equal(later?.card, 1, "the card is still one piece");
+  assert.equal(await engine.cardMs(key), 10_000, "and still the same length");
 });

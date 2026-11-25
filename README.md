@@ -210,7 +210,11 @@ A file is packaged on demand, so a cold playback has nothing of the episode to p
 
 **The playlist declares the whole episode from its first response.** A player that reaches the end of a playlist decides the title is over — Stremio marks the episode watched and jumps to the next one — and a playlist holding only what has been packaged so far ends after a few seconds. So the source's length is probed once per title (`rememberDuration`), the declared length is the source minus the windows being cut, and the part that has not been packaged yet is filled with **placeholder entries pointing at the card**: the player sees "Processing…" if it ever reaches them, and the length is right from the start. As real segments arrive they replace the placeholder from the tail, so the declared length stays the episode's.
 
+**The card is exactly the pre-roll buffer, and it is drawn once.** It is as long as `PREROLL_SECONDS` and never grows, because its length is part of the playlist's timeline: a card whose size depended on how the packaging raced would move the episode (and anything timed against it, like generated subtitles) under a player that was already watching. So the player spends the same ten seconds on the card however fast the source is, and by the time it reaches the film that much of the film exists — which is the other half of why Stremio stopped treating a fresh episode as a finished one.
+
 **Playback starts once there is a buffer to watch.** The card is played until `PREROLL_SECONDS` (default **10**) of the *episode's own* video is ready — never less than one segment — and then stops: a player already holding that playlist walks off the end of the card into the film, and the rest is packaged behind it. (Earlier, the card was drawn for as long as the package was incomplete, which put "Processing…" in front of the film until the whole file had been cut.)
+
+Generated subtitles (below) are timed against the same constant, which is why the card cannot be sized by the race.
 
 Placeholder entries are one segment's worth each (~6 s) rather than one enormous one, because a player's reload cadence comes from `#EXT-X-TARGETDURATION`: a two-hour target would mean waiting two hours to notice the episode had arrived. A two-hour episode is ~1200 entries with or without placeholders, so the playlist stays the size a playlist normally is.
 

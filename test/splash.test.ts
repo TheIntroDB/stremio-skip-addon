@@ -64,6 +64,7 @@ test("the pieces are drawn from text files, not from filter arguments", () => {
     { segments: 3, windows: [{ type: "intro", startMs: 0, endMs: 1_000 }], pass: 1, passes: 1 },
     "/tmp/x/splash00000.ts",
     0,
+    10,
     "/tmp/x",
   );
   const graph = args[args.indexOf("-filter_complex") + 1]!;
@@ -72,8 +73,14 @@ test("the pieces are drawn from text files, not from filter arguments", () => {
   assert.ok(!/text=[^f]/.test(graph), "no text= argument anywhere");
   // Each piece is offset onto one shared clock, or a player loops on the pieces.
   assert.equal(args[args.indexOf("-output_ts_offset") + 1], "0.000");
-  const second = splashArgs({ segments: 0, windows: [], pass: 1, passes: 1 }, "/tmp/x/splash00001.ts", 2, "/tmp/x");
-  assert.equal(second[second.indexOf("-output_ts_offset") + 1], "2.000");
+  const second = splashArgs(
+    { segments: 0, windows: [], pass: 1, passes: 1 },
+    "/tmp/x/splash00001.ts",
+    10,
+    10,
+    "/tmp/x",
+  );
+  assert.equal(second[second.indexOf("-output_ts_offset") + 1], "10.000");
   assert.ok(SPLASH_RE.test("splash00001.ts"));
   assert.ok(!SPLASH_RE.test("splash1.ts"));
 });

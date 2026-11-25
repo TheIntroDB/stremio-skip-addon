@@ -25,8 +25,23 @@ import { run } from "./ffmpeg.js";
 import type { SkipWindow } from "./types.js";
 
 /** Every piece of the card is this long. */
-export const SPLASH_SECONDS = 2;
-export const SPLASH_PIECE_MS = SPLASH_SECONDS * 1000;
+/**
+ * How long the card is.
+ *
+ * Exactly the pre-roll buffer, and drawn as a single piece, which makes two things true that
+ * matter: the player spends the same 10 seconds on the card however fast the source is (so the
+ * episode always starts at the same point in the playlist), and the subtitle track generated for
+ * the cut video can be shifted by that fixed amount and stay aligned. Pieces used to be two
+ * seconds each and drawn for as long as the episode could not play, which made the episode's
+ * start time depend on how the race went.
+ */
+export function cardSeconds(settings: Settings): number {
+  return Math.max(2, Math.round(settings.prerollSeconds)) || 2;
+}
+/** The stated length of a card piece when its real one cannot be read back. */
+export const SPLASH_PIECE_MS = 2_000;
+/** How long the plain black piece the padding falls back to is. */
+export const PAD_SECONDS = 6;
 /** `splash00000.ts`, kept beside the package's own segments. */
 export const SPLASH_RE = /^splash\d{5}\.ts$/;
 /** `pad00000.ts`: a plain piece the padding falls back to when no card can be drawn. */
@@ -132,7 +147,13 @@ export const CARD_FILES = {
 } as const;
 
 /** The ffmpeg arguments that draw one piece of the card. */
-export function splashArgs(card: SplashCard, out: string, offsetSeconds: number, dir: string): string[] {
+export function splashArgs(
+  card: SplashCard,
+  out: string,
+  offsetSeconds: number,
+  seconds: number,
+  dir: string,
+): string[] {
   const draw = (
     file: string,
     font: string,
@@ -166,7 +187,7 @@ export function splashArgs(card: SplashCard, out: string, offsetSeconds: number,
     // at exactly its offset rather than a second and a half later.
     "-muxdelay", "0", "-muxpreload", "0",
     "-output_ts_offset", offsetSeconds.toFixed(3),
-    "-t", String(SPLASH_SECONDS),
+    "-t", String(seconds),
     "-f", "mpegts",
     out,
   ];
@@ -183,6 +204,7 @@ export async function generateSplashPiece(
   index: number,
   card: SplashCard,
 ): Promise<SplashResult> {
+  const seconds = cardSeconds(settings);
   const name = `splash${String(index).padStart(5, "0")}.ts`;
   const out = path.join(dir, name);
   const text = cardText(card);
@@ -198,7 +220,7 @@ export async function generateSplashPiece(
   }
   const result = await run(
     settings.ffmpegPath,
-    splashArgs(card, out, index * SPLASH_SECONDS, dir),
+    splashArgs(card, out, index * seconds, cardSeconds(settings), dir),
     60_000,
   );
   if (result.code !== 0) {
@@ -240,7 +262,7 @@ export async function generatePadPiece(
       "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
       "-c:a", "aac", "-b:a", "48k",
       "-muxdelay", "0", "-muxpreload", "0",
-      "-t", String(SPLASH_SECONDS),
+      "-t", String(PAD_SECONDS),
       "-f", "mpegts",
       out,
     ],
