@@ -184,3 +184,22 @@ test("nothing is planned without the source's length or an install that asked", 
   );
   assert.equal(await engine.playlist("k", CARD_MS), null, "and no playlist for a track nobody wanted");
 });
+
+test("a player that asks too early gets a valid playlist, not a 404", async () => {
+  // This is what a player does: it reads the rendition once, when it loads the master. A missing
+  // playlist at that moment is a track it drops for the rest of the film, however many chunks
+  // arrive afterwards -- so the answer is an empty EVENT playlist that says "keep asking".
+  const { settings } = await fixture();
+  const engine = new SubtitleEngine(settings, stubTranscriber());
+  const response = await handleSubtitlePlaylist(
+    { settings, subtitles: engine, request: new Request("http://localhost/cfg/subs.m3u8?f=nothing") },
+    CARD_MS,
+  );
+  assert.equal(response.status, 200);
+  const body = await response.text();
+  assert.ok(body.startsWith("#EXTM3U"), "a playlist");
+  assert.ok(body.includes("#EXT-X-PLAYLIST-TYPE:EVENT"), "that may still grow");
+  assert.ok(!body.includes("#EXT-X-ENDLIST"), "and has not finished");
+  assert.ok(body.includes("#EXT-X-TARGETDURATION"), "with a reload cadence");
+  assert.equal(engine.served.playlists, 1, "and it is counted, so /health can see it");
+});

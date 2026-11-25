@@ -125,12 +125,27 @@ export class SubtitleEngine {
     return job;
   }
 
+  /** Whether a track is being made (or has been made) for this key. */
+  tracking(key: string): boolean {
+    return this.jobs.has(key);
+  }
+
   /** Whether a track exists for this key at all (used by /health and the tests). */
   async has(key: string): Promise<boolean> {
     const job = this.jobs.get(key);
     if (!job) return false;
     return this.written(path.join(this.dirFor(job.key), `${this.chunkName(0)}.vtt`));
   }
+
+  /** Note that a playlist was asked for, so /health can show a player reaching it. */
+  markPlaylist(key: string): void {
+    this.served.playlists += 1;
+    this.served.lastKey = key;
+  }
+
+  /** Counters for /health: what playbacks asked for, and what was served. */
+  readonly served: { wanted: number; masters: number; playlists: number; chunks: number; lastKey?: string } =
+    { wanted: 0, masters: 0, playlists: 0, chunks: 0 };
 
   /** What /health reports. */
   status(): Record<string, unknown> {
@@ -141,6 +156,7 @@ export class SubtitleEngine {
       models: this.transcriber.lastError === null,
       modelsError: this.transcriber.lastError,
       tracks: jobs.filter((job) => job.ready).length,
+      served: { ...this.served },
       active: this.pumping ? 1 : 0,
       queued: this.queue.length,
       progress: jobs
@@ -415,8 +431,14 @@ export async function handleSubtitlePlaylist(context: TrackRequest, cardMs: numb
   const url = new URL(context.request.url);
   const key = url.searchParams.get("f") ?? "";
   const playlist = context.subtitles ? await context.subtitles.playlist(key, cardMs) : null;
-  if (!playlist) return new Response("#EXTM3U\n", { status: 404 });
-  return new Response(playlist.body, {
+  // Never a 404, even before the first chunk exists: a player reads the rendition as soon as it
+  // loads the master, and a missing playlist at that moment means a track it drops for good.
+  // An empty EVENT playlist is legal and says "nothing yet, keep asking".
+  const body =
+    playlist?.body ??
+    "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:10\n#EXT-X-PLAYLIST-TYPE:EVENT\n#EXT-X-MEDIA-SEQUENCE:0\n";
+  if (key) context.subtitles?.markPlaylist(key);
+  return new Response(body, {
     status: 200,
     headers: {
       "content-type": "application/vnd.apple.mpegurl",
@@ -437,6 +459,7 @@ export async function handleSubtitleChunk(
   key: string,
   index: string,
 ): Promise<Response> {
+  if (context.subtitles) context.subtitles.served.chunks += 1;
   const file = context.subtitles ? await context.subtitles.chunkFile(key, index) : null;
   if (!file) return new Response("", { status: 404 });
   let body: string;

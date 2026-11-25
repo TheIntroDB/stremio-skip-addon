@@ -355,9 +355,14 @@ function packageResponse(
   lookupReason: string,
 ): Response {
   const url = new URL(context.request.url);
+  const enabled = context.subtitles?.enabled(context.config) === true;
+  if (enabled) context.subtitles!.served.wanted += 1;
+  // Only when a track is actually being made: a master that points at a rendition with nothing
+  // behind it is a track a player will drop, or worse, a master it will refuse.
   const wants =
-    context.subtitles?.enabled(context.config) === true && url.searchParams.get("m") !== "1";
+    enabled && context.subtitles!.tracking(key) && url.searchParams.get("m") !== "1";
   if (!wants) return mediaResponse(view, key, lookupReason);
+  context.subtitles!.served.masters += 1;
 
   const media = new URL(url.toString());
   media.searchParams.set("m", "1");
@@ -366,7 +371,9 @@ function packageResponse(
     "#EXTM3U",
     "#EXT-X-VERSION:7",
     `#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs",NAME="TheIntroDB",LANGUAGE=${language},` +
-      `DEFAULT=YES,AUTOSELECT=YES,FORCED=NO,URI="subs.m3u8?f=${encodeURIComponent(key)}"`,
+      // FORCED, not just DEFAULT: an install asked for these subtitles, and several players
+      // (webOS among them) only turn a track on without a pick when it is forced.
+      `DEFAULT=YES,AUTOSELECT=YES,FORCED=YES,URI="subs.m3u8?f=${encodeURIComponent(key)}"`,
     '#EXT-X-STREAM-INF:BANDWIDTH=10000000,SUBTITLES="subs"',
     `${media.pathname}${media.search}`,
     "",
