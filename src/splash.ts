@@ -47,7 +47,11 @@ export const BADGE_PATH = path.resolve(
 );
 
 export interface SplashCard {
-  /** Segments of the episode packaged so far, at the moment this piece is drawn. */
+  /**
+   * Segments of the episode written so far, at the moment this piece is drawn. It drives the
+   * ticker; the *count* on the card is how many segments there are to cut in total, because
+   * that is the number the card's own list of windows shows and the two must not disagree.
+   */
   segments: number;
   /** The windows being removed, so the card can name them. */
   windows: readonly SkipWindow[];
@@ -83,6 +87,7 @@ export function cardText(card: SplashCard): {
   subtitle: string;
   count: string;
   windows: string;
+  footer: string;
 } {
   const windows = card.windows
     .map(
@@ -95,12 +100,16 @@ export function cardText(card: SplashCard): {
   // A ticker that advances with the work: each piece is drawn a couple of seconds after the
   // last, so this is what makes the card move rather than sit still.
   const dots = "·".repeat(card.segments % 9);
+  // How many segments are being cut at all: the windows below are the segments, so saying
+  // "0 segments" over a list of two read as a broken counter rather than as progress.
+  const count = card.windows.length;
   const where = card.passes > 1 ? `   (${card.pass}/${card.passes})` : "";
   return {
     title: "Processing…",
     subtitle: "TheIntroDB is currently cutting the segments from your stream",
-    count: `${card.segments} ${card.segments === 1 ? "segment" : "segments"}`,
+    count: `${count} ${count === 1 ? "segment" : "segments"}`,
     windows: windows ? `${windows}${where}   ${dots}`.trimEnd() : dots,
+    footer: "Go to theintrodb.org to submit or report incorrect segments",
   };
 }
 
@@ -117,6 +126,7 @@ export const CARD_FILES = {
   subtitle: "card.subtitle.txt",
   count: "card.count.txt",
   windows: "card.windows.txt",
+  footer: "card.footer.txt",
 } as const;
 
 /** The ffmpeg arguments that draw one piece of the card. */
@@ -136,7 +146,8 @@ export function splashArgs(card: SplashCard, out: string, offsetSeconds: number,
     `[v0]${draw(CARD_FILES.title, FONT_BOLD, 66, "white", 360)}[v1]`,
     `[v1]${draw(CARD_FILES.subtitle, FONT_REGULAR, 28, "white", 452)}[v2]`,
     `[v2]${draw(CARD_FILES.count, FONT_REGULAR, 26, GREY, 524)}[v3]`,
-    `[v3]${draw(CARD_FILES.windows, FONT_REGULAR, 26, GREY, 566)}[out]`,
+    `[v3]${draw(CARD_FILES.windows, FONT_REGULAR, 26, GREY, 566)}[v4]`,
+    `[v4]${draw(CARD_FILES.footer, FONT_REGULAR, 22, GREY, 628)}[out]`,
   ].join(";");
 
   return [
@@ -179,6 +190,7 @@ export async function generateSplashPiece(
     await writeFile(path.join(dir, CARD_FILES.subtitle), `${text.subtitle}\n`);
     await writeFile(path.join(dir, CARD_FILES.count), `${text.count}\n`);
     await writeFile(path.join(dir, CARD_FILES.windows), `${text.windows}\n`);
+    await writeFile(path.join(dir, CARD_FILES.footer), `${text.footer}\n`);
   } catch (error) {
     return { ok: false, error: `cannot write the card's text: ${String(error)}` };
   }

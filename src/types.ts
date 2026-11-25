@@ -81,8 +81,6 @@ export interface AddonConfig {
   cuts?: CutMode;
   /** This install's own margin on each cut, in seconds, overriding the deployment's. */
   margin?: number;
-  /** Set to false to skip the processing card and wait for the first segment instead. */
-  splash?: boolean;
   /** Overrides the addon name shown in Stremio. */
   name?: string;
 }

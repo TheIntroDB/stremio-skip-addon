@@ -543,10 +543,10 @@ test("the segments of a stretch share one timeline, so a player's clock does not
   }
 });
 
-test("a cold play gets the processing card, and the episode is appended to it", async () => {
-  // The bug this exists for is a player handed nothing: it shows a spinner, then "failed to
-  // start". The card is served immediately and the episode's own segments join the same
-  // playlist as they are written, so playback starts at once and nothing has to be waited on.
+test("a cold play gets the processing card, and hands over as soon as the episode can play", async () => {
+  // Two things are being proven: a player is given something to look at at once instead of a
+  // spinner, and the card does not keep growing in front of the film -- waiting for the whole
+  // file is exactly what that looked like.
   const window = { type: "intro" as const, startMs: 30_000, endMs: 36_000 };
   const engine = new PackageEngine(settings({ cacheDir: path.join(workDir, "cache-card"), splash: true }));
   await engine.start();
@@ -560,31 +560,25 @@ test("a cold play gets the processing card, and the episode is appended to it", 
   const card = await engine.splashView(key, [window]);
   assert.ok(card, "the card is served");
   assert.ok(Date.now() - started < 15_000, `and quickly (${Date.now() - started}ms)`);
-  assert.equal(card.segments, 0, "with no episode segments in it yet");
-  assert.equal(card.card, 1, "one piece of the card");
+  assert.ok(card.card >= 1, "with at least one piece of the card in it");
   assert.ok(card.body.includes("splash00000.ts"), "which the playlist lists");
-  assert.ok(!card.body.includes("#EXT-X-ENDLIST"), "and which keeps growing");
-  assert.ok(card.body.includes("#EXT-X-PLAYLIST-TYPE:EVENT"));
+  // Whether the episode's first segment is already written by now is a race with ffmpeg, not
+  // something to assert; what matters is that the card comes first when it is there.
+  if (card.segments > 0) {
+    assert.ok(
+      card.body.indexOf("splash") < card.body.indexOf("seg0"),
+      "the card is the start of the film, not a screen after it",
+    );
+  }
 
   // A piece is a real, playable two seconds of video: a player has to be able to fetch it.
   const first = engine.segmentPath(key, "splash00000.ts");
   assert.ok(first, "a piece is servable by name");
   const pieceMs = await durationOf(first!);
   assert.ok(pieceMs > 1200 && pieceMs < 3_000, `a piece runs ${pieceMs}ms`);
-  const before = await firstVideoPts(first!);
 
-  // The card updates while the work goes on: another request draws another piece.
-  await new Promise((resolve) => setTimeout(resolve, 1100));
-  const later = await engine.splashView(key, [window]);
-  assert.ok(later && later.card > card.card, `another piece is drawn (${later?.card})`);
-  const second = engine.segmentPath(key, "splash00001.ts");
-  assert.ok(second);
-  assert.ok(
-    (await firstVideoPts(second!)) > before,
-    "and the pieces share one clock, the way a stretch does",
-  );
-
-  // The episode joins the same playlist, after a declared jump in the clock.
+  // Then the episode can play: the card stops, and what the player already holds is the card
+  // followed by the film.
   await engine.waitForFirstSegment(key, 180_000);
   const view = await engine.manifest(key);
   assert.ok(view, "the playlist is served");
@@ -595,7 +589,38 @@ test("a cold play gets the processing card, and the episode is appended to it", 
     /splash0000\d\.ts[\s\S]*#EXT-X-DISCONTINUITY[\s\S]*seg0000\d\.ts/,
     "card, a declared jump, then the episode",
   );
-  // The card is a stem, not a prefix on every playback: a new key that is already complete
-  // never starts one.
-  assert.equal((await engine.splashView("deadbeefdeadbeef0000")) , null, "no package, no card");
+
+  const pieces = view.card;
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  const later = await engine.advanceCard(key);
+  assert.equal(later?.card, pieces, "and no further pieces are drawn once the episode can play");
 });
+
+test("the card keeps moving while nothing of the episode can be played yet", async () => {
+  // A source that never produces a segment: the card is the only thing a player can watch, so
+  // it has to keep up with the work rather than sit still.
+  const window = { type: "intro" as const, startMs: 30_000, endMs: 36_000 };
+  const engine = new PackageEngine(settings({ cacheDir: path.join(workDir, "cache-moving"), splash: true }));
+  await engine.start();
+  const url = "http://127.0.0.1:1/never.mkv";
+  const key = engine.keyFor(url, [window], "stream:moving");
+  engine.schedule(url, [window], "stream:moving");
+
+  const first = await engine.splashView(key, [window]);
+  assert.equal(first?.card, 1, "one piece to start with");
+  assert.equal(first?.segments, 0, "and nothing of the episode, because there is none");
+  assert.ok(first?.body.includes("#EXT-X-PLAYLIST-TYPE:EVENT"), "a playlist that keeps growing");
+  assert.ok(!first?.body.includes("#EXT-X-ENDLIST"), "with no end while the work goes on");
+  const firstPts = await firstVideoPts(engine.segmentPath(key, "splash00000.ts")!);
+
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  const second = await engine.advanceCard(key);
+  assert.equal(second?.card, 2, "and another while the work is still going");
+  const secondPts = await firstVideoPts(engine.segmentPath(key, "splash00001.ts")!);
+  assert.ok(secondPts > firstPts, "the pieces share one clock, the way a stretch does");
+
+  // The episode, when it does arrive, is appended after a declared jump in the clock.
+  assert.ok(second.body.includes("splash00000.ts") && second.body.includes("splash00001.ts"));
+  assert.equal((await engine.splashView("deadbeefdeadbeef0000")), null, "no package, no card");
+});
+

@@ -206,9 +206,11 @@ Both ends of that: with a 2-second keyframe grid a 17.8 s window lost 17.3 s of 
 
 ### The processing card
 
-A file is packaged on demand, so a cold playback has nothing of the episode to play for a moment. Rather than leave the player with a spinner — or hold the request until enough exists — it is handed a **processing card**: a black 1280×720 slide with the badge, `Processing…`, `TheIntroDB is currently cutting the segments from your stream`, how many segments have been cut, and the windows being removed. It is drawn two seconds at a time while the work goes on, so it moves, and the episode's own segments are appended to the same playlist as they are written: the card is the start of the film rather than a separate screen.
+A file is packaged on demand, so a cold playback has nothing of the episode to play for a moment. Rather than leave the player with a spinner — or hold the request until enough exists — it is handed a **processing card**: a black 1280×720 slide with the badge, `Processing…`, `TheIntroDB is currently cutting the segments from your stream`, how many segments are being cut, which windows those are, and `Go to theintrodb.org to submit or report incorrect segments`. The count is the number of windows — the segments the card is listing — and the line under it carries a ticker that advances as segments are written, so the card moves while the work happens.
 
-- One `SPLASH=off` (or turning it off on the configuration page) restores the old behaviour: the play request is held until the first segment exists.
+It is only there while the first frames are being made. The card's pieces are appended to the same playlist as the episode's own segments, and **the card stops the moment one segment of the episode exists**: a player already holding that playlist walks off the end of the card into the film, and the rest of the packaging carries on behind it. (Earlier, pieces were drawn for as long as the package was incomplete, which put "Processing…" in front of the film until the whole file had been cut.)
+
+- Everybody gets the card; it is not a setting on the setup page. An operator can turn it off for the whole deployment with `SPLASH=off`, and the play request is then held until the first segment exists instead.
 - It needs a font and the badge. The image installs `fonts-dejavu-core` and vendors `assets/badge.png`; a deployment without them logs the reason at boot, reports it in `/health` (`cutsStatus.splashError`) and simply skips the card.
 - The text is passed to ffmpeg as files, not as filter arguments: a colon (`Intro 3:50-4:04`) cannot be passed through a filter graph at all — `\:` does not survive the graph parser and quoting the value does not either, both of which were measured against the ffmpeg in the image.
 
@@ -216,7 +218,7 @@ A file is packaged on demand, so a cold playback has nothing of the episode to p
 
 Because the cut is keyframe-limited, and because TheIntroDB's timings describe *a* release of a title rather than necessarily the one being watched, the first and last seconds of an intro are exactly where dialogue can go missing. Every window is therefore **shrunk before it is used**: the skip starts `SKIP_MARGIN_SECONDS` (default **2**) after the reported start, and ends that many seconds before the reported end — on every segment type, and in both cut paths. It can only ever remove *less* than the timings ask for, never more.
 
-- `SKIP_MARGIN_SECONDS=0` cuts exactly what TheIntroDB reports.
+- `SKIP_MARGIN_SECONDS=0` cuts exactly what TheIntroDB reports. The configuration page offers 0–5 seconds as a dropdown.
 - It is a control on the configuration page too, stored in the install link, so one install can be cautious while another is literal. Changing it makes a different package (the windows are part of the key), so the next playback packages afresh.
 - A window the margin would empty is dropped outright rather than cut at zero length, so a very short segment simply keeps playing.
 
@@ -308,7 +310,7 @@ Everything is an environment variable; there is nothing to edit in the image.
 | `CACHE_DIR` | `./cache` (`/cache` in the image) | Where package segments are kept. |
 | `CACHE_MAX_GB` | `50` | Disk budget for packages, evicted oldest-first. |
 | `CUT_WAIT_SECONDS` | `120` | `blocking` mode only: how long a play request waits for the first segment. A couple of seconds is the normal answer; the bound only matters when a source is slow. |
-| `SPLASH` | `on` | Draw the processing card for a cold playback. `off` holds the play request instead. Also a control on the configuration page. |
+| `SPLASH` | `on` | Draw the processing card for a cold playback. `off` holds the play request until the first segment exists instead. Everybody gets the card; this is an operator's switch, not an install's. |
 | `SKIP_MARGIN_SECONDS` | `2` | Seconds left alone at each end of every window, so a cut never removes more than the timings ask for. A control on the configuration page sets it per install. |
 | `CUT_CONCURRENCY` | `2` | Concurrent ffmpeg processes. |
 | `PRECUT_SOURCES` | `2` | Sources to start cutting when a stream list is fetched (0 disables the head start). |

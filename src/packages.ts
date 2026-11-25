@@ -350,57 +350,83 @@ export class PackageEngine {
   }
 
   /**
-   * A playlist showing only the processing card, drawn up to date, or null.
+   * A playlist for a request from the *file* path: the card, drawn up to date, or the
+   * episode once it can play.
    *
-   * This is what a cold play gets instead of waiting: a player handed this starts
-   * immediately and shows what is happening, and the episode's segments are appended to
-   * the same playlist as they are written.
+   * This is what a cold play gets instead of waiting. It is also what starts a card: a card
+   * only ever exists for a key whose package this path asked for, so a playlist source never
+   * gets one.
    */
   async splashView(key: string, windows: readonly SkipWindow[] = []): Promise<ManifestView | null> {
     if (!this.settings.splash || this.cardOk === false) return null;
     // The plan is written by the job that just started, so it may not be on disk yet: the
     // caller passes the windows it is about to cut, and the plan only adds detail. Without
     // either, nothing is being packaged for this key and there is no card to show.
-    const plan = await this.readPlan(key);
-    if (!plan && windows.length === 0) return null;
-    const shown = plan?.windows?.length ? plan.windows : windows;
-    const passes = plan?.ranges.length ?? 1;
+    if (!(await this.readPlan(key)) && windows.length === 0) return null;
+    // `lastAt` starts at the moment the card is created, and the first piece is drawn at
+    // once (see `drawCardPiece`): a card whose pieces were zero and whose clock was epoch was
+    // swept away by the idle check before it could draw anything.
+    this.cards.set(key, this.cards.get(key) ?? { pieces: 0, lastAt: Date.now(), frozen: false });
+    await this.drawCardPiece(key, windows);
+    return this.manifest(key);
+  }
+
+  /**
+   * Keep an existing card moving, for a request that arrived before the target was known to
+   * be a file.
+   *
+   * Only a key that already has a card is touched, so a playlist source is never given one.
+   */
+  async advanceCard(key: string): Promise<ManifestView | null> {
+    if (!this.cards.has(key)) return null;
+    await this.drawCardPiece(key, []);
+    return this.manifest(key);
+  }
+
+  /**
+   * Draw another piece of the card, if one is due and the episode cannot play yet.
+   *
+   * The instant a segment of the episode exists the card stops growing: the player is
+   * already holding this playlist, so it walks off the end of the card into the film, and
+   * the rest of the packaging carries on behind it. Drawing more pieces here would keep
+   * putting "Processing…" in front of the film, which is what waiting for the whole file
+   * looked like.
+   */
+  private async drawCardPiece(key: string, windows: readonly SkipWindow[]): Promise<void> {
+    if (this.cardOk === false) return;
+    const state = this.cards.get(key);
+    if (!state || state.frozen) return;
+    if (state.pieces > 0 && Date.now() - state.lastAt < SPLASH_MIN_INTERVAL_MS) return;
     this.used.set(key, Date.now());
     this.sweepCards();
 
-    const state = this.cards.get(key) ?? { pieces: 0, lastAt: 0, frozen: false };
-    this.cards.set(key, state);
-    if (!state.frozen && Date.now() - state.lastAt >= SPLASH_MIN_INTERVAL_MS) {
-      const stretches = plan ? await this.realStretches(plan, key) : [];
-      const written = stretches.reduce((total, stretch) => total + stretch.length, 0);
-      // Which stretch ffmpeg is on: the first one with nothing in it yet.
-      const piece = await generateSplashPiece(this.settings, this.dirFor(key), state.pieces, {
-        segments: written,
-        windows: shown,
-        pass: Math.min(passes, stretches.length + 1),
-        passes,
-      });
-      if (piece.ok) {
-        await this.appendSplashList(key, piece.name, SPLASH_PIECE_MS);
-        state.pieces += 1;
-        state.lastAt = Date.now();
-        this.cardError = null;
-      } else {
-        // Cannot draw it here: stop trying, let the caller do what it used to, and keep
-        // the reason where /health can report it.
-        state.frozen = true;
-        this.cardError = piece.error;
-        console.warn(`  warning        the processing card cannot be drawn: ${piece.error}`);
-      }
+    const plan = await this.readPlan(key);
+    const shown = plan?.windows?.length ? plan.windows : windows;
+    const passes = plan?.ranges.length ?? 1;
+    const stretches = plan ? await this.realStretches(plan, key) : [];
+    const written = stretches.reduce((total, stretch) => total + stretch.length, 0);
+    if (written > 0) {
+      state.frozen = true;
+      return;
     }
-
-    const card = await this.readSplashList(key);
-    if (card.length === 0) return null;
-    const items: Array<{ uri: string; ms: number } | "disc"> = card.map((entry) => ({
-      uri: `seg?f=${encodeURIComponent(key)}/${entry.name}`,
-      ms: entry.ms,
-    }));
-    return this.playlistView(items, { complete: false, segments: 0, card: card.length });
+    const piece = await generateSplashPiece(this.settings, this.dirFor(key), state.pieces, {
+      segments: written,
+      windows: shown,
+      pass: Math.min(passes, stretches.length + 1),
+      passes,
+    });
+    if (piece.ok) {
+      await this.appendSplashList(key, piece.name, SPLASH_PIECE_MS);
+      state.pieces += 1;
+      state.lastAt = Date.now();
+      this.cardError = null;
+      return;
+    }
+    // Cannot draw it here: stop trying, let the caller do what it used to, and keep the
+    // reason where /health can report it.
+    state.frozen = true;
+    this.cardError = piece.error;
+    console.warn(`  warning        the processing card cannot be drawn: ${piece.error}`);
   }
 
   /** Stop the card for a key that is finished, and forget cards nobody is watching. */

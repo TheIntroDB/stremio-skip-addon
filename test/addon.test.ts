@@ -347,8 +347,7 @@ test("the Worker serves a config page, a health check and a bare manifest", asyn
   }
   assert.ok(body.includes('"cuts":{"mode"'), "and it defaults to what this deployment does");
   assert.ok(body.includes('"skipMarginSeconds":0'), "including its margin");
-  assert.match(body, /<input type="number" id="margin"/, "the page offers the margin");
-  assert.match(body, /id="splash"[^>]*checked/, "and the processing card, on by default");
+  assert.match(body, /<select id="margin"><\/select>/, "the page offers the margin as a dropdown");
   for (const id of ["cuts-mode", "cuts-cache", "cuts-margin", "cuts-ffmpeg", "api", "origin"]) {
     assert.ok(body.includes(`id="${id}"`), `the page has the #${id} element the script writes to`);
   }

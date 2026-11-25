@@ -84,8 +84,12 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
 
   // A package that already exists is served before anything else is decided: this is
   // what makes a debrid `.mkv` skip its intro on every playback after the first, and
-  // (in `on` mode) what makes it skip from the very first one.
+  // (in `on` mode) what makes it skip from the very first one. A processing card that is
+  // already in such a playlist is kept up to date here, because these polls arrive before
+  // the target is known to be a file.
   if (cutKey) {
+    const card = await context.packages.advanceCard(cutKey);
+    if (card) return manifestResponse(card, cutKey, lookup?.reason ?? "");
     const ready = await context.packages.manifest(cutKey);
     if (ready) return manifestResponse(ready, cutKey, lookup?.reason ?? "");
   }
@@ -292,10 +296,8 @@ async function packageOrProxy(
   // the request: a player handed a playlist starts at once and sees what is happening,
   // where a player handed nothing shows a spinner and then gives up on the stream. The
   // card's pieces form the start of the same playlist the episode is appended to.
-  if (context.config.splash !== false) {
-    const card = await context.packages.splashView(key, windows);
-    if (card) return manifestResponse(card, key, lookupReason);
-  }
+  const card = await context.packages.splashView(key, windows);
+  if (card) return manifestResponse(card, key, lookupReason);
 
   const waited = await context.packages.waitForFirstSegment(
     key,
