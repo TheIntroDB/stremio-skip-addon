@@ -86,7 +86,7 @@ export async function main(): Promise<void> {
     );
     console.log(`  ffmpeg         ${cutStatus.detail}`);
     if (!cutStatus.ok) {
-      console.warn("  warning        cuts will not work until ffmpeg is available");
+      console.warn("  warning        cuts are disabled until the line above is fixed");
     }
   });
 

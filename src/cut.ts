@@ -82,6 +82,21 @@ export class CutEngine {
     } catch {
       // Not fatal: the worst case is a stale directory that the next cut replaces.
     }
+    // A directory can exist and still not be writable (a volume owned by root, a
+    // read-only mount). Cutting would then fail on the first write, long after boot,
+    // so this is checked here where /health can report it.
+    const writable = path.join(this.settings.cacheDir, ".write-probe");
+    try {
+      await writeFile(writable, "ok");
+      await rm(writable, { force: true });
+    } catch (error) {
+      this.available = false;
+      return {
+        ok: false,
+        detail: `cache dir is not writable: ${this.settings.cacheDir} (${errorText(error)})`,
+      };
+    }
+
     const probe = await run(this.settings.ffmpegPath, ["-version"], 10_000);
     this.available = probe.code === 0;
     return {

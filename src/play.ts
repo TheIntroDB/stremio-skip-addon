@@ -99,6 +99,8 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
     // otherwise the player opens the link from its own network and the source answers
     // "this stream link only works on the internet connection that requested it".
     if (looksLikeProgressiveFile(target)) {
+      const cut = await cutIfReady(context, target, windows, cutKey, streamKey);
+      if (cut) return cut;
       warmCut(context, target, windows, cutKey, streamKey);
       return streamThrough(context.request, target, {
         cacheControl: "no-store",
@@ -160,6 +162,8 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
       // A file behind a URL with no extension (a debrid `/playback/<token>`, for
       // instance): the prefix read above already had to come from here, so the rest
       // does too.
+      const cut = await cutIfReady(context, target, windows, cutKey, streamKey);
+      if (cut) return cut;
       warmCut(context, target, windows, cutKey, streamKey);
       return streamThrough(context.request, target, {
         cacheControl: "no-store",
@@ -230,14 +234,11 @@ async function handleProgressive(
 ): Promise<Response> {
   if (!cutKey) return redirectTo(target, reason);
 
-  const state = context.cuts.schedule(target, windows, streamKey);
+  const cut = await cutIfReady(context, target, windows, cutKey, streamKey);
+  if (cut) return cut;
 
-  if (context.settings.cuts === "blocking") {
-    const ready = await context.cuts.waitFor(cutKey, context.settings.cutWaitSeconds * 1000);
-    if (ready) return serveCut(context, ready, cutKey, windows, "cut_ready");
-  }
-
-  return redirectTo(target, `cut_${state.status}`);
+  const state = context.cuts.state(cutKey);
+  return redirectTo(target, `cut_${state?.status ?? "queued"}`);
 }
 
 function serveCut(
@@ -348,6 +349,27 @@ async function streamThrough(
 /** Debug headers for a streamed play response. */
 function proxyHeaders(play: string, lookupReason: string): Record<string, string> {
   return { "x-tidb-play": play, "x-tidb-lookup": lookupReason };
+}
+
+/**
+ * Wait for a cut when the configuration asks for it, and serve it if it arrives.
+ *
+ * `blocking` is a promise to the user that they will not watch the intro: with
+ * proxying on, the streamed original used to go out immediately and the promise was
+ * quietly broken, which looks exactly like "the intro was still there".
+ */
+async function cutIfReady(
+  context: PlayContext,
+  target: string,
+  windows: readonly SkipWindow[],
+  cutKey: string | null,
+  streamKey: string | null,
+): Promise<Response | null> {
+  if (!cutKey) return null;
+  context.cuts.schedule(target, windows, streamKey);
+  if (context.settings.cuts !== "blocking") return null;
+  const ready = await context.cuts.waitFor(cutKey, context.settings.cutWaitSeconds * 1000);
+  return ready ? serveCut(context, ready, cutKey, windows, "cut_ready") : null;
 }
 
 /** Start a background cut, when there is one to start, so a later play is cut too. */

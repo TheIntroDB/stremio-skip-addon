@@ -686,6 +686,32 @@ test("timings that do not fit the file are not applied", async () => {
   assert.equal(kept[kept.length - 1], SHORT_PLAYLIST_SEGMENTS - 1);
 });
 
+test("blocking means blocking: a proxied file waits for its cut", async () => {
+  // With proxying on the streamed original used to go out immediately whatever CUTS
+  // said, so the promise "blocking waits for the cut" was quietly broken -- which looks
+  // exactly like "the intro was still there".
+  const settings = testSettings({ cuts: "blocking", precutSources: 0 });
+  const engine = new CutEngine(settings);
+  const scheduled: string[] = [];
+  const realSchedule = engine.schedule.bind(engine);
+  engine.schedule = ((url: string, windows: Parameters<typeof realSchedule>[1], id?: string) => {
+    scheduled.push(url);
+    return realSchedule(url, windows, id);
+  }) as typeof engine.schedule;
+
+  const response = await call(
+    playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1", proxyConfig),
+    settings,
+    undefined,
+    engine,
+  );
+  assert.equal(scheduled.length, 1, "the cut was asked for before anything was served");
+  // The stub's target is not a video, so no cut can be made: the fallback is the
+  // original, proxied, and the caller can see that from the header.
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("x-tidb-play"), "proxied_file");
+});
+
 test("with proxying on, files are streamed through this service", async () => {
   // A source that mints a link for the address that asked for it (ElfHosted Comet,
   // any debrid) cannot be reached by the player directly: every fetch has to come from
