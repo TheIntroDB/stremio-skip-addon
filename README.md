@@ -110,7 +110,7 @@ Worth reading before installing, because these are properties of the approach ra
 
 ## Development
 
-`npm ci`, then `npm run typecheck`, `npm test`, and `npm run build`. The full development, testing and source-structure notes live in [AGENTS.md](AGENTS.md).
+`npm ci`, then `npm run typecheck`, `npm test`, and `npm run build`. The full configuration table, the development and testing notes and the source structure live in [AGENTS.md](AGENTS.md).
 
 ---
 
