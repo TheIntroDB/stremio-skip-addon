@@ -13,17 +13,17 @@
 
 ---
 
-A Stremio addon you run yourself that removes **intros, recaps, credits and previews** from your streams, using timings from [TheIntroDB](https://theintrodb.org). It never re-encodes — it only skips the parts you ask it to skip.
+A Stremio addon that automatically skips/removes **intros, recaps, credits and previews** from your movies and tv shows using timings from [TheIntroDB](https://theintrodb.org). It uses HLS proxying to rewrite `.mkv` videos to HLS and cuts out the segments you choose.
 
-TheIntroDB is the only source of timings: no chapter detection, no second skip database.
+This addon does **not add skip buttons to Stremio**, it removes the segments from the stream *before* it gets to your device. Try the official [Stremio Enhanced Plugin](https://github.com/TheIntroDB/stremio-enhanced-plugin) if you want buttons instead.
 
 ---
 
 ## Run your own
 
-You need three things: **Docker** (or Node 22 plus **ffmpeg**), an address Stremio can reach over HTTPS, and a **TheIntroDB API key** — which you paste on the configuration page rather than into the deployment, unless you would rather set one for the whole service.
+Requirements: **Docker** (or Node 22 plus **ffmpeg**), and an address Stremio can reach over HTTPS.
 
-> **Run it on your own network, not on a cloud platform.** Debrid sources (ElfHosted's Comet, and most others) mint a link for the address that requested it — and cloud datacenter addresses get refused by TheIntroDB's API. Self-hosting on your own network avoids both. A VPS with a stable IP, or a tunnel back to your network, works too.
+> **Run it on your own network, not on a cloud platform.** Debrid sources (ElfHosted's Comet, and most others) block most cloud hosting platforms, your mileage may vary.
 
 ### Docker (recommended)
 
@@ -72,23 +72,6 @@ Your settings live in the install URL itself (a base64url-encoded JSON object) �
 
 To edit an existing install, open its URL in a browser — the page comes back with that install already filled in. Change what you need and install again.
 
-### API key
-
-A key is **required for the addon to work, but it is not required at setup**. There are two places to put one:
-
-- **The configuration page** (the key field). This is the normal way: the key is embedded in the install link and stored by Stremio, so the deployment never holds it. The field is marked *required* when the service has no key of its own, and *optional* when it does.
-- **The deployment's environment** (`TIDB_API_KEY`), for a service that should serve every install with one key. It is optional — leave it empty and nothing breaks at boot.
-
-Whichever way, a key has to be there before anything is cut: anonymous lookups are rate-limited *per IP*, and a self-hosted deployment shares its address with everything else on it. Without a key the page will not give you an install link, and a stream request answers `403 missing_api_key` instead of pretending.
-
-Get one at [theintrodb.org/docs](https://theintrodb.org/docs). If you want the deployment to hold it, put it in the environment so it stays out of every install URL:
-
-```bash
-TIDB_API_KEY=...
-```
-
-A key pasted on the page wins over the deployment's own for that install — useful if you want a different key per install, or if you are sharing one deployment between accounts. `GET /health` reports `apiKeyConfigured`, so it is one request to check.
-
 ---
 
 ## What this cannot do
@@ -111,12 +94,6 @@ Worth reading before installing, because these are properties of the approach ra
 ## Development
 
 `npm ci`, then `npm run typecheck`, `npm test`, and `npm run build`. The full configuration table, the development and testing notes and the source structure live in [AGENTS.md](AGENTS.md).
-
----
-
-## Contributing
-
-Pull requests are welcome! For major changes, please open an issue first to discuss what you would like to change.
 
 ---
 
