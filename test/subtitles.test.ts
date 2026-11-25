@@ -82,7 +82,7 @@ test("the playlist grows chunk by chunk, and only then closes", async () => {
   assert.ok(started, "the playlist is served before any of it is made");
   assert.ok(started!.body.includes("#EXT-X-PLAYLIST-TYPE:EVENT"), "an event playlist");
   assert.ok(!started!.body.includes("#EXT-X-ENDLIST"), "with no end while the work goes on");
-  assert.ok(started!.body.includes("c=card"), "the processing card is covered first");
+  assert.ok(started!.body.includes("subs/card.vtt"), "the processing card is covered first");
   assert.equal(started!.complete, false);
 
   const deadline = Date.now() + 120_000;
@@ -102,13 +102,21 @@ test("the playlist grows chunk by chunk, and only then closes", async () => {
   assert.deepEqual(durations, [10, 30, 30, 10]);
   const total = durations.reduce((sum, part) => sum + part, 0);
   assert.equal(total, (CARD_MS + SECONDS * 1000) / 1000, "which is exactly the video's length");
-  const uris = [...done.body.matchAll(/^vtt\?f=[^\n]+$/gm)].map((m) => m[0]);
+  const uris = [...done.body.matchAll(/^subs\/[^\n]+$/gm)].map((m) => m[0]);
   assert.deepEqual(uris, [
-    "vtt?f=key1&c=card",
-    "vtt?f=key1&c=0",
-    "vtt?f=key1&c=1",
-    "vtt?f=key1&c=2",
+    "subs/card.vtt?f=key1",
+    "subs/0.vtt?f=key1",
+    "subs/1.vtt?f=key1",
+    "subs/2.vtt?f=key1",
   ], "and every position points at its own segment, in order");
+  // Every URI in this playlist has to end in an extension ffmpeg's HLS demuxer accepts for a
+  // subtitle segment: it refuses one with no extension at all (`av_match_ext` returns 0), and a
+  // refused segment takes the whole rendition playlist down -- which an ffmpeg-8 client reads as
+  // a film with no streams at all.
+  for (const uri of uris) {
+    assert.match(uri, /\.(vtt|webvtt)\?/, `"${uri}" needs a subtitle extension`);
+    assert.ok(!uri.includes("&c="), "the name is in the path, not a query parameter");
+  }
 });
 
 test("a segment holds cues relative to itself, which is what HLS requires", async () => {
@@ -148,14 +156,14 @@ test("the playlist is never cached, the segments are", async () => {
 
   const deadline = Date.now() + 120_000;
   let chunk = await handleSubtitleChunk(
-    { settings, subtitles: engine, request: new Request("http://localhost/cfg/vtt?f=key3&c=0") },
+    { settings, subtitles: engine, request: new Request("http://localhost/cfg/subs/0.vtt?f=key3") },
     "key3",
     "0",
   );
   while (chunk.status !== 200 && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 200));
     chunk = await handleSubtitleChunk(
-      { settings, subtitles: engine, request: new Request("http://localhost/cfg/vtt?f=key3&c=0") },
+      { settings, subtitles: engine, request: new Request("http://localhost/cfg/subs/0.vtt?f=key3") },
       "key3",
       "0",
     );
@@ -164,7 +172,7 @@ test("the playlist is never cached, the segments are", async () => {
   assert.match(chunk.headers.get("content-type") ?? "", /text\/vtt/);
   assert.equal(chunk.headers.get("cache-control"), "public, max-age=86400", "and kept for the day");
   const missing = await handleSubtitleChunk(
-    { settings, subtitles: engine, request: new Request("http://localhost/cfg/vtt?f=key3&c=99") },
+    { settings, subtitles: engine, request: new Request("http://localhost/cfg/subs/99.vtt?f=key3") },
     "key3",
     "99",
   );
@@ -235,7 +243,7 @@ test("the rendition and its chunks are reachable through the router", async () =
   assert.match(await list.text(), /^#EXTM3U/, "and it is a playlist");
 
   const chunk = await handleRequest(
-    new Request(`https://worker.example/${encoded}/vtt?f=key4&c=card`),
+    new Request(`https://worker.example/${encoded}/subs/card.vtt?f=key4`),
     routerSettings,
     packages,
     engine,

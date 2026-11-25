@@ -18,7 +18,7 @@
  *   GET /<config>/play?u=&id=              a playlist (spliced) or a cut file
  *   GET /<config>/seg?u=                   one media resource (opt-in proxy mode)
  *   GET /<config>/subs.m3u8?f=             the growing subtitle rendition's playlist
- *   GET /<config>/vtt?f=&c=                one chunk of that track
+ *   GET /<config>/subs/<name>.vtt?f=       one chunk of that track
  *
  * Every request after install carries the config as the first path segment, which
  * is the only place a Stremio addon can keep per-user settings.
@@ -55,7 +55,7 @@ import { playUrl } from "./urls.js";
  * handlers were unit-tested directly, so nothing noticed).
  */
 const CONFIG_ROUTE_RE =
-  /^\/([A-Za-z0-9_-]{1,4096})(?:\/(manifest\.json|stream\/[^/]+\/[^/]+\.json|play|seg|subs\.m3u8|vtt))?$/;
+  /^\/([A-Za-z0-9_-]{1,4096})(?:\/(manifest\.json|stream\/[^/]+\/[^/]+\.json|play|seg|subs\.m3u8|subs\/[^/]+\.vtt))?$/;
 
 /**
  * The shortest string that could still be a configuration.
@@ -158,12 +158,16 @@ export async function handleRequest(
         settings.splash ? cardSeconds(settings) * 1000 : 0,
       );
     }
-    if (route === "vtt") {
+    // A chunk is addressed by its own name in the path (`subs/0.vtt`) rather than by a query
+    // parameter: ffmpeg's HLS demuxer refuses a subtitle segment whose URI has no extension at
+    // all, and refusing one takes the entire rendition down with it.
+    const chunkMatch = /^subs\/([^/]+)\.vtt$/.exec(route);
+    if (chunkMatch) {
       const query = new URL(request.url).searchParams;
       return handleSubtitleChunk(
         { settings, subtitles: engine, request },
         query.get("f") ?? "",
-        query.get("c") ?? "",
+        chunkMatch[1]!,
       );
     }
 

@@ -363,7 +363,11 @@ export class SubtitleEngine {
           `WEBVTT\n\n00:00:00.000 --> 00:00:${String(card).padStart(2, "0")}.000\n` +
             "TheIntroDB is preparing the subtitles for this title\n",
         );
-        entries.push({ uri: `vtt?f=${encodeURIComponent(key)}&c=card`, seconds: card });
+        // The URI has to end in an extension ffmpeg's HLS demuxer allows for subtitle
+        // segments (it defaults to a list including `vtt`/`webvtt` and *rejects* a URI that
+        // has no extension at all -- `av_match_ext` returns 0, and the refusal then takes the
+        // whole rendition playlist down with it, which is a film that does not load).
+        entries.push({ uri: `subs/card.vtt?f=${encodeURIComponent(key)}`, seconds: card });
       } catch {
         // Without it every cue would be a card's length early. Better no track than a wrong one.
         return null;
@@ -378,7 +382,7 @@ export class SubtitleEngine {
         if (!(await this.written(path.join(dir, `${name}.vtt`)))) break;
         const seconds = (chunk.sourceEndMs - chunk.sourceStartMs) / 1000;
         longest = Math.max(longest, seconds);
-        entries.push({ uri: `vtt?f=${encodeURIComponent(key)}&c=${index}`, seconds });
+        entries.push({ uri: `subs/${index}.vtt?f=${encodeURIComponent(key)}`, seconds });
         index += 1;
       }
     }
