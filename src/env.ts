@@ -85,6 +85,15 @@ export interface Settings extends Env {
    */
   subtitlesTtlHours: number;
   /**
+   * How long a track keeps being made after nobody has asked for the film.
+   *
+   * Recognition is minutes of CPU per episode, and a viewer who closes the player leaves a job
+   * running to the end of a file nobody is watching. When neither the film nor the track has been
+   * fetched for this long the job stops, keeping the chunks it has; a later playback resumes.
+   * 0 disables the stop, which is only useful when measuring how long a track takes.
+   */
+  subtitlesIdleSeconds: number;
+  /**
    * How much of the episode must be ready before playback starts on it.
    *
    * Starting on a few seconds is what made Stremio decide an episode had ended, mark it
@@ -128,6 +137,10 @@ export function loadSettings(): Settings {
       ),
     ),
     subtitlesTtlHours: Math.min(720, Math.max(1, Math.round(numberFrom("SUBTITLES_TTL_HOURS", 24)))),
+    subtitlesIdleSeconds: Math.min(
+      3600,
+      Math.max(0, Math.round(numberFrom("SUBTITLES_IDLE_SECONDS", 120))),
+    ),
     // Off only when it is explicitly turned off: the sources people actually use are debrid.
     proxy: !/^(off|false|0|no)$/i.test((process.env.PROXY ?? "").trim()),
     prerollSeconds: Math.min(60, Math.max(0, Math.round(numberFrom("PREROLL_SECONDS", 10)))),
@@ -154,6 +167,7 @@ export function describeSettings(settings: Settings): Record<string, unknown> {
     subtitles: settings.subtitles,
     subtitlesLanguage: settings.subtitlesLanguage,
     subtitlesTtlHours: settings.subtitlesTtlHours,
+    subtitlesIdleSeconds: settings.subtitlesIdleSeconds,
     splash: settings.splash,
     prerollSeconds: settings.prerollSeconds,
     cacheDir: settings.cacheDir,

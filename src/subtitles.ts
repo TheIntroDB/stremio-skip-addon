@@ -50,6 +50,14 @@ export interface TrackStatus {
   ready: boolean;
   /** Why there will be no track, when there will not be one. */
   error: string | null;
+  /**
+   * Set when the job stopped because nobody was watching it.
+   *
+   * Distinct from `error`: nothing failed, the player went away. The chunks written so far stay
+   * on disk and the playlist still ends at the last of them, so the next playback resumes from
+   * there instead of paying for the recognition again.
+   */
+  idle?: boolean;
   /** The most recent failure, so /health can name it while the job carries on. */
   lastError?: string;
 }
@@ -61,6 +69,8 @@ interface Job extends TrackStatus {
   plan: TrackPlan;
   stretches: StretchJob[];
   lastAt: number;
+  /** When this job was last asked for, by either end of the track. */
+  lastSeen: number;
 }
 
 export class SubtitleEngine {
@@ -73,6 +83,16 @@ export class SubtitleEngine {
   constructor(
     private readonly settings: Settings,
     private readonly transcriber: Transcriber,
+    /**
+     * When the film was last asked for at all -- a playlist read or a segment fetch.
+     *
+     * Recognition is minutes of CPU for one episode, and nobody is served by spending it on a
+     * playback that has stopped: a viewer who closes the player leaves the job running to the
+     * end of the file. A job that is neither asked for here nor by its own playlist for
+     * `subtitlesIdleSeconds` stops, keeping the chunks it already wrote. Defaults to "always
+     * watched" so a host that wires nothing keeps the old behaviour.
+     */
+    private readonly watching: () => number = () => Date.now(),
   ) {}
 
   /** Whether this install asked for subtitles at all. */
@@ -115,6 +135,7 @@ export class SubtitleEngine {
       ready: false,
       error: null,
       lastAt: Date.now(),
+      lastSeen: Date.now(),
     };
     job.chunks = job.stretches.reduce((total, stretch) => total + stretch.chunks.length, 0);
     if (job.chunks === 0) return null;
@@ -141,6 +162,19 @@ export class SubtitleEngine {
   markPlaylist(key: string): void {
     this.served.playlists += 1;
     this.served.lastKey = key;
+    this.touch(key);
+  }
+
+  /** Note that a chunk was asked for: a player is still reading this track. */
+  markChunk(key: string): void {
+    this.served.chunks += 1;
+    this.touch(key);
+  }
+
+  /** A request for this track is what keeps its job alive (see `subtitlesIdleSeconds`). */
+  private touch(key: string): void {
+    const job = this.jobs.get(key);
+    if (job) job.lastSeen = Date.now();
   }
 
   /** Counters for /health: what playbacks asked for, and what was served. */
@@ -157,13 +191,28 @@ export class SubtitleEngine {
       modelsError: this.transcriber.lastError,
       tracks: jobs.filter((job) => job.ready).length,
       served: { ...this.served },
+      idleSeconds: this.settings.subtitlesIdleSeconds,
       active: this.pumping ? 1 : 0,
       queued: this.queue.length,
+      stopped: jobs.filter((job) => job.idle === true).length,
       progress: jobs
         .filter((job) => !job.ready)
         .slice(0, 3)
-        .map((job) => ({ chunks: job.chunks, done: job.done, cues: job.cues, error: job.error })),
+        .map((job) => ({
+          chunks: job.chunks,
+          done: job.done,
+          cues: job.cues,
+          error: job.error,
+          idle: job.idle === true,
+        })),
     };
+  }
+
+  /** Whether this job's viewers have all gone, judged by the film or the track being asked for. */
+  private idle(job: Job): boolean {
+    const after = this.settings.subtitlesIdleSeconds * 1000;
+    if (!Number.isFinite(after) || after <= 0) return false;
+    return Date.now() - Math.max(job.lastSeen, this.watching()) > after;
   }
 
   /** The card's line while a track is being made; null when there is nothing to say. */
@@ -181,8 +230,11 @@ export class SubtitleEngine {
    * Cheap by design: a track is a WebVTT file per chunk and nothing else -- the audio it was made
    * from is deleted as the chunk is finished -- so a day's worth is a few megabytes. A running job
    * is never swept, and neither is a track a player has asked for recently.
+   *
+   * Public because a TTL only means anything if something remembers to sweep: the server calls
+   * this at boot and once an hour.
    */
-  private async sweep(): Promise<void> {
+  async sweep(): Promise<void> {
     const root = path.join(this.settings.cacheDir, "subs");
     const cutoff = Date.now() - this.settings.subtitlesTtlHours * 3_600_000;
     let names: string[] = [];
@@ -256,6 +308,16 @@ export class SubtitleEngine {
           job.done += 1;
           job.lastAt = Date.now();
           continue;
+        }
+        // Before spending a chunk's worth of CPU: is anyone still watching this? A closed tab and
+        // a paused player look the same from here, and both want the same thing -- stop spending
+        // the host's cores. What is written stays, and the playlist still ends at the last chunk.
+        if (this.idle(job)) {
+          job.idle = true;
+          console.log(
+            `  stopped        subtitles: nobody is watching, ${job.done} of ${job.chunks} chunks kept`,
+          );
+          return;
         }
         const cues = await this.chunkCues(chunk, wav, language, job);
         if (cues) {
@@ -470,7 +532,7 @@ export async function handleSubtitleChunk(
   key: string,
   index: string,
 ): Promise<Response> {
-  if (context.subtitles) context.subtitles.served.chunks += 1;
+  if (context.subtitles) context.subtitles.markChunk(key);
   const file = context.subtitles ? await context.subtitles.chunkFile(key, index) : null;
   if (!file) return new Response("", { status: 404 });
   let body: string;

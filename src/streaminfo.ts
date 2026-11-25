@@ -105,6 +105,10 @@ export function variantAttributes(info: StreamInfo | null, subtitles: boolean): 
   if (info?.width && info.height) parts.push(`RESOLUTION=${info.width}x${info.height}`);
   if (info?.codecs) parts.push(`CODECS="${info.codecs}"`);
   if (subtitles) parts.push('SUBTITLES="subs"');
+  // Apple's authoring spec asks for this on a variant that carries no closed captions, and it is
+  // an enumerated string, so it is unquoted. AVFoundation is the player that reads it; the ones
+  // that ignore it are unaffected, which is why it is cheap to always say.
+  parts.push("CLOSED-CAPTIONS=NONE");
   return parts.join(",");
 }
 

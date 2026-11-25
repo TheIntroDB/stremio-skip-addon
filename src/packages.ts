@@ -146,8 +146,21 @@ export class PackageEngine {
   private readonly tasks: Array<() => void> = [];
   private active = 0;
   private available: boolean | null = null;
+  /**
+   * When a film was last asked for: a playlist read or a segment fetch.
+   *
+   * The subtitle engine reads this to stop recognising a track nobody is watching. Set here
+   * because this is the only thing that knows the video is still moving -- a paused player and a
+   * closed one both stop asking.
+   */
+  lastActivity = Date.now();
 
   constructor(private readonly settings: Settings) {}
+
+  /** Note that a player asked for the film (see `lastActivity`). */
+  noteActivity(): void {
+    this.lastActivity = Date.now();
+  }
 
   /** Check that ffmpeg exists and the cache directory is usable. */
   async start(): Promise<{ ok: boolean; detail: string }> {

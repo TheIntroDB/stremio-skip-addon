@@ -74,7 +74,7 @@ export async function handleRequest(
   subtitles: SubtitleEngine | null = null,
   // One engine per process, whether or not the host wired one: its jobs and the models they use
   // outlive a request, so it cannot be built per call.
-  engine: SubtitleEngine = subtitles ?? new SubtitleEngine(settings, new Transcriber(settings)),
+  engine: SubtitleEngine = subtitles ?? new SubtitleEngine(settings, new Transcriber(settings), () => packages.lastActivity),
 ): Promise<Response> {
   const url = new URL(request.url);
   const origin = url.origin;

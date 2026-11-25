@@ -86,8 +86,12 @@ export async function main(): Promise<void> {
   const packages = new PackageEngine(settings);
   // One transcriber and one engine for the process: the speech models are loaded once and kept,
   // and the tracks they produce outlive any single request.
-  const subtitles = new SubtitleEngine(settings, new Transcriber(settings));
+  const subtitles = new SubtitleEngine(settings, new Transcriber(settings), () => packages.lastActivity);
   const packageStatus = await packages.start();
+  // A TTL is only real if something sweeps: expired tracks at boot, and then hourly while the
+  // process lives. Unref'd, so it never keeps the process up on its own.
+  void subtitles.sweep();
+  setInterval(() => void subtitles.sweep(), 3_600_000).unref();
 
   const server = createApp(settings, packages, subtitles);
   server.listen(settings.port, () => {

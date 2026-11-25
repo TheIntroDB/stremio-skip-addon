@@ -68,6 +68,8 @@ export interface PlayContext {
 
 export async function handlePlay(context: PlayContext): Promise<Response> {
   const requestUrl = new URL(context.request.url);
+  // Someone is watching: this is what keeps a subtitle job alive (see `subtitlesIdleSeconds`).
+  context.packages.noteActivity();
   const target = requestUrl.searchParams.get("u");
   const id = requestUrl.searchParams.get("id") ?? "";
   // The stable identity of the source stream, from the stream list. Without it a cut
@@ -411,6 +413,8 @@ function mediaResponse(view: ManifestView, key: string, lookupReason: string): R
  */
 export async function handleSegment(context: PlayContext): Promise<Response> {
   const requestUrl = new URL(context.request.url);
+  // A segment being fetched is the clearest sign the video is still moving.
+  context.packages.noteActivity();
 
   // A segment of a package this service generated (`f=<key>/<name>`): served from the
   // cache it was written to. A segment never changes once written, so the player may

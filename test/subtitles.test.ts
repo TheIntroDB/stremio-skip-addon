@@ -119,6 +119,55 @@ test("the playlist grows chunk by chunk, and only then closes", async () => {
   }
 });
 
+test("a track nobody is watching stops, and keeps what it made", async () => {
+  // Recognition is minutes of CPU for one episode. A viewer who closes the player used to leave
+  // the job running to the end of the file; with `subtitlesIdleSeconds` it stops, and the chunks
+  // already written are the record a later playback resumes from.
+  const { audio, settings } = await fixture();
+  const slow = stubTranscriber();
+  const engine = new SubtitleEngine(
+    { ...settings, subtitlesIdleSeconds: 1 } as unknown as Settings,
+    {
+      ...slow,
+      // Long enough that the idle check bites between chunks rather than inside one.
+      transcribe: async (wav: string) => {
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        return slow.transcribe(wav, "en");
+      },
+    } as unknown as Transcriber,
+    // The viewer left a minute ago: no playlist and no segment has been asked for since.
+    () => Date.now() - 60_000,
+  );
+  const plan = { durationMs: SECONDS * 1000, windows: [], cardMs: CARD_MS };
+  assert.ok(engine.ensure("key5", audio, plan, true), "a track is planned");
+
+  const deadline = Date.now() + 20_000;
+  let status = engine.status() as Record<string, unknown>;
+  while (Date.now() < deadline && status.active !== 0) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    status = engine.status() as Record<string, unknown>;
+  }
+
+  assert.equal(status.active, 0, "the worker is not left pumping");
+  assert.equal(status.stopped, 1, "and it says why it stopped");
+  const progress = status.progress as Array<{ done: number; chunks: number; idle: boolean }>;
+  assert.equal(progress[0]!.idle, true, "the track is marked idle, not failed");
+  assert.ok(progress[0]!.done > 0, `something was recognised (${progress[0]!.done} chunks)`);
+  assert.ok(progress[0]!.done < progress[0]!.chunks, "and not the whole file");
+
+  // What it wrote stays readable, and the playlist ends at the last written chunk rather than
+  // pointing at one that does not exist.
+  const served = (await engine.playlist("key5", CARD_MS))!;
+  assert.equal(served.complete, false, "an idle track is not a finished one");
+  assert.ok(!served.body.includes("#EXT-X-ENDLIST"), "so it is still an event playlist");
+  const entries = served.body.matchAll(/^#EXTINF:/gm);
+  assert.equal(
+    [...entries].length,
+    progress[0]!.done + 1,
+    "the card plus exactly the chunks that exist",
+  );
+});
+
 test("a segment holds cues relative to itself, which is what HLS requires", async () => {
   const { audio, settings } = await fixture();
   const engine = new SubtitleEngine(settings, stubTranscriber());
@@ -276,5 +325,6 @@ test("the master's rendition line is one a strict parser accepts", async () => {
   assert.ok(variant.includes('SUBTITLES="subs"'), "the variant claims the group");
   assert.ok(variant.includes("RESOLUTION=1920x1080"), "and says what it is");
   assert.ok(variant.includes('CODECS="avc1.640028,mp4a.40.2"'), "including its codecs");
+  assert.ok(variant.includes("CLOSED-CAPTIONS=NONE"), "and says there are no closed captions");
   assert.ok(master.includes("RESOLUTION=") && !master.includes("RESOLUTION=x"), "never half-built");
 });
