@@ -17,6 +17,8 @@
  *                                          the stream list, relayed from the source addon
  *   GET /<config>/play?u=&id=              a playlist (spliced) or a cut file
  *   GET /<config>/seg?u=                   one media resource (opt-in proxy mode)
+ *   GET /<config>/subs.m3u8?f=             the growing subtitle rendition's playlist
+ *   GET /<config>/vtt?f=&c=                one chunk of that track
  *
  * Every request after install carries the config as the first path segment, which
  * is the only place a Stremio addon can keep per-user settings.
@@ -46,8 +48,14 @@ import {
 } from "./upstream.js";
 import { playUrl } from "./urls.js";
 
+/**
+ * Every route an install can reach, and the reason this is a whitelist rather than a
+ * prefix match: a path that is not in here is never routed, however good its handler is
+ * (the rendition playlist and its chunks spent a release unreachable this way -- their
+ * handlers were unit-tested directly, so nothing noticed).
+ */
 const CONFIG_ROUTE_RE =
-  /^\/([A-Za-z0-9_-]{1,4096})(?:\/(manifest\.json|stream\/[^/]+\/[^/]+\.json|play|seg))?$/;
+  /^\/([A-Za-z0-9_-]{1,4096})(?:\/(manifest\.json|stream\/[^/]+\/[^/]+\.json|play|seg|subs\.m3u8|vtt))?$/;
 
 /**
  * The shortest string that could still be a configuration.
@@ -141,9 +149,6 @@ export async function handleRequest(
         request, settings, packages, subtitles: engine, config, encodedConfig: encoded, origin,
       });
     }
-    // The generated track itself, and the answer Stremio's subtitles menu asks for. Only a
-    // finished track is offered: a half-written file reads as a broken one, and Stremio asks
-    // again when the player opens its menu, so the entry appears when it is worth choosing.
     // The subtitle rendition a master playlist points a player at, and its chunks. The playlist
     // is read again and again while a track is being made (hence never cached); the chunks are
     // written once and never change.

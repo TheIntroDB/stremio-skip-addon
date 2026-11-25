@@ -17,7 +17,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
+import { encodeConfig } from "../src/config.js";
 import { run } from "../src/ffmpeg.js";
+import { handleRequest } from "../src/index.js";
+import { PackageEngine } from "../src/packages.js";
 import { masterPlaylist } from "../src/streaminfo.js";
 import { handleSubtitleChunk, handleSubtitlePlaylist, SubtitleEngine } from "../src/subtitles.js";
 import type { Transcriber } from "../src/transcribe.js";
@@ -205,9 +208,49 @@ test("a player that asks too early gets a valid playlist, not a 404", async () =
   assert.equal(engine.served.playlists, 1, "and it is counted, so /health can see it");
 });
 
+test("the rendition and its chunks are reachable through the router", async () => {
+  // Every other test here calls the handlers directly, and that is exactly how the route
+  // pattern in src/index.ts went a release without listing `subs.m3u8`/`vtt`: a real deployment
+  // answered 404 to both while this suite was green, so no client anywhere could get the track.
+  // A player asks the *router*, so this drives the real entry point and fails on that 404.
+  const { audio, settings } = await fixture();
+  const engine = new SubtitleEngine(settings, stubTranscriber());
+  engine.ensure("key4", audio, { durationMs: SECONDS * 1000, windows: [], cardMs: CARD_MS }, true);
+  const encoded = encodeConfig({
+    src: ["http://origin.example/manifest.json"],
+    types: ["intro"],
+    subtitles: true,
+  });
+  const routerSettings = { ...settings, splash: true, prerollSeconds: CARD_MS / 1000 } as unknown as Settings;
+  const packages = new PackageEngine(routerSettings);
+
+  const list = await handleRequest(
+    new Request(`https://worker.example/${encoded}/subs.m3u8?f=key4`),
+    routerSettings,
+    packages,
+    engine,
+  );
+  assert.equal(list.status, 200, "the rendition playlist is routed, not a 404");
+  assert.match(list.headers.get("content-type") ?? "", /mpegurl/);
+  assert.match(await list.text(), /^#EXTM3U/, "and it is a playlist");
+
+  const chunk = await handleRequest(
+    new Request(`https://worker.example/${encoded}/vtt?f=key4&c=card`),
+    routerSettings,
+    packages,
+    engine,
+  );
+  assert.equal(chunk.status, 200, "and a chunk of it is routed too");
+  assert.match(chunk.headers.get("content-type") ?? "", /text\/vtt/);
+  assert.match(await chunk.text(), /^WEBVTT/, "which is WebVTT, not the not-found page");
+  assert.equal(engine.served.chunks, 1, "and it is counted, so /health can see it");
+});
+
 test("the master's rendition line is one a strict parser accepts", async () => {
-  // IINA (mpv) reported no subtitle track at all, and this is why: `LANGUAGE=en` is a
-  // quoted-string attribute, and unquoted it makes the whole `#EXT-X-MEDIA` line unparseable.
+  // `LANGUAGE=en` is a quoted-string attribute, and unquoted it makes the whole `#EXT-X-MEDIA`
+  // line unparseable -- a real bug that is fixed here. It is *not* why IINA (mpv) showed no
+  // subtitle track: mpv's demuxer refuses a subtitle rendition outright below ffmpeg 8, and no
+  // attribute can fix that (see the note on `masterPlaylist` in src/streaminfo.ts).
   const master = masterPlaylist({
     mediaUri: "/cfg/play?u=x&m=1",
     subtitleUri: "subs.m3u8?f=key",

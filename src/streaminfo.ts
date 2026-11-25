@@ -108,8 +108,9 @@ export function variantAttributes(info: StreamInfo | null, subtitles: boolean): 
   return parts.join(",");
 }
 
-/** A quoted-string attribute. HLS requires the quotes, and a strict parser drops the line
- *  without them -- mpv/IINA among them, which then reports no subtitle track at all. */
+/** A quoted-string attribute. HLS requires the quotes, and a parser that reads the line at all
+ *  drops an unquoted one -- `LANGUAGE=en` made the whole `#EXT-X-MEDIA` line unreadable.
+ *  Quoting is necessary and not sufficient: see the note on `masterPlaylist`. */
 function quoted(name: string, value: string): string {
   return `${name}="${value.replace(/"/g, "")}"`;
 }
@@ -135,6 +136,14 @@ export interface MasterOptions {
  * `FORCED` is deliberately absent. Forced subtitles mean "only the lines someone must read, for
  * dialogue in another language" -- these are the whole track, and players treat a forced-only
  * group as one to leave off.
+ *
+ * What a player does with this line is a separate question from whether it is correct. Measured
+ * against Apple's own reference multivariant playlist, ffmpeg below 8 logs `hls: Can't support
+ * the subtitle(<uri>)` and exposes no subtitle stream at all, so every ffmpeg-based player --
+ * mpv, IINA, and Stremio's desktop shell, which bundles libmpv -- is blind to a rendition
+ * however well it is written. Support landed in ffmpeg 8 (April 2025); hls.js and ExoPlayer
+ * have always had it. So `SUBTITLES="subs"` is the right line to serve, and it is not what
+ * makes a subtitle appear on a desktop player.
  */
 export function masterPlaylist(options: MasterOptions): string {
   return [
