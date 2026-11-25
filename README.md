@@ -15,7 +15,7 @@
 
 A Stremio addon you run yourself that removes intros, recaps, credits and previews from your streams, using timings from **[TheIntroDB](https://theintrodb.org)**.
 
-Stremio has no skip API for addons, so this addon does the only thing that works without one: it takes the stream **before** the player sees it and removes the parts you asked it to remove — by dropping HLS segments, or by remuxing a progressive file. Nothing is re-encoded, so the video itself is untouched.
+Stremio has no skip API for addons, so this addon does the only thing that works without one: it takes the stream **before** the player sees it and removes the parts you asked it to remove — by dropping HLS segments, or by packaging a file into a playlist that skips them. Nothing is re-encoded, so the video itself is untouched.
 
 Intros, recaps, credits and previews are gone from the timeline, on every platform, with nothing to press.
 
@@ -47,7 +47,7 @@ cp .env.example .env      # put TIDB_API_KEY in it
 docker compose up -d
 ```
 
-That is `docker-compose.yml` in this repository: it builds the image, publishes `:8787`, and keeps the cut cache in a named volume.
+That is `docker-compose.yml` in this repository: it builds the image, publishes `:8787`, and keeps the segment cache in a named volume.
 
 If the host cannot build — a resolver that will not answer for Docker Hub's CDN, no BuildKit, a locked-down server — use the published image instead, which only needs a pull:
 
@@ -69,7 +69,7 @@ docker run -d --name tidb-skip \
   tidb-skip
 ```
 
-**Mount `/cache`.** The image creates it, but without a volume your cuts live in the container's writable layer and are lost when it is recreated — you would cut the same episode again on every update. Any of `-v tidb-cut-cache:/cache` (named volume), `-v ./cache:/cache` (a directory on the host) or `-v /mnt/media/tidb-cache:/cache` (a NAS share) works.
+**Mount `/cache`.** The image creates it, but without a volume your packages live in the container's writable layer and are lost when it is recreated — you would fetch the same episode again on every update. Any of `-v tidb-cut-cache:/cache` (named volume), `-v ./cache:/cache` (a directory on the host) or `-v /mnt/media/tidb-cache:/cache` (a NAS share) works.
 
 An image is published to `ghcr.io/theintrodb/stremio-skip-addon` (`latest` from `main`,
 plus `x.y.z` for a release tag) for `linux/amd64` and `linux/arm64`. While this
@@ -110,7 +110,7 @@ Open your deployment's URL in a browser. The page builds your install link:
 
 1. **Paste your stream addon URL** — AIOStreams, Torrentio, Comet, MediaFusion, anything that serves Stremio streams (the `manifest.json` URL). One per line; they are tried in order and the first that answers with streams is used, so a second URL is a fallback.
 2. **Pick the segments to cut.** Intro, recap and credits are on; previews are off. Credits and previews run to the end of the file when TheIntroDB does not close them, so they are the destructive ones.
-3. **Pick the cutting mode** — *always cut* (the default: the first play waits for the cut instead of showing the intro), *cut in the background* (start immediately, cut from the next play), or *never cut files* (playlists only, nothing copied). It lives in the install link, so your installs can differ.
+3. **Pick the cutting mode** — *always cut* (the default: the first play waits a couple of seconds for the first segment, so the intro is gone from the start), *start playing first* (the source plays immediately and the cut applies from the next playback), or *never cut files* (playlists only, nothing copied). It lives in the install link, so your installs can differ.
 4. **The API key** is already handled if the service has one in its environment; paste one here only if you would rather carry it in the install URL. See [API key](#api-key).
 5. **Install** — the `stremio://` link opens the desktop or mobile app; *Open in Stremio Web* handles the browser player.
 
@@ -154,7 +154,7 @@ With timings in hand, the stream offered to Stremio points at `/play` on this se
 
 - **HLS master playlist** → every variant, audio rendition and trick-play playlist is re-pointed at `/play`, so each one gets cut in turn.
 - **HLS media playlist** → the segments whose time range overlaps a skip window are dropped, `#EXT-X-DISCONTINUITY` marks the jump, and a re-declared `#EXT-X-MAP` keeps fragmented-MP4 streams decodable. Byte-range playlists keep pointing at the same bytes. **No video passes through this service on this path** — the player still fetches every segment from your source.
-- **A progressive file** (`.mkv`, `.mp4`, what a debrid link usually is) → the ranges that survive are copied into a new file with ffmpeg (`-c copy`: no re-encode, no quality loss) and served from here with byte-range support, so seeking works normally.
+- **A file** (`.mkv`, `.mp4`, what a debrid link usually is) → the stretches that survive are copied into MPEG-TS segments with ffmpeg (`-c copy`: no re-encode, no quality loss) and served from here as a playlist that grows while you watch, so playback starts after the first segment instead of after the file — see [Cutting a file](#cutting-a-file).
 - **Anything else** (`302`) → the player is sent to the origin untouched. With **Proxy streams through this service** on, that case disappears: the file is streamed through the addon instead, which is what a source that binds the link to the requesting address needs.
 
 Measured on Apple's own fragmented-MP4 test stream (`img_bipbop_adv_example_fmp4`, 100 segments / 600s) with the Breaking Bad S1E1 timings:
@@ -190,32 +190,38 @@ Two request shapes are worth knowing about, because both are things Stremio does
 
 ### Cutting a file
 
-A progressive file has no segments to drop, so the only way to remove 30 seconds from the middle of a 6 GB `.mkv` without re-encoding is to copy the ranges that survive into a new file. That is what ffmpeg does here:
+A progressive file has no playlist to rewrite, and copying the whole 6 GB before the player may start is what makes players give up. So a file is **packaged as HLS instead of copied**:
 
 - The source is probed once (`ffprobe`) for its duration, and the windows are turned into **keep ranges** — the pieces before, between and after them.
-- Each keep range is copied (`ffmpeg -ss <start> -to <end> -c copy`), and the pieces are joined into one file. A copy can only start on a keyframe, so a cut is as precise as the source's keyframe grid (usually under a second to a few seconds).
-- The result is cached on disk and **served with `Range` support** — so the second and every later playback of that item is cut, immediately.
-- A cut is keyed on the **stream**, not on its URL: the episode, the source host and the release labels. That matters because a debrid source mints a fresh link (`/playback/<token>`, with a new token) for every stream list, so a key made from the URL would never be found again — the cut would be re-made and the intro would play a second time. `x-tidb-cut-key` in the response says which cut was served, and two playbacks of the same release report the same one.
+- For each keep range, ffmpeg stream-copies *that stretch only* into MPEG-TS segments (`-f segment -c copy`, no re-encode) and reports each finished segment in a CSV as it closes.
+- This service writes the playlist from those CSVs, so **only complete segments are ever listed** — a player asking for a segment that is still being written would fail. The playlist is therefore served a couple of seconds into the job, and it grows while the player watches it: `#EXT-X-PLAYLIST-TYPE:EVENT` tells the player to keep re-reading it, and `#EXT-X-ENDLIST` at the end turns it into an ordinary seekable VOD playlist.
+- The dropped stretches are **never generated**. The playlist jumps from one keep range to the next with `#EXT-X-DISCONTINUITY`, so nothing of the intro is fetched, buffered or played.
+- The segments the player pulls *are* the cache: one read of the source, in the order the video is watched, and the next playback of that item is served from disk. Segments are kept per title and evicted oldest-first once `CACHE_MAX_GB` is reached.
+- A package is keyed on the **stream**, not on its URL: the episode, the source host and the release labels. That matters because a debrid source mints a fresh link (`/playback/<token>`, with a new token) for every stream list, so a key made from the URL would never be found again. `x-tidb-package` in the response says which package was served, and two playbacks of the same release report the same one.
 
-Because the copy takes as long as copying the file takes, the first playback is a question of policy. `CUTS` sets the deployment's default and **the configuration page lets each install choose its own**, so one service can serve an install that always cuts and another that copies nothing:
+Nothing is re-encoded, so a cut can only be as precise as the keyframe grid, and cannot start inside a GOP: a stretch is copied until the first keyframe *after* the end of the window. Segments that begin past the end of a stretch are dropped, so what is left of the window is at most one GOP.
+
+The first playback is a question of policy. `CUTS` sets the deployment's default and **the configuration page lets each install choose its own**, so one service can serve an install that always cuts and another that copies nothing:
 
 | mode | First playback | Later playbacks |
 | --- | --- | --- |
-| `blocking` (default) | Waits for the cut — up to `CUT_WAIT_SECONDS` — and plays it cut. Never the intro, at the cost of a slower start | Cut |
-| `on` | Plays the original immediately while the cut is prepared in the background | Cut |
+| `blocking` (default) | Waits for the **first segment** — a couple of seconds, not the length of the file — and plays it cut | Cut, from the cache |
+| `on` | Plays the original immediately while the package is built behind it | Cut, from the cache |
 | `off` | Uncut, always | Uncut — only HLS playlists are spliced, nothing is copied |
 
-The stream list is also fetched moments before playback, so a cut for the first one or two sources on the list is started then, as a head start.
+The stream list is also fetched moments before playback, so a package for the first one or two sources on the list is started then, as a head start: by the time a stream is picked, the playlist is usually already there.
+
+**Two things a package cannot carry.** MPEG-TS holds video and audio, so a subtitle track embedded in the file is not in the playlist — players fetch subtitles from their own addon, and Stremio's OpenSubtitles addon is the usual answer. And a package is served as a playlist, so a player that only accepts a direct file link (some TVs) should be given the source: turn `CUTS` off for that install.
 
 ### Disk
 
-Cuts live in `CACHE_DIR` (default `/cache` in the container) and are evicted oldest-first once they exceed `CACHE_MAX_GB`. A two-hour 1080p episode is roughly 2-6 GB, so 50 GB is a reasonable starting point and a volume is worth mounting. Evicting a cut that is being watched is safe — the open file keeps streaming — it is simply cut again next time.
+Segments live in `CACHE_DIR` (default `/cache` in the container) and whole packages are evicted oldest-first once they exceed `CACHE_MAX_GB`. The kept stretches are what is stored — the intro is never downloaded — so a package is smaller than the file it came from. Evicting a package that is being watched is safe: the response already being served reads from an open file, and segments are immutable, so a player that re-requests one gets it from the page cache or a fresh copy — it is simply packaged again next time.
 
-A copy is only started when the source's own reported size fits with a tenth of the disk still free, because a cut that fills the volume takes the whole service down with it; the refusal is reported as a `skipped` cut with the reason in `/health`. A source that streams in chunks (many debrid links) reports no size, so it is attempted — those are the sources that need cutting the most.
+A package is only started when the source's own reported size fits with a tenth of the disk still free, because filling the volume takes the whole service down with it; the refusal shows up in `/health` as a failed package with the reason. A source that streams in chunks (many debrid links) reports no size, so it is attempted — those are the sources that need the feature most.
 
-With **Proxy streams through this service** on, one playback of an uncut file reads it twice from the source: once to stream to the player, and once for the background cut that will replace it. A source that limits concurrent connections per address may refuse the second, in which case `/health` reports the cut as failed and the next playback tries again.
+Unlike the file copy it replaced, packaging reads the source **once**: the segments written are the segments served, so proxying and cutting do not each fetch the video.
 
-Setting `CUTS=off` means no disk use at all and no video through the service — except that with proxying on the video does still flow through, it is just never cut (so a progressive source keeps its intro).
+Setting `CUTS=off` means no disk use at all and no video through the service — except that with proxying on the video does still flow through, it is just never cut (so a file keeps its intro).
 
 ### Playback fails with "this stream link only works on the internet connection that requested it"
 
@@ -236,18 +242,19 @@ Every `/play` response says what it did, which is the fastest way to see whether
 
 | Header | Meaning |
 | --- | --- |
-| `x-tidb-play` | `spliced`, `master`, `unchanged`, `rewritten_uris` (proxy mode), `cut_file`, `proxied_file`, `not_hls`, `not_a_playlist`, `not_a_playlist_cached`, `range_request`, `degenerate_windows`, `pass_through`, `upstream_<status>` |
+| `x-tidb-play` | `spliced`, `master`, `unchanged`, `rewritten_uris` (proxy mode), `package_live` (a playlist still being built), `package_vod` (a finished package), `package_segment` (one segment of one), `proxied_file`, `not_hls`, `not_a_playlist`, `not_a_playlist_cached`, `range_request`, `degenerate_windows`, `pass_through`, `upstream_<status>` |
+| `x-tidb-fallback` | Why a package was not served and the original was used instead: `package_warming` (`on` mode), `package_slow` (no segment inside `CUT_WAIT_SECONDS`), `not_hls`, `not_a_playlist`, `not_a_playlist_cached` |
+| `x-tidb-package` | Which package was served; the same release reports the same key across playbacks |
+| `x-tidb-segments` | How many segments the served playlist lists |
+| `x-tidb-content-ms` | How much video it holds — smaller than the file when a window is gone |
 | `x-tidb-proxy` | `streamed` when the bytes came through this service, `unreachable` when the source could not be fetched |
 | `x-tidb-upstream-status` | The status the source answered with, when the bytes were relayed |
 | `x-tidb-seg` | `streamed` on a proxied segment (`/seg`) |
-| `x-tidb-cut` | `ready` when the response is a cut file |
-| `x-tidb-cut-key` | Which cut was served; the same release reports the same key across playbacks |
 | `x-tidb-lookup` | `fresh`, `cache_hit`, `media_not_found`, `episode_not_found`, `missing_api_key`, `rate_limited…`, `request_failed…` |
-| `x-tidb-cuts` | The windows that applied, e.g. `intro 3:48-4:06, credits 57:12-end` |
+| `x-tidb-cuts` | The windows that applied to a playlist, e.g. `intro 3:48-4:06, credits 57:12-end` |
 | `x-tidb-dropped-segments`, `x-tidb-dropped-ms`, `x-tidb-duration-ms` | What was removed from a playlist, and its length |
-| `x-tidb-cut-bytes` | The size of a served cut |
 
-`/health` reports the version, which API it talks to, whether the deployment has a key, the cut mode and directory, and how many cuts are queued, running and ready.
+`/health` reports the version, which API it talks to, whether the deployment has a key, the cutting mode and cache directory, and how many packages are queued, being built, finished or failed (`cutsStatus.segments`, `cutsStatus.bytes` and `cutsStatus.packages`).
 
 ---
 
@@ -277,9 +284,9 @@ Everything is an environment variable; there is nothing to edit in the image.
 | `TIDB_API_KEY` | *(none)* | **Required.** TheIntroDB API key. Without it, lookups refuse with `403`. |
 | `PORT` | `8787` | Port to listen on. |
 | `CUTS` | `blocking` | `blocking`, `on` or `off` — the deployment's default; an install link can override it. See [Cutting a file](#cutting-a-file). |
-| `CACHE_DIR` | `./cache` (`/cache` in the image) | Where cut files are kept. |
-| `CACHE_MAX_GB` | `50` | Disk budget for cuts, evicted oldest-first. |
-| `CUT_WAIT_SECONDS` | `120` | `blocking` mode only: how long a play request waits for ffmpeg. |
+| `CACHE_DIR` | `./cache` (`/cache` in the image) | Where package segments are kept. |
+| `CACHE_MAX_GB` | `50` | Disk budget for packages, evicted oldest-first. |
+| `CUT_WAIT_SECONDS` | `120` | `blocking` mode only: how long a play request waits for the first segment. A couple of seconds is the normal answer; the bound only matters when a source is slow. |
 | `CUT_CONCURRENCY` | `2` | Concurrent ffmpeg processes. |
 | `PRECUT_SOURCES` | `2` | Sources to start cutting when a stream list is fetched (0 disables the head start). |
 | `FFMPEG_PATH`, `FFPROBE_PATH` | `ffmpeg`, `ffprobe` | Override if they are not on `PATH`. |
@@ -305,8 +312,8 @@ The suite does not mock the things that matter: `test/cut.test.ts` generates a 3
 To check the cutter against a source of your own (a debrid link, a direct file), which the fixtures cannot cover:
 
 ```bash
-npm run verify:cut -- 'https://…/episode.mkv'      # keeps the first 60 seconds and reports
-npm run verify:cut -- 'https://…/episode.mkv' 300  # keeps 300 seconds (a bigger copy)
+npm run verify:package -- 'https://…/episode.mkv'        # skips 60-90s and reports
+npm run verify:package -- 'https://…/episode.mkv' 735 765 # skips 735-765s
 ```
 
 ```
@@ -321,13 +328,14 @@ src/
   hls.ts       playlist parsing and splicing
   play.ts      /play and /seg
   cut.ts       the ffmpeg cut engine and its disk cache
-  files.ts     serving a cut file with Range support
+  packages.ts  packaging a file into a playlist that skips, and serving its segments
+  files.ts     serving a file with Range support
   upstream.ts  the source addon relay
   page.ts      the configuration page
   http.ts      responses and CORS
   format.ts    time formatting
 scripts/
-  verify-cut.ts  run the cutter against a source of your own (npm run verify:cut)
+  verify-package.ts  package a source of your own and report it (npm run verify:package)
 ```
 
 ---

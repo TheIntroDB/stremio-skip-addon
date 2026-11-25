@@ -182,11 +182,11 @@ export function renderConfigPage(options: PageOptions): string {
     <div class="field">
       <label for="cuts">Cutting</label>
       <select id="cuts">
-        <option value="blocking">Always cut — wait for the cut, then play it cut</option>
-        <option value="on">Cut in the background — the first play may show the intro</option>
+        <option value="blocking">Always cut — start playing in a couple of seconds, no intro</option>
+        <option value="on">Start playing first — cut from the next playback</option>
         <option value="off">Never cut files — playlists only, no disk use</option>
       </select>
-      <p class="hint">A progressive file (a debrid <span class="mono">.mkv</span>) has to be copied before its intro can be gone, so <b>always cut</b> waits for that copy: the first play of a title starts a little late but never shows the intro. <b>Background</b> starts playing immediately and cuts from the next play onwards. <b>Never</b> still splices HLS playlists and copies nothing. This choice is stored in your install link, so it can differ per install.</p>
+      <p class="hint">A file with no playlist of its own (a debrid <span class="mono">.mkv</span>) is packaged as HLS on demand: the stretches that survive are copied into segments as the video is streamed, so <b>always cut</b> waits for the first segment — about two seconds of work, not the whole file — and the intro is already gone. <b>Start playing first</b> answers with the source immediately and cuts from the next playback. <b>Never cut</b> still splices HLS playlists and copies nothing. This choice is stored in your install link, so it can differ per install.</p>
     </div>
 
     <div class="field">
@@ -198,7 +198,7 @@ export function renderConfigPage(options: PageOptions): string {
     <div class="field">
       <label class="check" style="max-width:520px"><input type="checkbox" id="proxy" checked> Proxy streams through this service</label>
       <p class="hint">On by default, because most sources bind the link to the address that asked for it (ElfHosted Comet and other debrid setups do) — then the player cannot open it from its own connection and shows an error like &quot;this stream link only works on the internet connection that requested it&quot;. With this on, the player fetches your playlists, segments and files from here, which is that address.</p>
-      <p class="hint">Video then uses this deployment's bandwidth: turn it off for a source the player can reach directly (a public HLS stream), and leave it on for a debrid. Cuts still happen either way.</p>
+      <p class="hint">Video then uses this deployment's bandwidth: turn it off for a source the player can reach directly (a public HLS stream), and leave it on for a debrid. Cutting a file still happens either way — with proxying off, the playlist comes from here and the segments from the source.</p>
     </div>
 
     <div class="field">
@@ -229,7 +229,7 @@ export function renderConfigPage(options: PageOptions): string {
       <li>Stremio asks this service for streams. It asks your source addon and returns what it finds.</li>
       <li>For the title being played, timings are read from TheIntroDB (<span class="mono">/v4/media</span>) by IMDb id, plus season and episode.</li>
       <li><b>HLS sources</b> (an <span class="mono">.m3u8</span>): the playlists are fetched, the segments covering those ranges are dropped and <span class="mono">#EXT-X-DISCONTINUITY</span> marks the jump. No video passes through this service at all.</li>
-      <li><b>Progressive sources</b> (a debrid <span class="mono">.mkv</span>/<span class="mono">.mp4</span>): the ranges that survive are copied into a new file with ffmpeg (<span class="mono">-c copy</span>, no re-encode) and cached on this server, which then serves it with range support. That cut is prepared in the background, so the <i>first</i> playback of an item may still show the intro — every playback after that is cut.</li>
+      <li><b>Files</b> (a debrid <span class="mono">.mkv</span>/<span class="mono">.mp4</span>, no playlist to rewrite): each stretch that survives the windows is copied into MPEG-TS segments with ffmpeg (<span class="mono">-c copy</span>, no re-encode), and a playlist is written from <i>exactly the segments that are complete</i>. The player is handed that playlist after the first segment — a couple of seconds — and it grows while they watch, so playback never waits for the file. The dropped stretches are never generated: the playlist jumps over them with <span class="mono">#EXT-X-DISCONTINUITY</span>, and a finished package is an ordinary seekable VOD playlist. The segments the player pulls are the cache, so nothing is fetched twice.</li>
       <li>When TheIntroDB has no timings — or the source cannot be cut — the stream is passed through untouched.</li>
     </ul>
   </section>
@@ -237,8 +237,8 @@ export function renderConfigPage(options: PageOptions): string {
   <section>
     <h2>This instance</h2>
     <ul>
-      <li>Cuts: <span class="mono" id="cuts-mode"></span></li>
-      <li>Cut cache: <span class="mono" id="cuts-cache"></span></li>
+      <li>Files: <span class="mono" id="cuts-mode"></span></li>
+      <li>Segment cache: <span class="mono" id="cuts-cache"></span></li>
       <li>ffmpeg: <span class="mono" id="cuts-ffmpeg"></span></li>
       <li>Reading timings from <span class="mono" id="api"></span> — instance <span class="mono" id="origin"></span></li>
     </ul>
@@ -247,9 +247,9 @@ export function renderConfigPage(options: PageOptions): string {
   <section>
     <h2>Know before you install</h2>
     <ul>
-      <li>Cuts land on a keyframe for a progressive file and on a segment boundary for HLS. Nothing is ever re-encoded, so a cut can take up to a second or two of the adjacent footage with it.</li>
-      <li>Progressive cuts are served from this server, so a 6 GB episode costs 6 GB of its bandwidth (and disk) on the first playback. Set <span class="mono">CUTS=off</span> to relay only HLS and never touch video.</li>
-      <li>The cut cache is per file, and evicted oldest-first once <span class="mono">CACHE_MAX_GB</span> is reached.</li>
+      <li>Cuts land on a keyframe for a file and on a segment boundary for HLS. Nothing is ever re-encoded, so a cut can take up to a second or two of the adjacent footage with it.</li>
+      <li>For a file, only the stretches that survive are fetched, in the order they are watched: an episode is read once, as it plays, and the segments are kept for the next playback. Set <span class="mono">CUTS=off</span> to relay only HLS and never touch video.</li>
+      <li>Segments are kept per title and evicted oldest-first once <span class="mono">CACHE_MAX_GB</span> is reached, so a large library settles into a cache of what you actually watch.</li>
       <li>Sources that need custom headers are not relayed, and a source that is a torrent (<span class="mono">infoHash</span>) has no URL to cut — both are passed through.</li>
       <li>Timings come from TheIntroDB only. There is no chapter detection and no second skip database.</li>
       <li>Series numbering is the default order. If your library follows another order (streaming rips, absolute-numbered anime), the wrong episode's timings can apply.</li>
@@ -331,13 +331,16 @@ export function renderConfigPage(options: PageOptions): string {
   // The deployment's own default is what a new install gets unless it says otherwise.
   document.getElementById("cuts").value = cuts.mode || "blocking";
   document.getElementById("cuts-mode").textContent =
-    cuts.mode === "off" ? "off — progressive files are passed through" : cuts.mode;
+    cuts.mode === "off"
+      ? "off — files are passed through"
+      : cuts.mode +
+        (cuts.segments ? " — " + cuts.segments + " segments (" + Math.round((cuts.bytes || 0) / 1048576) + " MB)" : "");
   document.getElementById("cuts-cache").textContent =
     cuts.mode === "off"
       ? "disabled"
-      : cuts.cacheDir + " (max " + cuts.cacheMaxGb + " GB, " + cuts.cutConcurrency + " at a time)";
+      : cuts.cacheDir + " (max " + cuts.cacheMaxGb + " GB, " + cuts.cutConcurrency + " packing at a time)";
   document.getElementById("cuts-ffmpeg").textContent =
-    cuts.available === true ? "available" : cuts.available === false ? "NOT available — cuts cannot run" : "unknown";
+    cuts.available === true ? "available" : cuts.available === false ? "NOT available — files cannot be cut" : "unknown";
 
   var keyHint = document.getElementById("key-hint");
   if (data.serverKeyConfigured) {

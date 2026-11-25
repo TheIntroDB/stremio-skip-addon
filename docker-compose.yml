@@ -17,8 +17,9 @@ services:
       # Required: lookups without a key are rate limited per IP. Compose reads the
       # .env file next to this one, so `cp .env.example .env` is the whole setup.
       TIDB_API_KEY: ${TIDB_API_KEY:?set TIDB_API_KEY}
-      # blocking  wait for the cut, then play it cut -- no intro, even on the first play
-      # on        cut in the background: the first play may still show the intro
+      # blocking  wait for the first segment (a couple of seconds), so the intro is
+      #           gone from the very first play
+      # on        play the source immediately and cut from the next playback
       # off       splice HLS playlists only: no video copied, no disk use
       CUTS: ${CUTS:-blocking}
       CACHE_MAX_GB: ${CACHE_MAX_GB:-50}
@@ -26,7 +27,7 @@ services:
       CUT_CONCURRENCY: ${CUT_CONCURRENCY:-2}
       TZ: ${TZ:-UTC}
     volumes:
-      # Keep the cut cache out of the container: it is the only state there is, and
+      # Keep the segment cache out of the container: it is the only state there is, and
       # without this every recreate starts cutting from scratch.
       - cut-cache:/cache
 

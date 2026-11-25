@@ -17,7 +17,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { CutEngine } from "../src/cut.js";
+import { PackageEngine } from "../src/packages.js";
 import type { Settings } from "../src/env.js";
 import { createApp } from "../src/server.js";
 
@@ -45,9 +45,9 @@ function settings(overrides: Partial<Settings> = {}): Settings {
 before(async () => {
   workDir = await mkdtemp(path.join(tmpdir(), "tidb-server-"));
   const settingsValue = settings();
-  const cuts = new CutEngine(settingsValue);
-  await cuts.start();
-  server = createApp(settingsValue, cuts);
+  const packages = new PackageEngine(settingsValue);
+  await packages.start();
+  server = createApp(settingsValue, packages);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 });

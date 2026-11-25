@@ -24,7 +24,7 @@
 
 import { decodeConfig, parseStremioId } from "./config.js";
 import { INTRODB_API_BASE, INTRODB_API_VERSION, INTRODB_SITE } from "./constants.js";
-import type { CutEngine } from "./cut.js";
+import type { PackageEngine } from "./packages.js";
 import { describeSettings, type Settings } from "./env.js";
 import { describeCuts } from "./format.js";
 import { corsPreflight, errorResponse, html, json, text } from "./http.js";
@@ -59,7 +59,7 @@ const MIN_PLAUSIBLE_CONFIG_LENGTH = 24;
 export async function handleRequest(
   request: Request,
   settings: Settings,
-  cuts: CutEngine,
+  packages: PackageEngine,
 ): Promise<Response> {
   const url = new URL(request.url);
   const origin = url.origin;
@@ -73,7 +73,7 @@ export async function handleRequest(
     return errorResponse(405, "method_not_allowed", "Only GET and HEAD are supported");
   }
 
-  if (path === "/" || path === "/configure") return configPage(settings, origin, cuts);
+  if (path === "/" || path === "/configure") return configPage(settings, origin, packages);
   if (path === "/health") {
     return json({
       status: "ok",
@@ -83,7 +83,7 @@ export async function handleRequest(
       api: `${INTRODB_API_BASE}/${INTRODB_API_VERSION}/media`,
       ...describeSettings(settings),
       lastLookupFailure: lastLookupFailure(),
-      cutsStatus: cuts.stats(),
+      cutsStatus: packages.stats(),
     });
   }
   if (path === "/robots.txt") return text("User-agent: *\nDisallow: /\n");
@@ -106,7 +106,7 @@ export async function handleRequest(
         // Not a configuration at all: a path somebody typed.
         return html(notFoundPage(origin), 404);
       }
-      return configPage(settings, origin, cuts, {
+      return configPage(settings, origin, packages, {
         editing: config,
         configError: config
           ? null
@@ -124,16 +124,16 @@ export async function handleRequest(
 
     if (route === "manifest.json") return json(buildManifest(config, encoded));
     if (route === "play") {
-      return handlePlay({ request, settings, cuts, config, encodedConfig: encoded, origin });
+      return handlePlay({ request, settings, packages, config, encodedConfig: encoded, origin });
     }
     if (route === "seg") {
-      return handleSegment({ request, settings, cuts, config, encodedConfig: encoded, origin });
+      return handleSegment({ request, settings, packages, config, encodedConfig: encoded, origin });
     }
 
     // stream/<type>/<id>.json
     const streamMatch = /^stream\/([^/]+)\/(.+)\.json$/.exec(route);
     if (streamMatch) {
-      return handleStreams(settings, cuts, config, encoded, origin, streamMatch[1]!, streamMatch[2]!);
+      return handleStreams(settings, packages, config, encoded, origin, streamMatch[1]!, streamMatch[2]!);
     }
   }
 
@@ -143,7 +143,7 @@ export async function handleRequest(
 
 async function handleStreams(
   settings: Settings,
-  cuts: CutEngine,
+  packages: PackageEngine,
   config: AddonConfig,
   encoded: string,
   origin: string,
@@ -211,7 +211,7 @@ async function handleStreams(
     : upstream.streams;
 
   if (cutSummary) {
-    preCut(settings, cuts, upstream, config, lookup.windows);
+    preCut(settings, packages, upstream, config, lookup.windows);
   }
 
   return json(
@@ -237,12 +237,12 @@ async function handleStreams(
  */
 function preCut(
   settings: Settings,
-  cuts: CutEngine,
+  packages: PackageEngine,
   upstream: { streams: Array<Record<string, unknown>>; used?: string },
   config: AddonConfig,
-  windows: Parameters<CutEngine["schedule"]>[1],
+  windows: Parameters<PackageEngine["schedule"]>[1],
 ): void {
-  if (!cuts.enabled || windows.length === 0) return;
+  if (!packages.enabled || windows.length === 0) return;
   // An install that turned cutting off gets no head start either.
   if ((config.cuts ?? settings.cuts) === "off") return;
   const limit = settings.precutSources;
@@ -253,9 +253,10 @@ function preCut(
     if (scheduled >= limit) break;
     const target = resolveTarget(stream.url, sourceBase);
     if (!target || !isFetchableByWorker(target, settings.ALLOW_PRIVATE_HOSTS === "1")) continue;
-    // The same identity the play URL carries, so the head start warms the cut the
-    // player will look up.
-    cuts.schedule(target, windows, streamIdentity(stream, sourceBase, target));
+    // The same identity the play URL carries, so the head start warms the package the
+    // player will look up -- by the time they have picked a stream, the playlist is
+    // usually already there.
+    packages.schedule(target, windows, streamIdentity(stream, sourceBase, target));
     scheduled++;
   }
 }
@@ -279,7 +280,7 @@ function decodePathComponent(value: string): string {
 function configPage(
   settings: Settings,
   origin: string,
-  cuts: CutEngine,
+  packages: PackageEngine,
   extra: { editing?: AddonConfig | null; configError?: string | null } = {},
 ): Response {
   const url = new URL(origin);
@@ -291,7 +292,7 @@ function configPage(
       siteUrl: INTRODB_SITE,
       serverKeyConfigured: Boolean(settings.TIDB_API_KEY && settings.TIDB_API_KEY.trim()),
       insecure: url.protocol === "http:" && local,
-      cuts: cuts.stats(),
+      cuts: packages.stats(),
       editing: extra.editing ?? null,
       configError: extra.configError ?? null,
     }),

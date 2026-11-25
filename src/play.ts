@@ -18,7 +18,7 @@
  */
 
 import { getHttpCache } from "./cache.js";
-import type { CutEngine } from "./cut.js";
+import type { ManifestView, PackageEngine } from "./packages.js";
 import type { Settings } from "./env.js";
 import { serveFile } from "./files.js";
 import { describeWindows } from "./format.js";
@@ -52,7 +52,7 @@ const MEDIA_EXTENSIONS = [
 export interface PlayContext {
   request: Request;
   settings: Settings;
-  cuts: CutEngine;
+  packages: PackageEngine;
   config: AddonConfig;
   encodedConfig: string;
   origin: string;
@@ -78,17 +78,16 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
   // means nothing is cut (or copied) for that install while the service keeps cutting
   // for everyone else.
   const cutMode: CutMode = context.config.cuts ?? context.settings.cuts;
-  const cutting = cutMode !== "off" && context.cuts.enabled;
+  const cutting = cutMode !== "off" && context.packages.enabled;
   const cutKey =
-    windows.length > 0 && cutting ? context.cuts.keyFor(target, windows, streamKey) : null;
+    windows.length > 0 && cutting ? context.packages.keyFor(target, windows, streamKey) : null;
 
-  // A finished cut is served like any other file. This is the path that makes a
-  // debrid `.mkv` skip its intro on every playback after the first.
+  // A package that already exists is served before anything else is decided: this is
+  // what makes a debrid `.mkv` skip its intro on every playback after the first, and
+  // (in `on` mode) what makes it skip from the very first one.
   if (cutKey) {
-    const ready = await context.cuts.ready(cutKey);
-    if (ready) {
-      return serveCut(context, ready, cutKey, windows, lookup?.reason ?? "");
-    }
+    const ready = await context.packages.manifest(cutKey);
+    if (ready) return manifestResponse(ready, cutKey, lookup?.reason ?? "");
   }
 
   const proxyOn = context.config.proxy === true;
@@ -102,14 +101,9 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
     // otherwise the player opens the link from its own network and the source answers
     // "this stream link only works on the internet connection that requested it".
     if (looksLikeProgressiveFile(target)) {
-      const cut = await cutIfReady(context, target, windows, cutKey, streamKey, cutMode);
-      if (cut) return cut;
-      warmCut(context, target, windows, cutKey, streamKey);
-      return streamThrough(context.request, target, {
-        cacheControl: "no-store",
-        timeoutMs: null,
-        debug: proxyHeaders("proxied_file", lookup?.reason ?? ""),
-      });
+      return handleProgressive(
+        context, target, windows, "proxied_file", streamKey, cutMode, lookup?.reason ?? "",
+      );
     }
   } else {
     // A HEAD probe, or a byte range the player already knows it wants: nothing to
@@ -122,10 +116,12 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
       return redirectTo(target, "range_request");
     }
     if (looksLikeProgressiveFile(target)) {
-      return handleProgressive(context, target, windows, cutKey, "not_hls", streamKey, cutMode);
+      return handleProgressive(context, target, windows, "not_hls", streamKey, cutMode, lookup?.reason ?? "");
     }
     if (await cache.match(verdictKey)) {
-      return handleProgressive(context, target, windows, cutKey, "not_a_playlist_cached", streamKey, cutMode);
+      return handleProgressive(
+        context, target, windows, "not_a_playlist_cached", streamKey, cutMode, lookup?.reason ?? "",
+      );
     }
   }
 
@@ -161,20 +157,12 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
       { status: 302, body: "not_a_playlist", contentType: "text/plain" },
       NOT_PLAYLIST_TTL_SECONDS,
     );
-    if (proxyOn) {
-      // A file behind a URL with no extension (a debrid `/playback/<token>`, for
-      // instance): the prefix read above already had to come from here, so the rest
-      // does too.
-      const cut = await cutIfReady(context, target, windows, cutKey, streamKey, cutMode);
-      if (cut) return cut;
-      warmCut(context, target, windows, cutKey, streamKey);
-      return streamThrough(context.request, target, {
-        cacheControl: "no-store",
-        timeoutMs: null,
-        debug: proxyHeaders("proxied_file", lookup?.reason ?? ""),
-      });
-    }
-    return handleProgressive(context, target, windows, cutKey, "not_a_playlist", streamKey, cutMode);
+    // A file behind a URL with no extension (a debrid `/playback/<token>`, for
+    // instance): the prefix read above already had to come from here, so the rest
+    // does too -- which `handleProgressive` does when the config asks for proxying.
+    return handleProgressive(
+      context, target, windows, "not_a_playlist", streamKey, cutMode, lookup?.reason ?? "",
+    );
   }
 
   if (isMasterPlaylist(sniffed.text)) {
@@ -231,38 +219,98 @@ async function handleProgressive(
   context: PlayContext,
   target: string,
   windows: readonly SkipWindow[],
-  cutKey: string | null,
   reason: string,
   streamKey: string | null = null,
   mode: CutMode = context.settings.cuts,
+  lookupReason = "",
 ): Promise<Response> {
-  if (!cutKey) return redirectTo(target, reason);
-
-  const cut = await cutIfReady(context, target, windows, cutKey, streamKey, mode);
-  if (cut) return cut;
-
-  const state = context.cuts.state(cutKey);
-  return redirectTo(target, `cut_${state?.status ?? "queued"}`);
+  if (windows.length > 0 && mode !== "off" && context.packages.enabled) {
+    return packageOrProxy(context, target, windows, streamKey, mode, reason, lookupReason);
+  }
+  return passThrough(context, target, reason, lookupReason);
 }
 
-function serveCut(
+/**
+ * The source itself: proxied when the config asks for it, otherwise handed over.
+ *
+ * A debrid link is minted for the address that asked for it, so with proxying on this
+ * service has to be the one to fetch it -- the player opening the link from its own
+ * network is what produces "this stream link only works on the internet connection
+ * that requested it".
+ */
+function passThrough(
   context: PlayContext,
-  filePath: string,
-  cutKey: string,
+  target: string,
+  reason: string,
+  lookupReason = "",
+): Promise<Response> | Response {
+  if (context.config.proxy === true) {
+    // `x-tidb-play` says what happened, `x-tidb-fallback` says why the original was
+    // served instead of a package: two different questions, and an operator asking
+    // "why is the intro still there" needs the second one.
+    return streamThrough(context.request, target, {
+      cacheControl: "no-store",
+      timeoutMs: null,
+      debug: {
+        "x-tidb-play": "proxied_file",
+        ...(reason && reason !== "proxied_file" ? { "x-tidb-fallback": reason } : {}),
+        ...(lookupReason ? { "x-tidb-lookup": lookupReason } : {}),
+      },
+    });
+  }
+  return redirectTo(target, reason);
+}
+
+/**
+ * A playlist built from this key's package, starting the generation when there is
+ * none yet.
+ *
+ * This is the answer to "the player gives up before the file has downloaded": what is
+ * waited for here is one segment, a couple of seconds of work, and not the file.
+ * `on` mode does not even wait for that: it plays the source now and cuts from the
+ * next playback. Whatever happens, a player that plays something is better than one
+ * that fails, so a source too slow to produce a segment inside the window is passed
+ * through untouched.
+ */
+async function packageOrProxy(
+  context: PlayContext,
+  target: string,
   windows: readonly SkipWindow[],
+  streamKey: string | null,
+  mode: CutMode,
+  reason: string,
   lookupReason: string,
 ): Promise<Response> {
-  const state = context.cuts.state(cutKey);
-  return serveFile(context.request, filePath, state?.container, {
-    "x-tidb-play": "cut_file",
-    "x-tidb-cut": "ready",
-    // Which cut was served. Two playbacks of the same release must show the same
-    // key even though the source re-minted its link in between.
-    "x-tidb-cut-key": cutKey,
-    "x-tidb-lookup": lookupReason,
-    "x-tidb-cuts": describeWindows(windows),
-    "x-tidb-cut-bytes": String(state?.bytes ?? ""),
-  });
+  const key = context.packages.keyFor(target, windows, streamKey);
+  const ready = await context.packages.manifest(key);
+  if (ready) return manifestResponse(ready, key, lookupReason);
+
+  context.packages.schedule(target, windows, streamKey);
+  if (mode !== "blocking") return passThrough(context, target, "package_warming", lookupReason);
+
+  const waited = await context.packages.waitForFirstSegment(
+    key,
+    context.settings.cutWaitSeconds * 1000,
+  );
+  if (waited) return manifestResponse(waited, key, lookupReason);
+  return passThrough(context, target, "package_slow", lookupReason);
+}
+
+function manifestResponse(view: ManifestView, key: string, lookupReason: string): Response {
+  return playlist(
+    view.body,
+    {
+      "x-tidb-play": view.complete ? "package_vod" : "package_live",
+      // Which package was served. Two playbacks of the same release must show the same
+      // key even though the source re-minted its link in between.
+      "x-tidb-package": key,
+      "x-tidb-segments": String(view.segments),
+      "x-tidb-content-ms": String(view.durationMs),
+      ...(lookupReason ? { "x-tidb-lookup": lookupReason } : {}),
+    },
+    // Re-read on every poll: an EVENT playlist grows while the player watches.
+    0,
+  );
 }
 
 /**
@@ -274,6 +322,22 @@ function serveCut(
  */
 export async function handleSegment(context: PlayContext): Promise<Response> {
   const requestUrl = new URL(context.request.url);
+
+  // A segment of a package this service generated (`f=<key>/<name>`): served from the
+  // cache it was written to. A segment never changes once written, so the player may
+  // keep it -- which is what makes a replay cheap.
+  const file = requestUrl.searchParams.get("f");
+  if (file) {
+    const slash = file.lastIndexOf("/");
+    const local =
+      slash > 0 ? context.packages.segmentPath(file.slice(0, slash), file.slice(slash + 1)) : null;
+    if (!local) return text("Malformed f parameter", { status: 400 });
+    return serveFile(context.request, local, "ts", {
+      "x-tidb-play": "package_segment",
+      "cache-control": "public, max-age=21600",
+    });
+  }
+
   const target = requestUrl.searchParams.get("u");
   if (!target) return text("Missing u parameter", { status: 400 });
   const blocked = targetRejection(target, context.settings);
@@ -348,45 +412,6 @@ async function streamThrough(
   }
 
   return new Response(upstream.body, { status: upstream.status, headers: passthrough });
-}
-
-/** Debug headers for a streamed play response. */
-function proxyHeaders(play: string, lookupReason: string): Record<string, string> {
-  return { "x-tidb-play": play, "x-tidb-lookup": lookupReason };
-}
-
-/**
- * Wait for a cut when the configuration asks for it, and serve it if it arrives.
- *
- * `blocking` is a promise to the user that they will not watch the intro: with
- * proxying on, the streamed original used to go out immediately and the promise was
- * quietly broken, which looks exactly like "the intro was still there".
- */
-async function cutIfReady(
-  context: PlayContext,
-  target: string,
-  windows: readonly SkipWindow[],
-  cutKey: string | null,
-  streamKey: string | null,
-  mode: CutMode,
-): Promise<Response | null> {
-  if (!cutKey) return null;
-  context.cuts.schedule(target, windows, streamKey);
-  if (mode !== "blocking") return null;
-  const ready = await context.cuts.waitFor(cutKey, context.settings.cutWaitSeconds * 1000);
-  return ready ? serveCut(context, ready, cutKey, windows, "cut_ready") : null;
-}
-
-/** Start a background cut, when there is one to start, so a later play is cut too. */
-function warmCut(
-  context: PlayContext,
-  target: string,
-  windows: readonly SkipWindow[],
-  cutKey: string | null,
-  streamKey: string | null,
-): void {
-  if (!cutKey) return;
-  context.cuts.schedule(target, windows, streamKey);
 }
 
 /** Read a playlist body, sniffing anything whose content type does not say so. */

@@ -7,13 +7,13 @@
  * The router speaks `Request`/`Response`; this adapts Node's HTTP server to it, so
  * the same handlers would run anywhere the Fetch API exists. It also owns the
  * things a long-running process has and a Worker did not: a real port, a disk
- * cache for cut files, and a graceful shutdown.
+ * cache for generated segments, and a graceful shutdown.
  */
 
 import { createServer, type IncomingMessage } from "node:http";
 import { Readable } from "node:stream";
 
-import { CutEngine } from "./cut.js";
+import { PackageEngine } from "./packages.js";
 import { loadSettings, type Settings } from "./env.js";
 import { handleRequest } from "./index.js";
 import { ADDON_VERSION } from "./manifest.js";
@@ -29,7 +29,7 @@ export function requestUrl(request: IncomingMessage): string {
   return `${proto}://${host}${path}`;
 }
 
-export function createApp(settings: Settings, cuts: CutEngine) {
+export function createApp(settings: Settings, packages: PackageEngine) {
   return createServer((nodeRequest, nodeResponse) => {
     void (async () => {
       try {
@@ -39,7 +39,7 @@ export function createApp(settings: Settings, cuts: CutEngine) {
           headers: nodeRequest.headers as Record<string, string>,
         });
 
-        const response = await handleRequest(request, settings, cuts);
+        const response = await handleRequest(request, settings, packages);
 
         const headers: Record<string, string | string[]> = {};
         response.headers.forEach((value, name) => {
@@ -68,10 +68,10 @@ export function createApp(settings: Settings, cuts: CutEngine) {
 
 export async function main(): Promise<void> {
   const settings = loadSettings();
-  const cuts = new CutEngine(settings);
-  const cutStatus = await cuts.start();
+  const packages = new PackageEngine(settings);
+  const packageStatus = await packages.start();
 
-  const server = createApp(settings, cuts);
+  const server = createApp(settings, packages);
   server.listen(settings.port, () => {
     const base = `http://localhost:${settings.port}`;
     console.log(`TheIntroDB Stremio addon v${ADDON_VERSION}`);
@@ -82,11 +82,11 @@ export async function main(): Promise<void> {
       `  api key        ${(settings.TIDB_API_KEY ?? "").trim() ? "configured" : "MISSING - lookups will refuse with 403"}`,
     );
     console.log(
-      `  cuts           ${settings.cuts}${settings.cuts === "off" ? "" : ` (${settings.cacheDir}, max ${Math.round(settings.cacheMaxBytes / 1024 ** 3)} GB, ${settings.cutConcurrency} at a time)`}`,
+      `  cutting        ${settings.cuts}${settings.cuts === "off" ? "" : ` (${settings.cacheDir}, max ${Math.round(settings.cacheMaxBytes / 1024 ** 3)} GB, ${settings.cutConcurrency} at a time)`}`,
     );
-    console.log(`  ffmpeg         ${cutStatus.detail}`);
-    if (!cutStatus.ok) {
-      console.warn("  warning        cuts are disabled until the line above is fixed");
+    console.log(`  ffmpeg         ${packageStatus.detail}`);
+    if (!packageStatus.ok) {
+      console.warn("  warning        files play uncut until the line above is fixed");
     }
   });
 

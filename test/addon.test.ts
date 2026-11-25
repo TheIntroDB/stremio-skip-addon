@@ -9,6 +9,7 @@
  */
 
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer, type Server } from "node:http";
@@ -18,7 +19,7 @@ import { after, before, beforeEach, test } from "node:test";
 import { resetMemoryCache } from "../src/cache.js";
 import { encodeConfig } from "../src/config.js";
 import { INTRODB_API_BASE } from "../src/constants.js";
-import { CutEngine } from "../src/cut.js";
+import { PackageEngine } from "../src/packages.js";
 import type { Settings } from "../src/env.js";
 import { handleRequest } from "../src/index.js";
 import type { SegmentType } from "../src/types.js";
@@ -266,8 +267,8 @@ function testSettings(overrides: Partial<Settings> = {}): Settings {
     port: 0,
     cacheDir: path.join(tmpdir(), "tidb-addon-test-cache"),
     cacheMaxBytes: 0,
-    // Off by default: these tests are about the playlist and relay paths. The cut
-    // engine has its own suite, which runs real ffmpeg.
+    // Off by default: these tests are about the playlist and relay paths. The package
+    // engine has its own suite, which runs real ffmpeg (test/packages.test.ts).
     cuts: "off",
     cutWaitSeconds: 0,
     cutConcurrency: 1,
@@ -282,12 +283,12 @@ async function call(
   path: string,
   settings: Settings = testSettings(),
   init?: RequestInit,
-  cuts?: CutEngine,
+  packages?: PackageEngine,
 ): Promise<Response> {
   return handleRequest(
     new Request(`https://worker.example${path}`, init),
     settings,
-    cuts ?? new CutEngine(settings),
+    packages ?? new PackageEngine(settings),
   );
 }
 
@@ -486,7 +487,7 @@ test("cuts are warmed for the first sources on a list, and turning that off stop
   // fetched is a bandwidth decision: PRECUT_SOURCES is how a deployment controls it.
   for (const [precut, expected] of [[1, 1], [0, 0]] as const) {
     const settings = testSettings({ cuts: "on", precutSources: precut });
-    const engine = new CutEngine(settings);
+    const engine = new PackageEngine(settings);
     const scheduled: string[] = [];
     const realSchedule = engine.schedule.bind(engine);
     engine.schedule = ((url: string, windows: Parameters<typeof realSchedule>[1]) => {
@@ -530,7 +531,7 @@ test("a cut is keyed on the stream, not on the source's rotating link", async ()
 
   // And what the player is handed off the first list is what the second list agrees
   // with, so the warmed cut is found: the engine's key derives from the identity.
-  const cuts = new CutEngine(testSettings());
+  const cuts = new PackageEngine(testSettings());
   const windows = [{ type: "intro" as const, startMs: 0, endMs: 30_000 }];
   assert.equal(
     cuts.keyFor(target(first.streams[0]!)!, windows, key(first.streams[0]!)),
@@ -696,16 +697,16 @@ test("an install can choose its own cutting mode", async () => {
   // The choice rides in the install URL, so one deployment can serve an install that
   // always cuts and another that copies nothing.
   // A real wait window, so the assertion can see that the install's choice was used
-  // (the stub's target is not a video, so the cut fails fast and the wait ends early).
+  // (the stub's target is not a video, so generation fails fast and the wait ends).
   const settings = testSettings({ cuts: "on", precutSources: 0, cutWaitSeconds: 5 });
 
-  const waiting = new CutEngine(settings);
+  const waiting = new PackageEngine(settings);
   const waits: number[] = [];
-  const realWait = waiting.waitFor.bind(waiting);
-  waiting.waitFor = ((key: string, ms: number) => {
+  const realWait = waiting.waitForFirstSegment.bind(waiting);
+  waiting.waitForFirstSegment = ((key: string, ms: number) => {
     waits.push(ms);
     return realWait(key, ms);
-  }) as typeof waiting.waitFor;
+  }) as typeof waiting.waitForFirstSegment;
   const always = encodeConfig({
     src: [`${base}/upstream`],
     types: ["intro"] as SegmentType[],
@@ -713,10 +714,10 @@ test("an install can choose its own cutting mode", async () => {
     cuts: "blocking",
   });
   await call(playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1", always), settings, undefined, waiting);
-  assert.ok(waits.length > 0, "the install said always cut, so the play waited even though the deployment says on");
+  assert.ok(waits.length > 0, "the install said always cut, so the play waited for a segment even though the deployment says on");
   assert.equal(waits[0], 5000, "and it waited the deployment's window, not zero");
 
-  const never = new CutEngine(settings);
+  const never = new PackageEngine(settings);
   let asked = 0;
   const realSchedule = never.schedule.bind(never);
   never.schedule = ((url: string, windows: Parameters<typeof realSchedule>[1], id?: string) => {
@@ -734,12 +735,12 @@ test("an install can choose its own cutting mode", async () => {
   assert.equal(response.headers.get("x-tidb-play"), "proxied_file");
 });
 
-test("blocking means blocking: a proxied file waits for its cut", async () => {
+test("blocking means blocking: a proxied file waits for a segment", async () => {
   // With proxying on the streamed original used to go out immediately whatever CUTS
   // said, so the promise "blocking waits for the cut" was quietly broken -- which looks
   // exactly like "the intro was still there".
   const settings = testSettings({ cuts: "blocking", precutSources: 0 });
-  const engine = new CutEngine(settings);
+  const engine = new PackageEngine(settings);
   const scheduled: string[] = [];
   const realSchedule = engine.schedule.bind(engine);
   engine.schedule = ((url: string, windows: Parameters<typeof realSchedule>[1], id?: string) => {
@@ -753,14 +754,13 @@ test("blocking means blocking: a proxied file waits for its cut", async () => {
     undefined,
     engine,
   );
-  // Called twice on purpose (the wait, then the warm-up) and idempotent in the engine,
-  // so what matters is that one cut was asked for -- before anything was served.
-  assert.equal(new Set(scheduled).size, 1, "the cut was asked for, once");
+  assert.equal(new Set(scheduled).size, 1, "one package was asked for, once");
   assert.ok(scheduled.length >= 1, "and the ask happened before the response");
-  // The stub's target is not a video, so no cut can be made: the fallback is the
-  // original, proxied, and the caller can see that from the header.
+  // The stub's target is not a video, so no segment can be made: the fallback is the
+  // original, proxied, and both what happened and why are visible from the headers.
   assert.equal(response.status, 200);
   assert.equal(response.headers.get("x-tidb-play"), "proxied_file");
+  assert.equal(response.headers.get("x-tidb-fallback"), "package_slow");
 });
 
 test("with proxying on, files are streamed through this service", async () => {
@@ -925,4 +925,74 @@ test("OPTIONS is answered for cross-origin players", async () => {
   const response = await call(`/${amplified}/manifest.json`, testSettings(), { method: "OPTIONS" });
   assert.equal(response.status, 204);
   assert.equal(response.headers.get("access-control-allow-origin"), "*");
+});
+
+test("a package that is ready is served as a seekable playlist", async () => {
+  // The end state of the whole feature: the playlist a player is handed for a file, and
+  // the segments it points at, served from this service's own cache.
+  const cacheDir = await mkdtemp(path.join(tmpdir(), "tidb-package-http-"));
+  const settings = testSettings({ cuts: "blocking", cacheDir, precutSources: 0 });
+  const engine = new PackageEngine(settings);
+  const url = playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1");
+
+  // The key is the identity of the source plus its windows, which is what the play URL
+  // resolves to; asking the engine for it is exactly what the handler does.
+  const windows = [
+    { type: "intro" as const, startMs: 228665, endMs: 246498 },
+    { type: "credits" as const, startMs: 3432884, endMs: null },
+  ];
+  const key = engine.keyFor(`${base}/hls/movie.mp4`, windows, null);
+  const dir = path.join(cacheDir, "hls", key);
+  await mkdir(dir, { recursive: true });
+  await writeFile(
+    path.join(dir, "plan.json"),
+    JSON.stringify({
+      key,
+      windows: [],
+      ranges: [
+        { startMs: 0, endMs: 20_000 },
+        { startMs: 40_000, endMs: 60_000 },
+      ],
+      createdAt: Date.now(),
+    }),
+  );
+  // What ffmpeg's segment muxer reports: name, start, end, seconds into that stretch.
+  // The third segment starts past the end of the first stretch, so it must not be
+  // offered -- that is the over-run into the dropped window.
+  await writeFile(
+    path.join(dir, "pass-0.csv"),
+    "seg00000.ts,0.000000,10.000000\nseg00001.ts,10.000000,20.000000\nseg00002.ts,20.000000,26.000000\n",
+  );
+  await writeFile(path.join(dir, "pass-1.csv"), "seg00003.ts,0.000000,6.000000\n");
+  await writeFile(path.join(dir, "done"), "");
+  for (const name of ["seg00000.ts", "seg00001.ts", "seg00002.ts", "seg00003.ts"]) {
+    await writeFile(path.join(dir, name), "TS-BYTES");
+  }
+
+  const response = await call(url, settings, undefined, engine);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "application/vnd.apple.mpegurl");
+  assert.equal(response.headers.get("x-tidb-play"), "package_vod");
+  assert.equal(response.headers.get("x-tidb-package"), key);
+  assert.equal(response.headers.get("x-tidb-segments"), "3");
+  assert.equal(response.headers.get("x-tidb-content-ms"), "26000");
+
+  const body = await response.text();
+  assert.ok(body.includes("#EXT-X-PLAYLIST-TYPE:VOD"));
+  assert.ok(body.includes("#EXT-X-ENDLIST"), "a finished package is a plain VOD playlist");
+  assert.equal((body.match(/^#EXT-X-DISCONTINUITY$/gm) ?? []).length, 1, "one jump, where the gap is");
+  assert.ok(body.includes("#EXTINF:10.000,"));
+  assert.ok(body.includes(`seg?f=${key}/seg00000.ts`), "a relative URI, so it comes back here");
+  assert.ok(!body.includes("seg00002.ts"), "a segment past the end of its stretch is not offered");
+
+  // And the segment itself: served from the cache, typed as MPEG-TS, ranged.
+  const segment = await call(`/${amplified}/seg?f=${key}/seg00000.ts`, settings, undefined, engine);
+  assert.equal(segment.status, 200);
+  assert.equal(segment.headers.get("content-type"), "video/mp2t");
+  assert.equal(segment.headers.get("accept-ranges"), "bytes");
+  assert.equal(await segment.text(), "TS-BYTES");
+
+  // A name that is not one of ours is refused rather than read.
+  const traversal = await call(`/${amplified}/seg?f=${key}/../../plan.json`, settings, undefined, engine);
+  assert.equal(traversal.status, 400);
 });
