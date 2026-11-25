@@ -192,11 +192,12 @@ export function renderConfigPage(options: PageOptions): string {
     <div class="field">
       <label for="margin">Margin on every cut</label>
       <select id="margin"></select>
+      <p class="hint">How much of each window's edges to leave alone. A cut can only land on a keyframe, and TheIntroDB's timings describe <i>a</i> release of a title rather than necessarily yours, so the first and last seconds of an intro are where dialogue goes missing. With a margin of 2, the skip starts two seconds after the reported start and ends two seconds before the reported end — it never skips more than the timings ask for. 0 cuts exactly what TheIntroDB reports.</p>
+    </div>
+
     <div class="field">
       <label class="check" style="max-width:560px"><input type="checkbox" id="subtitles"> Generate subtitles for the cut video</label>
-      <p class="hint">Cutting removes stretches, so a subtitle track recorded against the original timeline drifts behind the picture. With this on, the audio of the parts that are kept is transcribed on this server and the track is re-timed to what is playing, so it lines up. The speech models run here — nothing is sent anywhere — the first play of a title costs some CPU, and the finished track is cached for a day.</p>
-    </div>
-      <p class="hint">How much of each window's edges to leave alone. A cut can only land on a keyframe, and TheIntroDB's timings describe <i>a</i> release of a title rather than necessarily yours, so the first and last seconds of an intro are where dialogue goes missing. With a margin of 2, the skip starts two seconds after the reported start and ends two seconds before the reported end — it never skips more than the timings ask for. 0 cuts exactly what TheIntroDB reports.</p>
+      <p class="hint">Cutting removes stretches, so a subtitle track recorded against the original timeline drifts behind the picture. With this on, the audio of the parts that are kept is transcribed on this server, and the track is re-timed to what is playing, so it lines up. The speech models run here — nothing is sent anywhere — the first play of a title is what pays for it, and the finished track is cached for a day.</p>
     </div>
 
     <div class="field">
