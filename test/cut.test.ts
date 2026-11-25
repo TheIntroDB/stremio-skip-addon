@@ -153,6 +153,30 @@ test("slivers shorter than half a second are dropped rather than cut", () => {
   assert.deepEqual(keptRanges(windows, 30_000), []);
 });
 
+test("a window that starts past the end of the file is not in this file", () => {
+  // The timings can describe a longer release than the file being played: the
+  // credits window here is at 57 minutes in a 10 minute file. It must not produce a
+  // range that asks ffmpeg to copy from beyond EOF.
+  const windows = [{ type: "credits" as const, startMs: 3_432_120, endMs: null }];
+  assert.deepEqual(keptRanges(windows, 596_480), [{ startMs: 0, endMs: 596_480 }]);
+});
+
+test("a window that runs past the end of the file is clipped", () => {
+  const windows = [{ type: "credits" as const, startMs: 500_000, endMs: 900_000 }];
+  assert.deepEqual(keptRanges(windows, 596_480), [{ startMs: 0, endMs: 500_000 }]);
+});
+
+test("windows in order leave the pieces between them", () => {
+  const windows = [
+    { type: "intro" as const, startMs: 228_665, endMs: 246_498 },
+    { type: "credits" as const, startMs: 3_432_120, endMs: null },
+  ];
+  assert.deepEqual(keptRanges(windows, 596_480), [
+    { startMs: 0, endMs: 228_665 },
+    { startMs: 246_498, endMs: 596_480 },
+  ]);
+});
+
 test("the engine reports ffmpeg as available", async () => {
   const cuts = new CutEngine(settings());
   const status = await cuts.start();

@@ -428,12 +428,19 @@ export function keptRanges(
   durationMs: number | null,
 ): KeptRange[] {
   const sorted = [...windows].sort((a, b) => a.startMs - b.startMs);
+  // A known duration bounds everything: a window that starts past the end of the
+  // file is not in this file at all (the timings can belong to a longer release),
+  // and a window that runs past it is clipped. Without the bound, the range that
+  // follows such a window would ask ffmpeg to copy from beyond EOF, which yields an
+  // empty part to concatenate.
+  const duration = durationMs ?? Number.POSITIVE_INFINITY;
   const kept: KeptRange[] = [];
   let cursor = 0;
 
   for (const window of sorted) {
-    const start = Math.max(0, window.startMs);
-    const end = window.endMs === null ? (durationMs ?? Number.POSITIVE_INFINITY) : window.endMs;
+    const start = Math.min(Math.max(0, window.startMs), duration);
+    const end = Math.min(window.endMs === null ? duration : Math.max(0, window.endMs), duration);
+    if (end <= start) continue;
     if (start - cursor >= MIN_KEPT_MS) kept.push({ startMs: cursor, endMs: start });
     cursor = Math.max(cursor, end);
   }

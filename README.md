@@ -59,13 +59,16 @@ railway domain                                # prints your public URL
 
 ### Option B — Docker
 
+Build the image (Node 22 plus ffmpeg, about 200 MB):
+
 ```bash
+docker build -t tidb-skip .
 docker run -d --name tidb-skip \
   -p 8787:8787 \
   -e TIDB_API_KEY=<your key> \
   -e CUTS=on \
   -v tidb-cut-cache:/cache \
-  ghcr.io/theintrodb/stremio-skip-addon:latest
+  tidb-skip
 ```
 
 Or a compose file, which is what most people want on a NAS:
@@ -73,7 +76,7 @@ Or a compose file, which is what most people want on a NAS:
 ```yaml
 services:
   tidb-skip:
-    image: ghcr.io/theintrodb/stremio-skip-addon:latest
+    build: .                # or: image: ghcr.io/theintrodb/stremio-skip-addon:latest
     restart: unless-stopped
     ports:
       - "8787:8787"
@@ -85,7 +88,11 @@ services:
       - ./cache:/cache    # the cut cache: give it real disk
 ```
 
-The image already contains ffmpeg. If you build it yourself: `docker build -t tidb-skip .` (it compiles TypeScript in a first stage and ships only `dist/` plus ffmpeg).
+An image is published to `ghcr.io/theintrodb/stremio-skip-addon` (`latest` from `main`,
+plus `x.y.z` for a release tag) for `linux/amd64` and `linux/arm64`. While this
+repository is private that package is private too, so pulling it needs
+`docker login ghcr.io` with a token that can read packages — building from the
+Dockerfile needs nothing but the source.
 
 > Mount the cache as a directory you own. The image runs as the `node` user, so a root-owned bind mount will not be writable — `docker run --user "$(id -u):$(id -g)"` fixes that, or let Docker manage the volume as above.
 
