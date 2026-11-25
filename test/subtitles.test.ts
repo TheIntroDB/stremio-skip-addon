@@ -21,7 +21,7 @@ import { encodeConfig } from "../src/config.js";
 import { run } from "../src/ffmpeg.js";
 import { handleRequest } from "../src/index.js";
 import { PackageEngine } from "../src/packages.js";
-import { chooseAudio, masterPlaylist, parseProbe } from "../src/streaminfo.js";
+import { chooseAudio, masterPlaylist, parseProbe, variantAttributes } from "../src/streaminfo.js";
 import { handleSubtitleChunk, handleSubtitlePlaylist, SubtitleEngine } from "../src/subtitles.js";
 import type { Transcriber } from "../src/transcribe.js";
 import type { Settings } from "../src/env.js";
@@ -249,6 +249,35 @@ test("the audio track is chosen by language, and English is the fallback", async
   assert.equal(chooseAudio([{ index: 9, language: "fr", isDefault: false }], "en")!.index, 9,
     "no English and no default: its first track");
   assert.equal(chooseAudio(undefined, "en"), null, "an unreadable probe leaves it to ffmpeg");
+});
+
+test("a 4K HEVC source is described as HEVC, not left for the player to guess", () => {
+  // A master with no `CODECS` lets a player assume AVC. hls.js builds an AVC MediaSource, feeds it
+  // HEVC, and the viewer gets a black picture with the audio playing -- which is exactly what a
+  // 4K HEVC source produced before this said what it is.
+  const info = parseProbe(
+    JSON.stringify({
+      format: { duration: "1500.0", bit_rate: "5359114" },
+      streams: [
+        { index: 0, codec_type: "video", codec_name: "hevc", profile: "Main 10", level: 153, width: 3840, height: 2160 },
+        { index: 1, codec_type: "audio", codec_name: "eac3" },
+      ],
+    }),
+  )!;
+  assert.equal(info.codecs, "hvc1.2.4.L153.B0,ec-3");
+  assert.ok(
+    variantAttributes(info, true).includes('CODECS="hvc1.2.4.L153.B0,ec-3"'),
+    "and the variant carries it",
+  );
+
+  // A profile that cannot be named is left undeclared rather than guessed at.
+  const unnamed = parseProbe(
+    JSON.stringify({
+      format: { duration: "10.0" },
+      streams: [{ index: 0, codec_type: "video", codec_name: "hevc", profile: "Main 4:4:4", level: 120 }],
+    }),
+  )!;
+  assert.equal(unnamed.codecs, "", "no spelling rather than a wrong one");
 });
 
 test("the recogniser is fed the chosen stream, not ffmpeg's own preference", async () => {

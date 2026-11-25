@@ -447,12 +447,13 @@ async function packageResponse(
   // The track must agree with the film about the card: if this playlist has none in front of it,
   // its rendition must not carry the card's segment either, or every cue would sit one card late.
   const subtitleQuery = `f=${encodeURIComponent(track)}${view.card === 0 ? "&nc=1" : ""}`;
+  const info = await context.packages.sourceInfo(key);
   const master = masterPlaylist({
     mediaUri: `${media.pathname}${media.search}`,
     subtitleUri: `subs.m3u8?${subtitleQuery}`,
     language: context.settings.subtitlesLanguage || "en",
     name: "TheIntroDB",
-    info: await context.packages.sourceInfo(key),
+    info,
   });
   return new Response(master, {
     status: 200,
@@ -462,6 +463,8 @@ async function packageResponse(
       "cache-control": "no-cache",
       // The master answers the same question the playlist does, so an operator sees one vocabulary.
       "x-tidb-play": view.complete ? "package_vod" : "package_live",
+      // What the segments hold, for the "the film plays but the picture is black" report.
+      "x-tidb-codecs": info?.codecs || "unknown",
       "x-tidb-complete": view.complete ? "yes" : "no",
       ...CORS_HEADERS,
     },

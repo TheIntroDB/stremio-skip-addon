@@ -142,6 +142,13 @@ export class PackageEngine {
   private cardOk: boolean | null = null;
   /** The last reason a card could not be drawn, for /health. */
   private cardError: string | null = null;
+  /**
+   * The codec string of the package last served.
+   *
+   * A container/codec a player cannot demux is invisible in the playlist -- the picture is simply
+   * black while the audio plays -- so /health says what the segments actually hold.
+   */
+  private lastCodecs = "";
   private readonly running = new Map<string, Promise<PackageState>>();
   private readonly tasks: Array<() => void> = [];
   private active = 0;
@@ -404,6 +411,7 @@ export class PackageEngine {
     this.used.set(key, Date.now());
     const card = await this.readSplashList(key);
     const stretches = await this.realStretches(plan, key);
+    this.lastCodecs = (await this.sourceInfo(key))?.codecs ?? this.lastCodecs;
     if (card.length === 0 && stretches.length === 0) return null;
 
     // The card covers the packaging. Once the film has been finished for longer than the card
@@ -798,6 +806,9 @@ export class PackageEngine {
       cardPieces: [...this.cards.values()].reduce((total, state) => total + state.pieces, 0),
       splash: this.settings.splash && this.cardOk !== false,
       splashError: this.cardError,
+      // What the segments hold, e.g. `hvc1.2.4.L153.B0,ec-3`. A player that cannot demux this
+      // shows a black picture with the audio playing, and nothing else in the playlist says so.
+      codecs: this.lastCodecs,
       bytes,
       // Only the newest one: this is what an operator needs to see, and /health
       // stays small.

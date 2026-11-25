@@ -86,6 +86,18 @@ const H264_PROFILES: Record<string, string> = {
   "high 4:2:2": "7a",
 };
 
+/**
+ * HEVC profiles, as RFC 6381 spells them: profile id and the compatibility flag that a stream of
+ * that profile always carries. Apple's authoring spec wants `hvc1` (not `hev1`) for HLS, and every
+ * HEVC example of theirs is `hvc1.<id>.<compat>.L<level>.B0`.
+ */
+const HEVC_PROFILES: Record<string, { id: number; compat: string }> = {
+  main: { id: 1, compat: "6" },
+  "main 10": { id: 2, compat: "4" },
+  "main still picture": { id: 3, compat: "4" },
+  rext: { id: 4, compat: "4" },
+};
+
 const AUDIO_CODECS: Record<string, string> = {
   aac: "mp4a.40.2",
   mp3: "mp4a.40.34",
@@ -105,8 +117,18 @@ export function codecsFor(video?: ProbeStream, audio?: ProbeStream): string {
     if (!profile || !Number.isFinite(level) || level <= 0) return "";
     // Constraint flags are not reported per set bit; 0x00 is what a High/Main stream carries.
     parts.push(`avc1.${profile}00${level.toString(16).padStart(2, "0")}`);
+  } else if (name === "hevc") {
+    // Omitting this used to be the choice here, on the grounds that a wrong codec string is worse
+    // than none. It is not: a master with no `CODECS` leaves a player to guess, and hls.js guesses
+    // AVC -- it builds a MediaSource for AVC, feeds it HEVC, and the viewer gets a black picture
+    // with the audio playing. Saying what the stream is lets a player that cannot decode it say so
+    // instead (and lets one that can -- Safari, Chrome with hardware HEVC -- play it).
+    const profile = HEVC_PROFILES[(video?.profile ?? "").toLowerCase()];
+    const level = Number(video?.level);
+    if (!profile || !Number.isFinite(level) || level <= 0) return "";
+    parts.push(`hvc1.${profile.id}.${profile.compat}.L${level}.B0`);
   } else if (name !== "") {
-    return ""; // HEVC and friends: no spelling that is guaranteed right, so none.
+    return "";
   }
   const sound = AUDIO_CODECS[(audio?.codec_name ?? "").toLowerCase()];
   if (sound) parts.push(sound);
