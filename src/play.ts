@@ -32,7 +32,7 @@ import {
 import { CORS_HEADERS, playlist, redirectTo, text } from "./http.js";
 import { lookupSkipWindows } from "./introdb.js";
 import { isPrivateHost } from "./upstream.js";
-import type { AddonConfig, SkipWindow } from "./types.js";
+import type { AddonConfig, CutMode, SkipWindow } from "./types.js";
 import { playUrl, segmentUrl } from "./urls.js";
 
 /** Playlists are text and small; anything bigger is not a playlist. */
@@ -74,10 +74,13 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
   // The timings decide whether anything can be cut, so they come first.
   const lookup = id ? await lookupSkipWindows(context.settings, context.config, id) : null;
   const windows = lookup?.windows ?? [];
+  // The install's own choice wins over the deployment's default, so `off` in the URL
+  // means nothing is cut (or copied) for that install while the service keeps cutting
+  // for everyone else.
+  const cutMode: CutMode = context.config.cuts ?? context.settings.cuts;
+  const cutting = cutMode !== "off" && context.cuts.enabled;
   const cutKey =
-    windows.length > 0 && context.cuts.enabled
-      ? context.cuts.keyFor(target, windows, streamKey)
-      : null;
+    windows.length > 0 && cutting ? context.cuts.keyFor(target, windows, streamKey) : null;
 
   // A finished cut is served like any other file. This is the path that makes a
   // debrid `.mkv` skip its intro on every playback after the first.
@@ -99,7 +102,7 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
     // otherwise the player opens the link from its own network and the source answers
     // "this stream link only works on the internet connection that requested it".
     if (looksLikeProgressiveFile(target)) {
-      const cut = await cutIfReady(context, target, windows, cutKey, streamKey);
+      const cut = await cutIfReady(context, target, windows, cutKey, streamKey, cutMode);
       if (cut) return cut;
       warmCut(context, target, windows, cutKey, streamKey);
       return streamThrough(context.request, target, {
@@ -119,10 +122,10 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
       return redirectTo(target, "range_request");
     }
     if (looksLikeProgressiveFile(target)) {
-      return handleProgressive(context, target, windows, cutKey, "not_hls", streamKey);
+      return handleProgressive(context, target, windows, cutKey, "not_hls", streamKey, cutMode);
     }
     if (await cache.match(verdictKey)) {
-      return handleProgressive(context, target, windows, cutKey, "not_a_playlist_cached", streamKey);
+      return handleProgressive(context, target, windows, cutKey, "not_a_playlist_cached", streamKey, cutMode);
     }
   }
 
@@ -162,7 +165,7 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
       // A file behind a URL with no extension (a debrid `/playback/<token>`, for
       // instance): the prefix read above already had to come from here, so the rest
       // does too.
-      const cut = await cutIfReady(context, target, windows, cutKey, streamKey);
+      const cut = await cutIfReady(context, target, windows, cutKey, streamKey, cutMode);
       if (cut) return cut;
       warmCut(context, target, windows, cutKey, streamKey);
       return streamThrough(context.request, target, {
@@ -171,7 +174,7 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
         debug: proxyHeaders("proxied_file", lookup?.reason ?? ""),
       });
     }
-    return handleProgressive(context, target, windows, cutKey, "not_a_playlist", streamKey);
+    return handleProgressive(context, target, windows, cutKey, "not_a_playlist", streamKey, cutMode);
   }
 
   if (isMasterPlaylist(sniffed.text)) {
@@ -231,10 +234,11 @@ async function handleProgressive(
   cutKey: string | null,
   reason: string,
   streamKey: string | null = null,
+  mode: CutMode = context.settings.cuts,
 ): Promise<Response> {
   if (!cutKey) return redirectTo(target, reason);
 
-  const cut = await cutIfReady(context, target, windows, cutKey, streamKey);
+  const cut = await cutIfReady(context, target, windows, cutKey, streamKey, mode);
   if (cut) return cut;
 
   const state = context.cuts.state(cutKey);
@@ -364,10 +368,11 @@ async function cutIfReady(
   windows: readonly SkipWindow[],
   cutKey: string | null,
   streamKey: string | null,
+  mode: CutMode,
 ): Promise<Response | null> {
   if (!cutKey) return null;
   context.cuts.schedule(target, windows, streamKey);
-  if (context.settings.cuts !== "blocking") return null;
+  if (mode !== "blocking") return null;
   const ready = await context.cuts.waitFor(cutKey, context.settings.cutWaitSeconds * 1000);
   return ready ? serveCut(context, ready, cutKey, windows, "cut_ready") : null;
 }

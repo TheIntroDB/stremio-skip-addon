@@ -18,6 +18,7 @@
 import {
   DEFAULT_SEGMENT_TYPES,
   SEGMENT_TYPES,
+  parseCutMode,
   type AddonConfig,
   type SegmentType,
 } from "./types.js";
@@ -55,6 +56,11 @@ export function decodeConfig(encoded: string): AddonConfig | null {
 
   if (input.proxy === true) config.proxy = true;
 
+  // Only one of the three known modes is accepted, so a hand-edited URL cannot ask
+  // for something the engine does not implement.
+  const cuts = parseCutMode(input.cuts);
+  if (cuts) config.cuts = cuts;
+
   const name = typeof input.name === "string" ? input.name.trim() : "";
   if (name) config.name = sanitizeName(name);
 
@@ -69,6 +75,7 @@ export function encodeConfig(config: AddonConfig): string {
   };
   if (config.key) packed.key = config.key.trim().slice(0, MAX_KEY_LENGTH);
   if (config.proxy) packed.proxy = true;
+  if (config.cuts) packed.cuts = config.cuts;
   if (config.name) packed.name = sanitizeName(config.name);
   return toBase64Url(JSON.stringify(packed));
 }

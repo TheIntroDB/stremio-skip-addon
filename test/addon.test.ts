@@ -337,6 +337,12 @@ test("the Worker serves a config page, a health check and a bare manifest", asyn
     assert.ok(field in parsed.cuts, `the page's cut data has ${field}`);
   }
   assert.match(body, /id="proxy"[^>]*checked/, "proxying is on by default: it is what debrid sources need");
+  // The cutting mode is a per-install choice, so the page has to offer it.
+  assert.match(body, /<select id="cuts">/);
+  for (const mode of ["blocking", "on", "off"]) {
+    assert.ok(body.includes(`value="${mode}"`), `the page offers the ${mode} mode`);
+  }
+  assert.ok(body.includes('"cuts":{"mode"'), "and it defaults to what this deployment does");
   for (const id of ["cuts-mode", "cuts-cache", "cuts-ffmpeg", "api", "origin"]) {
     assert.ok(body.includes(`id="${id}"`), `the page has the #${id} element the script writes to`);
   }
@@ -684,6 +690,48 @@ test("timings that do not fit the file are not applied", async () => {
   assert.equal(kept.length, SHORT_PLAYLIST_SEGMENTS - 5);
   assert.deepEqual(kept.slice(8, 12), [8, 9, 15, 16]);
   assert.equal(kept[kept.length - 1], SHORT_PLAYLIST_SEGMENTS - 1);
+});
+
+test("an install can choose its own cutting mode", async () => {
+  // The choice rides in the install URL, so one deployment can serve an install that
+  // always cuts and another that copies nothing.
+  // A real wait window, so the assertion can see that the install's choice was used
+  // (the stub's target is not a video, so the cut fails fast and the wait ends early).
+  const settings = testSettings({ cuts: "on", precutSources: 0, cutWaitSeconds: 5 });
+
+  const waiting = new CutEngine(settings);
+  const waits: number[] = [];
+  const realWait = waiting.waitFor.bind(waiting);
+  waiting.waitFor = ((key: string, ms: number) => {
+    waits.push(ms);
+    return realWait(key, ms);
+  }) as typeof waiting.waitFor;
+  const always = encodeConfig({
+    src: [`${base}/upstream`],
+    types: ["intro"] as SegmentType[],
+    proxy: true,
+    cuts: "blocking",
+  });
+  await call(playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1", always), settings, undefined, waiting);
+  assert.ok(waits.length > 0, "the install said always cut, so the play waited even though the deployment says on");
+  assert.equal(waits[0], 5000, "and it waited the deployment's window, not zero");
+
+  const never = new CutEngine(settings);
+  let asked = 0;
+  const realSchedule = never.schedule.bind(never);
+  never.schedule = ((url: string, windows: Parameters<typeof realSchedule>[1], id?: string) => {
+    asked += 1;
+    return realSchedule(url, windows, id);
+  }) as typeof never.schedule;
+  const off = encodeConfig({
+    src: [`${base}/upstream`],
+    types: ["intro"] as SegmentType[],
+    proxy: true,
+    cuts: "off",
+  });
+  const response = await call(playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1", off), settings, undefined, never);
+  assert.equal(asked, 0, "an install that turned cutting off does not copy anything");
+  assert.equal(response.headers.get("x-tidb-play"), "proxied_file");
 });
 
 test("blocking means blocking: a proxied file waits for its cut", async () => {

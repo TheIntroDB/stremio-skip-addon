@@ -15,7 +15,7 @@ services:
       - "8787:8787"
     environment:
       TIDB_API_KEY: ${TIDB_API_KEY:?set TIDB_API_KEY}
-      CUTS: ${CUTS:-on}
+      CUTS: ${CUTS:-blocking}
       CACHE_MAX_GB: ${CACHE_MAX_GB:-50}
       PRECUT_SOURCES: ${PRECUT_SOURCES:-2}
       TZ: ${TZ:-UTC}

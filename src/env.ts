@@ -10,9 +10,9 @@
  */
 
 import { INTRODB_API_BASE } from "./constants.js";
-import type { Env } from "./types.js";
+import { parseCutMode, type CutMode, type Env } from "./types.js";
 
-export type CutMode = "on" | "blocking" | "off";
+export type { CutMode } from "./types.js";
 
 export interface Settings extends Env {
   port: number;
@@ -20,11 +20,7 @@ export interface Settings extends Env {
   cacheDir: string;
   /** How much disk the cut cache may use before the oldest cut is evicted. */
   cacheMaxBytes: number;
-  /**
-   * `on`       cut in the background; the original is served until the cut is ready
-   * `blocking` hold the play request until the cut is ready (bounded by cutWaitSeconds)
-   * `off`      never cut: progressive sources are passed through untouched
-   */
+  /** The deployment's default; an install URL may override it. See `CutMode`. */
   cuts: CutMode;
   cutWaitSeconds: number;
   cutConcurrency: number;
@@ -46,11 +42,9 @@ function numberFrom(name: string, fallback: number): number {
   return Number.isFinite(value) ? value : fallback;
 }
 
+/** The deployment's cutting mode, from `CUTS`. Defaults to always cutting. */
 function cutMode(): CutMode {
-  const raw = (process.env.CUTS ?? "on").trim().toLowerCase();
-  if (raw === "off" || raw === "false" || raw === "0") return "off";
-  if (raw === "blocking" || raw === "wait") return "blocking";
-  return "on";
+  return parseCutMode(process.env.CUTS) ?? "blocking";
 }
 
 export function loadSettings(): Settings {

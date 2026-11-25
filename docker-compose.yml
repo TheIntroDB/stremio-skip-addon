@@ -17,10 +17,10 @@ services:
       # Required: lookups without a key are rate limited per IP. Compose reads the
       # .env file next to this one, so `cp .env.example .env` is the whole setup.
       TIDB_API_KEY: ${TIDB_API_KEY:?set TIDB_API_KEY}
-      # on    cut progressive files in the background (the first playback may be uncut)
-      # blocking  hold the play request until the cut is ready
-      # off   splice HLS playlists only: no video through this container, no disk use
-      CUTS: ${CUTS:-on}
+      # blocking  wait for the cut, then play it cut -- no intro, even on the first play
+      # on        cut in the background: the first play may still show the intro
+      # off       splice HLS playlists only: no video copied, no disk use
+      CUTS: ${CUTS:-blocking}
       CACHE_MAX_GB: ${CACHE_MAX_GB:-50}
       PRECUT_SOURCES: ${PRECUT_SOURCES:-2}
       CUT_CONCURRENCY: ${CUT_CONCURRENCY:-2}

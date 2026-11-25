@@ -243,6 +243,8 @@ function preCut(
   windows: Parameters<CutEngine["schedule"]>[1],
 ): void {
   if (!cuts.enabled || windows.length === 0) return;
+  // An install that turned cutting off gets no head start either.
+  if ((config.cuts ?? settings.cuts) === "off") return;
   const limit = settings.precutSources;
   if (limit <= 0) return;
   const sourceBase = upstream.used ?? config.src[0] ?? "";

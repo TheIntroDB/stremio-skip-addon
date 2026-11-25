@@ -84,6 +84,15 @@ export function renderConfigPage(options: PageOptions): string {
   h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 16px; }
   label { display: block; font-weight: 600; margin-bottom: 6px; }
   .hint { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
+  select {
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--fg);
+    padding: 10px 12px;
+    font: inherit;
+  }
   input[type="text"], input[type="password"], textarea {
     width: 100%;
     background: var(--panel-2);
@@ -168,6 +177,16 @@ export function renderConfigPage(options: PageOptions): string {
         <label class="check"><input type="checkbox" id="type-preview"> Preview</label>
       </div>
       <p class="hint">A cut is a real cut: the segments are removed from the playlist, so nothing plays and nothing has to be pressed. Credits and previews are off by default because their timings run to the end of the file.</p>
+    </div>
+
+    <div class="field">
+      <label for="cuts">Cutting</label>
+      <select id="cuts">
+        <option value="blocking">Always cut — wait for the cut, then play it cut</option>
+        <option value="on">Cut in the background — the first play may show the intro</option>
+        <option value="off">Never cut files — playlists only, no disk use</option>
+      </select>
+      <p class="hint">A progressive file (a debrid <span class="mono">.mkv</span>) has to be copied before its intro can be gone, so <b>always cut</b> waits for that copy: the first play of a title starts a little late but never shows the intro. <b>Background</b> starts playing immediately and cuts from the next play onwards. <b>Never</b> still splices HLS playlists and copies nothing. This choice is stored in your install link, so it can differ per install.</p>
     </div>
 
     <div class="field">
@@ -281,7 +300,7 @@ export function renderConfigPage(options: PageOptions): string {
     var types = SEGMENTS.filter(function (type) {
       return document.getElementById("type-" + type).checked;
     });
-    var config = { src: sources, types: types };
+    var config = { src: sources, types: types, cuts: document.getElementById("cuts").value };
     if (key) config.key = key;
     if (document.getElementById("proxy").checked) config.proxy = true;
     var name = document.getElementById("name").value.trim();
@@ -309,6 +328,8 @@ export function renderConfigPage(options: PageOptions): string {
   document.getElementById("version").textContent = "v" + data.version;
 
   var cuts = data.cuts;
+  // The deployment's own default is what a new install gets unless it says otherwise.
+  document.getElementById("cuts").value = cuts.mode || "blocking";
   document.getElementById("cuts-mode").textContent =
     cuts.mode === "off" ? "off — progressive files are passed through" : cuts.mode;
   document.getElementById("cuts-cache").textContent =
@@ -358,6 +379,7 @@ export function renderConfigPage(options: PageOptions): string {
     if (config.key) document.getElementById("key").value = config.key;
     if (config.name) document.getElementById("name").value = config.name;
     document.getElementById("proxy").checked = config.proxy === true;
+    if (config.cuts) document.getElementById("cuts").value = config.cuts;
 
     notice("You are editing an install. Change what you need and install again — the new link replaces the old one, and the old one keeps working. Source URLs are shown without their /manifest.json, which the addon fetches for you. Keep this page's address private: it is the configuration, and it carries the API key if you put one in it.");
     generate();

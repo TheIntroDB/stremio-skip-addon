@@ -86,7 +86,7 @@ git clone https://github.com/TheIntroDB/stremio-skip-addon.git
 cd stremio-skip-addon
 npm ci
 npm run build
-TIDB_API_KEY=<your key> CUTS=on node dist/server.js
+TIDB_API_KEY=<your key> CUTS=blocking node dist/server.js
 ```
 
 It listens on `:8787` and prints its own configuration on boot, including whether ffmpeg was found:
@@ -110,8 +110,9 @@ Open your deployment's URL in a browser. The page builds your install link:
 
 1. **Paste your stream addon URL** — AIOStreams, Torrentio, Comet, MediaFusion, anything that serves Stremio streams (the `manifest.json` URL). One per line; they are tried in order and the first that answers with streams is used, so a second URL is a fallback.
 2. **Pick the segments to cut.** Intro, recap and credits are on; previews are off. Credits and previews run to the end of the file when TheIntroDB does not close them, so they are the destructive ones.
-3. **The API key** is already handled if the service has one in its environment; paste one here only if you would rather carry it in the install URL. See [API key](#api-key).
-4. **Install** — the `stremio://` link opens the desktop or mobile app; *Open in Stremio Web* handles the browser player.
+3. **Pick the cutting mode** — *always cut* (the default: the first play waits for the cut instead of showing the intro), *cut in the background* (start immediately, cut from the next play), or *never cut files* (playlists only, nothing copied). It lives in the install link, so your installs can differ.
+4. **The API key** is already handled if the service has one in its environment; paste one here only if you would rather carry it in the install URL. See [API key](#api-key).
+5. **Install** — the `stremio://` link opens the desktop or mobile app; *Open in Stremio Web* handles the browser player.
 
 Your settings live in the install URL itself (base64url of a small JSON object), which is the only place a Stremio addon can keep per-user settings. **Keep that URL private:** anyone who has it can use your deployment.
 
@@ -196,13 +197,13 @@ A progressive file has no segments to drop, so the only way to remove 30 seconds
 - The result is cached on disk and **served with `Range` support** — so the second and every later playback of that item is cut, immediately.
 - A cut is keyed on the **stream**, not on its URL: the episode, the source host and the release labels. That matters because a debrid source mints a fresh link (`/playback/<token>`, with a new token) for every stream list, so a key made from the URL would never be found again — the cut would be re-made and the intro would play a second time. `x-tidb-cut-key` in the response says which cut was served, and two playbacks of the same release report the same one.
 
-Because the copy takes as long as copying the file takes, the first playback is a question of policy (`CUTS`):
+Because the copy takes as long as copying the file takes, the first playback is a question of policy. `CUTS` sets the deployment's default and **the configuration page lets each install choose its own**, so one service can serve an install that always cuts and another that copies nothing:
 
-| `CUTS` | First playback | Later playbacks |
+| mode | First playback | Later playbacks |
 | --- | --- | --- |
-| `on` (default) | Plays uncut while the cut is prepared in the background | Cut |
-| `blocking` | Waits up to `CUT_WAIT_SECONDS` for the cut, then plays uncut if it is not ready | Cut |
-| `off` | Uncut, always | Uncut — only HLS playlists are spliced |
+| `blocking` (default) | Waits for the cut — up to `CUT_WAIT_SECONDS` — and plays it cut. Never the intro, at the cost of a slower start | Cut |
+| `on` | Plays the original immediately while the cut is prepared in the background | Cut |
+| `off` | Uncut, always | Uncut — only HLS playlists are spliced, nothing is copied |
 
 The stream list is also fetched moments before playback, so a cut for the first one or two sources on the list is started then, as a head start.
 
@@ -275,7 +276,7 @@ Everything is an environment variable; there is nothing to edit in the image.
 | --- | --- | --- |
 | `TIDB_API_KEY` | *(none)* | **Required.** TheIntroDB API key. Without it, lookups refuse with `403`. |
 | `PORT` | `8787` | Port to listen on. |
-| `CUTS` | `on` | `on`, `blocking` or `off` — see [Cutting a file](#cutting-a-file). |
+| `CUTS` | `blocking` | `blocking`, `on` or `off` — the deployment's default; an install link can override it. See [Cutting a file](#cutting-a-file). |
 | `CACHE_DIR` | `./cache` (`/cache` in the image) | Where cut files are kept. |
 | `CACHE_MAX_GB` | `50` | Disk budget for cuts, evicted oldest-first. |
 | `CUT_WAIT_SECONDS` | `120` | `blocking` mode only: how long a play request waits for ffmpeg. |

@@ -15,6 +15,26 @@ export const SEGMENT_TYPES = ["intro", "recap", "credits", "preview"] as const;
 
 export type SegmentType = (typeof SEGMENT_TYPES)[number];
 
+/**
+ * How a progressive file is treated.
+ *
+ * `blocking` hold the play request until the cut is ready (bounded by
+ *            CUT_WAIT_SECONDS / the config's own choice), so even the first play is cut
+ * `on`       cut in the background; the original is served until the cut is ready
+ * `off`      never cut a file: playlists are still spliced, but no video is copied
+ */
+export type CutMode = "on" | "blocking" | "off";
+
+/** What a mode can be set to, from an env var or an install URL, or null. */
+export function parseCutMode(value: unknown): CutMode | null {
+  if (typeof value !== "string") return null;
+  const raw = value.trim().toLowerCase();
+  if (raw === "blocking" || raw === "wait" || raw === "always") return "blocking";
+  if (raw === "on" || raw === "background" || raw === "true" || raw === "1") return "on";
+  if (raw === "off" || raw === "false" || raw === "0" || raw === "never") return "off";
+  return null;
+}
+
 /** Which segment kinds a deployment cuts by default. */
 export const DEFAULT_SEGMENT_TYPES: readonly SegmentType[] = ["intro", "recap", "credits"];
 
@@ -40,6 +60,8 @@ export interface AddonConfig {
   key?: string;
   /** Route HLS segments (and keys/init segments) through this service too. */
   proxy?: boolean;
+  /** This install's own cutting mode, overriding the deployment's default. */
+  cuts?: CutMode;
   /** Overrides the addon name shown in Stremio. */
   name?: string;
 }

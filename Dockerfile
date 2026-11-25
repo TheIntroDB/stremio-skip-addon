@@ -32,7 +32,7 @@ COPY --from=build /app/dist ./dist
 RUN mkdir -p /cache && chown -R node:node /cache
 ENV NODE_ENV=production \
     CACHE_DIR=/cache \
-    CUTS=on
+    CUTS=blocking
 # A platform may inject its own PORT; the service reads PORT and binds to it, so this
 # is the default for a plain `docker run`.
 EXPOSE 8787

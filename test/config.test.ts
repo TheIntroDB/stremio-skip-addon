@@ -6,6 +6,25 @@ import test from "node:test";
 
 import { configIdSuffix, decodeConfig, encodeConfig, parseStremioId, sourceBase } from "../src/config.js";
 
+test("the cutting mode is part of the install, and junk is ignored", () => {
+  const encoded = encodeConfig({
+    src: ["https://aiostreams.example/manifest.json"],
+    types: ["intro"],
+    cuts: "off",
+  });
+  assert.equal(decodeConfig(encoded)?.cuts, "off");
+
+  const asAlways = Buffer.from(
+    JSON.stringify({ src: ["https://a.example"], types: ["intro"], cuts: "always" }),
+  ).toString("base64url");
+  assert.equal(decodeConfig(asAlways)?.cuts, "blocking", "a word a human would write is accepted");
+
+  const nonsense = Buffer.from(
+    JSON.stringify({ src: ["https://a.example"], types: ["intro"], cuts: "whenever" }),
+  ).toString("base64url");
+  assert.equal(decodeConfig(nonsense)?.cuts, undefined, "and anything else falls back to the deployment");
+});
+
 test("a config round-trips through the URL segment", () => {
   const encoded = encodeConfig({
     src: ["https://aiostreams.example/manifest.json"],
