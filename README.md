@@ -28,18 +28,14 @@ Requirements: **Docker** (or Node 22 plus **ffmpeg**), and an address Stremio ca
 ### Docker (recommended)
 
 ```bash
+curl github.com/TheIntroDB/stremio-skip-addon
+cd stremio-skip-addon
 cp .env.example .env      # optional: only for the settings you want to change
 docker compose up -d
 ```
 
 That is `docker-compose.yml` in this repository: it builds the image, publishes `:8787`, and keeps the segment cache in a named volume. Nothing has to be filled in first — the API key can be pasted on the configuration page instead (see [API key](#api-key)). **Keep the cache mounted** — without the volume, packages live in the container's writable layer and are lost when it is recreated.
-
-If the host cannot build, use the published image instead:
-
-```bash
-docker login ghcr.io          # the package is private while this repo is
-docker compose -f docker-compose.image.yml up -d
-```
+> A prebuilt docker image is also available
 
 ### Node, without Docker
 
