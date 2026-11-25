@@ -289,6 +289,13 @@ npm run dev           # tsx watch src/server.ts
 
 The suite does not mock the things that matter: `test/cut.test.ts` generates a 30-second video, serves it over HTTP with range support and cuts it with the real ffmpeg; `test/server.test.ts` starts the real server on a port and talks to it with `fetch`. The addon tests drive the router over HTTP against a stub source addon, a stub HLS origin and a stub TheIntroDB API whose answers are the figures measured from the live API (Breaking Bad S1E1: intro `228665-246498`, credits `3432884` to end of file). The API host is a constant, so the suite stands in front of `fetch` to answer it — nothing in `src/` has a test hook. The live tests assert shape only: they recompute the expected cut from whatever the API returns, so a new community submission cannot turn them red.
 
+To check the cutter against a source of your own (a debrid link, a direct file), which the fixtures cannot cover:
+
+```bash
+npm run verify:cut -- 'https://…/episode.mkv'      # keeps the first 60 seconds and reports
+npm run verify:cut -- 'https://…/episode.mkv' 300  # keeps 300 seconds (a bigger copy)
+```
+
 ```
 src/
   server.ts    the Node entry point: HTTP -> Request/Response, graceful shutdown
@@ -306,6 +313,8 @@ src/
   page.ts      the configuration page
   http.ts      responses and CORS
   format.ts    time formatting
+scripts/
+  verify-cut.ts  run the cutter against a source of your own (npm run verify:cut)
 ```
 
 ---
