@@ -322,6 +322,50 @@ test("the Worker serves a config page, a health check and a bare manifest", asyn
   assert.equal(await robots.text(), "User-agent: *\nDisallow: /\n");
 });
 
+test("an install URL opens the settings for that install, not a not-found page", async () => {
+  // The whole configuration lives in the path, so this is the link back to the
+  // settings that produced an install: it has to come back with them in the form.
+  const response = await call(`/${amplified}/`);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store", "an install link is not cacheable");
+  const body = await response.text();
+
+  const blob = /<script id="config-data" type="application\/json">(.*?)<\/script>/s.exec(body)?.[1];
+  assert.ok(blob, "the page carries its data blob");
+  const data = JSON.parse(blob.replace(/\\u003c/g, "<")) as {
+    config: { src: string[]; types: string[] } | null;
+    configError: string | null;
+  };
+  assert.equal(data.configError, null);
+  assert.deepEqual(data.config?.src, [`${base}/upstream`]);
+  assert.deepEqual(data.config?.types, ["intro", "recap", "credits"]);
+  assert.ok(body.includes('id="notice"'), "the page has somewhere to say this is an install");
+  assert.ok(body.includes("You are editing an install"), "and it says so");
+
+  // Without an install URL there is nothing to restore, and the page may be cached.
+  const bare = await call("/");
+  assert.equal(bare.headers.get("cache-control"), "public, max-age=300");
+  assert.ok(!(await bare.text()).includes('"config":{'));
+
+  // A series request without a route is unchanged: this is only about the bare path.
+  const routed = await call(`/${amplified}/manifest.json`);
+  assert.equal(routed.headers.get("content-type")?.startsWith("application/json"), true);
+});
+
+test("an install link with a character lost explains itself", async () => {
+  // Long enough to be an install link (a real one is hundreds of characters), so it
+  // gets an explanation rather than a 404 -- and a short path is still a 404.
+  const response = await call("/" + "z".repeat(60) + "/");
+  assert.equal(response.status, 200);
+  const body = await response.text();
+  const blob = /<script id="config-data" type="application\/json">(.*?)<\/script>/s.exec(body)?.[1] ?? "";
+  const data = JSON.parse(blob.replace(/\\u003c/g, "<")) as { config: unknown; configError: string | null };
+  assert.equal(data.config, null);
+  assert.match(String(data.configError), /could not be read/);
+  // It still serves the page, so the form below it can build a fresh install.
+  assert.ok(body.includes('id="sources"'));
+});
+
 test("a configured manifest is a stream addon keyed by config", async () => {
   const response = await call(`/${amplified}/manifest.json`);
   const manifest = (await response.json()) as Record<string, unknown> & {

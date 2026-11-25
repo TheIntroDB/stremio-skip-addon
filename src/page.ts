@@ -10,6 +10,7 @@
  */
 
 import { ADDON_VERSION } from "./manifest.js";
+import type { AddonConfig } from "./types.js";
 
 export interface PageOptions {
   origin: string;
@@ -19,6 +20,10 @@ export interface PageOptions {
   insecure: boolean;
   /** What /health reports about the cut cache and ffmpeg. */
   cuts: Record<string, unknown>;
+  /** The configuration of the install URL this page was opened with, if any. */
+  editing?: AddonConfig | null;
+  /** Why that URL could not be read, so a mangled link gets an explanation. */
+  configError?: string | null;
 }
 
 const REPO = "https://github.com/TheIntroDB/stremio-skip-addon";
@@ -32,6 +37,8 @@ export function renderConfigPage(options: PageOptions): string {
     repo: REPO,
     insecure: options.insecure,
     cuts: options.cuts,
+    config: options.editing ?? null,
+    configError: options.configError ?? null,
   }).replace(/</g, "\\u003c");
 
   return `<!doctype html>
@@ -123,6 +130,9 @@ export function renderConfigPage(options: PageOptions): string {
   .badge { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
   .warn { color: var(--warn); }
   #error { color: #f87171; display: none; margin: 0 0 14px; }
+  #notice { display: none; margin: 0 0 18px; padding: 12px 14px; border-radius: 8px; font-size: 14px;
+            border: 1px solid var(--border); background: var(--panel-2); }
+  #notice.error { border-color: #7f1d1d; color: #f87171; }
   footer { color: var(--muted); font-size: 13px; text-align: center; }
 </style>
 </head>
@@ -135,6 +145,10 @@ export function renderConfigPage(options: PageOptions): string {
       <p class="sub">A self-hosted Stremio addon that removes intros, recaps, credits and previews from your streams, using community timings from <a href="https://theintrodb.org">TheIntroDB</a>.</p>
     </div>
   </header>
+
+  <section id="editing" hidden>
+    <p id="notice"></p>
+  </section>
 
   <section>
     <h2>Configure</h2>
@@ -312,6 +326,43 @@ export function renderConfigPage(options: PageOptions): string {
   if (data.insecure) {
     showError("This instance is served over plain http on a local address; Stremio will only install a server it can reach.");
   }
+
+  /**
+   * Opened with an install URL, this page comes back with that install in it.
+   *
+   * The configuration lives in the URL, so a URL like /<config>/ is a link back to
+   * the settings that produced it: the form is filled in, the cuts it asked for are
+   * ticked, and generate() runs so the manifest and install links are already there.
+   * Changing something creates a new link; the old one keeps working.
+   */
+  function notice(message, isError) {
+    var box = document.getElementById("notice");
+    box.textContent = message;
+    box.className = isError ? "error" : "";
+    document.getElementById("editing").hidden = false;
+  }
+
+  function restore() {
+    if (data.configError) {
+      notice(data.configError + " Nothing was changed below, so you can still build a new install from scratch.", true);
+      return;
+    }
+    var config = data.config;
+    if (!config) return;
+
+    document.getElementById("sources").value = (config.src || []).join("\\n");
+    SEGMENTS.forEach(function (type) {
+      document.getElementById("type-" + type).checked = (config.types || []).indexOf(type) >= 0;
+    });
+    if (config.key) document.getElementById("key").value = config.key;
+    if (config.name) document.getElementById("name").value = config.name;
+    document.getElementById("proxy").checked = config.proxy === true;
+
+    notice("You are editing an install. Change what you need and install again — the new link replaces the old one, and the old one keeps working. Source URLs are shown without their /manifest.json, which the addon fetches for you. Keep this page's address private: it is the configuration, and it carries the API key if you put one in it.");
+    generate();
+  }
+
+  restore();
 }());
 </script>
 </body>

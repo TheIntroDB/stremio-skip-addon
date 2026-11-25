@@ -37,7 +37,17 @@ import { fetchStreams, isFetchableByWorker, resolveTarget, sourceLabel, wrapStre
 import { playUrl } from "./urls.js";
 
 const CONFIG_ROUTE_RE =
-  /^\/([A-Za-z0-9_-]{1,4096})\/(manifest\.json|stream\/[^/]+\/[^/]+\.json|play|seg)$/;
+  /^\/([A-Za-z0-9_-]{1,4096})(?:\/(manifest\.json|stream\/[^/]+\/[^/]+\.json|play|seg))?$/;
+
+/**
+ * The shortest string that could still be a configuration.
+ *
+ * The smallest useful config is a JSON object with one source URL in it, which is
+ * about 40 base64url characters. Someone typing a path ("/about") should still get a
+ * 404 rather than an explanation about an install link, so anything much shorter than
+ * a real configuration is not treated as one.
+ */
+const MIN_PLAUSIBLE_CONFIG_LENGTH = 24;
 
 export async function handleRequest(
   request: Request,
@@ -77,8 +87,25 @@ export async function handleRequest(
     // `tt0903747%3A1%3A1.json` (Stremio Core: utf8_percent_encode with
     // URI_COMPONENT_ENCODE_SET). Decode before anything looks at the id.
     const encoded = decodePathComponent(match[1]!);
-    const route = decodePathComponent(match[2]!);
+    const route = match[2] ? decodePathComponent(match[2]) : null;
     const config = decodeConfig(encoded);
+
+    // `/<config>` is a link back to the settings that produced that install, so an
+    // existing install can be edited instead of starting over. Nothing is stored on
+    // the service: the URL *is* the record.
+    if (route === null) {
+      if (config === null && encoded.length < MIN_PLAUSIBLE_CONFIG_LENGTH) {
+        // Not a configuration at all: a path somebody typed.
+        return html(notFoundPage(origin), 404);
+      }
+      return configPage(settings, origin, cuts, {
+        editing: config,
+        configError: config
+          ? null
+          : "That install link could not be read — a character was probably lost when it was copied.",
+      });
+    }
+
     if (!config) {
       return errorResponse(
         400,
@@ -229,7 +256,12 @@ function decodePathComponent(value: string): string {
   }
 }
 
-function configPage(settings: Settings, origin: string, cuts: CutEngine): Response {
+function configPage(
+  settings: Settings,
+  origin: string,
+  cuts: CutEngine,
+  extra: { editing?: AddonConfig | null; configError?: string | null } = {},
+): Response {
   const url = new URL(origin);
   const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(url.hostname);
 
@@ -240,7 +272,14 @@ function configPage(settings: Settings, origin: string, cuts: CutEngine): Respon
       serverKeyConfigured: Boolean(settings.TIDB_API_KEY && settings.TIDB_API_KEY.trim()),
       insecure: url.protocol === "http:" && local,
       cuts: cuts.stats(),
+      editing: extra.editing ?? null,
+      configError: extra.configError ?? null,
     }),
+    // A page opened with an install URL holds that install, including the API key
+    // when it carries one, so it must not sit in any cache. The bare page carries
+    // nothing but the deployment's own settings.
+    200,
+    extra.editing || extra.configError ? { "cache-control": "no-store" } : {},
   );
 }
 

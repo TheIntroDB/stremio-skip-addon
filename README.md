@@ -132,6 +132,12 @@ Open your deployment's URL in a browser. The page builds your install link:
 
 Your settings live in the install URL itself (base64url of a small JSON object), which is the only place a Stremio addon can keep per-user settings. **Keep that URL private:** anyone who has it can use your deployment.
 
+### Editing an existing install
+
+The install URL *is* the record, so open it in a browser — `…/<config>/` or `…/<config>` — and the page comes back with that install in it: the source addon URLs are in the form, the segment types you chose are ticked, the key is filled in, and the manifest and install links are already built. Change what you need and install again; the new link replaces the old one, and the old one keeps working.
+
+There is no account, no database and nothing to look up server-side: the page is rendered from the URL you arrived with, and that response is marked `no-store` so it is never cached — it holds your configuration, including the API key if you put one there. A link that has lost a character says so and leaves the blank form below it, so you can always build a fresh install; a path that is not an install link at all is still a plain 404.
+
 ### API key
 
 A TheIntroDB API key is **required**, not optional. Anonymous lookups are rate limited *per IP*, and a self-hosted deployment is not alone on its address — a home connection, a VPS or a Railway egress all share it with strangers. Without a key this addon does no lookups at all: the config page will not give you an install link, and a stream request answers `403 missing_api_key` instead of pretending.

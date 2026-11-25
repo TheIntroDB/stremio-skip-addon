@@ -32,7 +32,11 @@ export function json(
   });
 }
 
-export function html(body: string, status = 200): Response {
+export function html(
+  body: string,
+  status = 200,
+  headers: Record<string, string> = {},
+): Response {
   return new Response(body, {
     status,
     headers: {
@@ -40,6 +44,7 @@ export function html(body: string, status = 200): Response {
       "cache-control": "public, max-age=300",
       "x-content-type-options": "nosniff",
       "referrer-policy": "no-referrer",
+      ...headers,
     },
   });
 }
