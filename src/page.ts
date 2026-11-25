@@ -126,7 +126,7 @@ export function renderConfigPage(options: PageOptions): string {
 <body>
 <main>
   <header>
-    <img src="https://raw.githubusercontent.com/TheIntroDB/.github/main/integrations/stremio.png" alt="">
+    <img src="https://raw.githubusercontent.com/TheIntroDB/theintrodb-assets/main/badge.png" alt="TheIntroDB">
     <div>
       <h1>TheIntroDB Skip</h1>
       <p class="sub">A self-hosted Stremio addon that cuts intros, recaps, credits and previews out of HLS streams, using community timings from <a href="https://theintrodb.org">TheIntroDB</a>.</p>

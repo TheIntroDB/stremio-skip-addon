@@ -13,8 +13,9 @@ import { configIdSuffix } from "./config.js";
 import type { AddonConfig } from "./types.js";
 
 export const ADDON_VERSION = "1.0.0";
+/** TheIntroDB's own badge, not a Stremio squircle: this is TheIntroDB's addon. */
 export const ADDON_LOGO =
-  "https://raw.githubusercontent.com/TheIntroDB/.github/main/integrations/stremio.png";
+  "https://raw.githubusercontent.com/TheIntroDB/theintrodb-assets/main/badge.png";
 const REPO_URL = "https://github.com/TheIntroDB/stremio-skip-addon";
 
 const DESCRIPTION =
