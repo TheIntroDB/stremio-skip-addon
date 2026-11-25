@@ -21,7 +21,7 @@ services:
       #           gone from the very first play
       # on        play the source immediately and cut from the next playback
       # off       splice HLS playlists only: no video copied, no disk use
-      CUTS: ${CUTS:-blocking}
+      CUTS: ${CUTS:-mkv}
       # Seconds left alone at each end of every window (see .env.example).
       SKIP_MARGIN_SECONDS: ${SKIP_MARGIN_SECONDS:-2}
       # Seconds of the episode that must be ready before playback starts (see .env.example).

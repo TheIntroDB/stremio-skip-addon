@@ -87,7 +87,10 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
   // means nothing is cut (or copied) for that install while the service keeps cutting
   // for everyone else.
   const cutMode: CutMode = context.config.cuts ?? context.settings.cuts;
-  const cutting = cutMode !== "off" && context.packages.enabled;
+  // Both modes splice HLS playlists; only `mkv` packages a file with no playlist of its own.
+  // Packaging is what `cutting` means here: a file with no playlist of its own. Splicing an
+  // HLS playlist is a text rewrite and happens in both modes, without a cache key.
+  const cutting = cutMode === "mkv" && context.packages.enabled;
   const cutKey =
     windows.length > 0 && cutting ? context.packages.keyFor(target, windows, streamKey) : null;
 
@@ -237,7 +240,7 @@ async function handleProgressive(
   mode: CutMode = context.settings.cuts,
   lookupReason = "",
 ): Promise<Response> {
-  if (windows.length > 0 && mode !== "off" && context.packages.enabled) {
+  if (windows.length > 0 && mode === "mkv" && context.packages.enabled) {
     return packageOrProxy(context, target, windows, streamKey, mode, reason, lookupReason);
   }
   return passThrough(context, target, reason, lookupReason);
@@ -305,10 +308,9 @@ async function packageOrProxy(
   // Learn the source's length before answering, so the playlist can declare the whole episode
   // from its first response: a player that reaches the end of a few-second playlist decides the
   // episode is over, marks it watched and jumps to the next one.
-  const durationMs =
-    mode === "blocking" || wantsSubtitles
-      ? await context.packages.rememberDuration(key, target)
-      : null;
+  // Only mkvs get here, and a package always waits for its first segment, so the length is
+  // always worth learning: the playlist declares it from its first response.
+  const durationMs = await context.packages.rememberDuration(key, target);
   context.packages.schedule(target, windows, streamKey, durationMs);
   if (context.episodeId) context.subtitles.note(context.episodeId, key);
   // The card is the pre-roll the deployment configured, and the film starts after it, so that is
@@ -323,8 +325,6 @@ async function packageOrProxy(
     },
     wantsSubtitles,
   );
-  if (mode !== "blocking") return passThrough(context, target, "package_warming", lookupReason);
-
   // Nothing of the episode is ready yet, so show the processing card rather than holding
   // the request: a player handed a playlist starts at once and sees what is happening,
   // where a player handed nothing shows a spinner and then gives up on the stream. The

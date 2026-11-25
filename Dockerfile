@@ -48,7 +48,7 @@ ENV DAL_CACHE_ROOT=/cache/models
 
 ENV NODE_ENV=production \
     CACHE_DIR=/cache \
-    CUTS=blocking \
+    CUTS=mkv \
     SKIP_MARGIN_SECONDS=2 \
     PREROLL_SECONDS=10 \
     PROXY=on \

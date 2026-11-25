@@ -232,17 +232,18 @@ Because the cut is keyframe-limited, and because TheIntroDB's timings describe *
 
 If a cut still lands in the wrong place, it is the timings that differ from your file rather than the skipping: `/v4/media` can answer from the release cluster nearest the file when the caller sends its `duration_ms`, which this addon does not do yet. A larger margin is the blunt but effective answer until then.
 
-The first playback is a question of policy. `CUTS` sets the deployment's default and **the configuration page lets each install choose its own**, so one service can serve an install that always cuts and another that copies nothing:
+The first playback is a question of policy, and there are two: **cut `.mkv` files too** (the default) or **only cut HLS playlists**. `CUTS` sets the deployment's default and **the configuration page lets each install choose its own**:
 
-| mode | First playback | Later playbacks |
+| mode | `.mkv`/`.mp4` sources | HLS sources |
 | --- | --- | --- |
-| `blocking` (default) | Waits for the **first segment** — a couple of seconds, not the length of the file — and plays it cut | Cut, from the cache |
-| `on` | Plays the original immediately while the package is built behind it | Cut, from the cache |
-| `off` | Uncut, always | Uncut — only HLS playlists are spliced, nothing is copied |
+| `mkv` (default) | **Always cut.** The processing card plays for `PREROLL_SECONDS` while the first ten seconds of the cut file are made, then the title — with no race between a player and a playlist that is still growing | Splices the playlist; the segments are the source's own |
+| `hls` | Untouched: the source plays exactly as it came | Splices the playlist; the segments are the source's own |
 
-The stream list is also fetched moments before playback, so a package for the first one or two sources on the list is started then, as a head start: by the time a stream is picked, the playlist is usually already there.
+There is no "start playing first" any more. It answered with the source immediately and cut from the next playback, which meant a first play could reach the end of a playlist that was still growing — and a player that reaches the end of an episode decides it has finished and moves to the next one. A cutting addon that does not cut on the first play is also a surprise.
 
-**Two things a package cannot carry.** MPEG-TS holds video and audio, so a subtitle track embedded in the file is not in the playlist — players fetch subtitles from their own addon, and Stremio's OpenSubtitles addon is the usual answer. And a package is served as a playlist, so a player that only accepts a direct file link (some TVs) should be given the source: turn `CUTS` off for that install.
+**A stream list does no work at all.** Nothing is cut, probed or packaged until a stream is chosen: a menu is not a playback, and a list should not be able to fail because a source was slow.
+
+**Two things a package cannot carry.** MPEG-TS holds video and audio, so a subtitle track embedded in the file is not in the playlist — the addon's own generated track (see [Subtitles](#subtitles)) or another subtitle addon is the answer. And a package is served as a playlist, so a player that only accepts a direct file link (some TVs) should be given the source: choose **Only cut HLS** for that install.
 
 ### Disk
 
@@ -314,7 +315,7 @@ Everything is an environment variable; there is nothing to edit in the image.
 | --- | --- | --- |
 | `TIDB_API_KEY` | *(none)* | **Required.** TheIntroDB API key. Without it, lookups refuse with `403`. |
 | `PORT` | `8787` | Port to listen on. |
-| `CUTS` | `blocking` | `blocking`, `on` or `off` — the deployment's default; an install link can override it. See [Cutting a file](#cutting-a-file). |
+| `CUTS` | `mkv` | `mkv` (cut everything, including files with no playlist) or `hls` (splice playlists only, never touch a `.mkv`) — the deployment's default; an install link can override it. See [Cutting a file](#cutting-a-file). |
 | `CACHE_DIR` | `./cache` (`/cache` in the image) | Where package segments are kept. |
 | `CACHE_MAX_GB` | `50` | Disk budget for packages, evicted oldest-first. |
 | `CUT_WAIT_SECONDS` | `120` | `blocking` mode only: how long a play request waits for the first segment. A couple of seconds is the normal answer; the bound only matters when a source is slow. |
@@ -361,7 +362,6 @@ them again. `SUBTITLES=off` on a deployment means the models are never loaded by
 | `SPLASH` | `on` | Draw the processing card for a cold playback. `off` holds the play request until the first segment exists instead. Everybody gets the card; this is an operator's switch, not an install's. |
 | `SKIP_MARGIN_SECONDS` | `2` | Seconds left alone at each end of every window, so a cut never removes more than the timings ask for. A control on the configuration page sets it per install. |
 | `CUT_CONCURRENCY` | `2` | Concurrent ffmpeg processes. |
-| `PRECUT_SOURCES` | `2` | Sources to start cutting when a stream list is fetched (0 disables the head start). |
 | `FFMPEG_PATH`, `FFPROBE_PATH` | `ffmpeg`, `ffprobe` | Override if they are not on `PATH`. |
 | `ALLOW_PRIVATE_HOSTS` | *(unset)* | Development only: allow a source addon on a loopback/private address. |
 

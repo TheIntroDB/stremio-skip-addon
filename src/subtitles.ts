@@ -50,6 +50,8 @@ export interface TrackStatus {
   ready: boolean;
   /** Why there will be no track, when there will not be one. */
   error: string | null;
+  /** The most recent failure, so /health can name it while the job carries on. */
+  lastError?: string;
 }
 
 interface Job extends TrackStatus {
@@ -310,7 +312,11 @@ export class SubtitleEngine {
         });
       } catch (error) {
         if (attempt === 0) continue; // the source may have been mid-rotation, or briefly unavailable
-        job.error = `a chunk could not be recognised: ${describe(error)}`;
+        // Say which side failed: the audio could not be fetched (the source, a range request, a
+        // rotated link), or the model could not read what was fetched (its weights, permissions).
+        const audio = await stat(wav).then((info) => info.size).catch(() => 0);
+        job.error = `chunk at ${(chunk.sourceStartMs / 1000).toFixed(0)}s: ${describe(error)} (${audio} bytes of audio)`;
+        job.lastError = job.error;
         console.warn(`  warning        subtitles: ${describe(error)}`);
         return null;
       }

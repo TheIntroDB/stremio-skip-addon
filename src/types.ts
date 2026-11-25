@@ -23,7 +23,15 @@ export type SegmentType = (typeof SEGMENT_TYPES)[number];
  * `on`       cut in the background; the original is served until the cut is ready
  * `off`      never cut a file: playlists are still spliced, but no video is copied
  */
-export type CutMode = "on" | "blocking" | "off";
+/**
+ * What an install is willing to have cut.
+ *
+ * `mkv` is the default and means everything: HLS playlists are spliced, and a file with no
+ * playlist (a debrid `.mkv`) is packaged -- always with the processing card in front, because a
+ * player handed a playlist that grows under it is what makes it think the episode has ended.
+ * `hls` leaves `.mkv`/`.mp4` files alone entirely and only splices playlists.
+ */
+export type CutMode = "mkv" | "hls";
 
 /** The largest margin the page offers, in seconds. */
 export const MAX_MARGIN_SECONDS = 30;
@@ -46,9 +54,12 @@ export function parseMarginSeconds(value: unknown): number | null {
 export function parseCutMode(value: unknown): CutMode | null {
   if (typeof value !== "string") return null;
   const raw = value.trim().toLowerCase();
-  if (raw === "blocking" || raw === "wait" || raw === "always") return "blocking";
-  if (raw === "on" || raw === "background" || raw === "true" || raw === "1") return "on";
-  if (raw === "off" || raw === "false" || raw === "0" || raw === "never") return "off";
+  // `blocking`/`on` both used to mean "cut mkvs" (the old modes differed only in whether the
+  // first play waited); `off` never touched a file, which is what `hls` is.
+  if (raw === "mkv" || raw === "blocking" || raw === "on" || raw === "wait" || raw === "always" ||
+      raw === "background" || raw === "true" || raw === "1") return "mkv";
+  if (raw === "hls" || raw === "playlists" || raw === "off" || raw === "false" || raw === "0" ||
+      raw === "never") return "hls";
   return null;
 }
 

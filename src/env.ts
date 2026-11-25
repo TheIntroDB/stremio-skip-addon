@@ -96,7 +96,7 @@ function numberFrom(name: string, fallback: number): number {
 
 /** The deployment's cutting mode, from `CUTS`. Defaults to always cutting. */
 function cutMode(): CutMode {
-  return parseCutMode(process.env.CUTS) ?? "blocking";
+  return parseCutMode(process.env.CUTS) ?? "mkv";
 }
 
 export function loadSettings(): Settings {
@@ -140,8 +140,9 @@ export function describeSettings(settings: Settings): Record<string, unknown> {
     subtitlesTtlHours: settings.subtitlesTtlHours,
     splash: settings.splash,
     prerollSeconds: settings.prerollSeconds,
-    cacheDir: settings.cuts === "off" ? null : settings.cacheDir,
-    cacheMaxGb: settings.cuts === "off" ? null : Math.round(settings.cacheMaxBytes / 1024 ** 3),
-    cutConcurrency: settings.cuts === "off" ? null : settings.cutConcurrency,
+    // Only the packaging path uses these; splicing a playlist is a text rewrite.
+    cacheDir: settings.cuts === "hls" ? null : settings.cacheDir,
+    cacheMaxGb: settings.cuts === "hls" ? null : Math.round(settings.cacheMaxBytes / 1024 ** 3),
+    cutConcurrency: settings.cuts === "hls" ? null : settings.cutConcurrency,
   };
 }

@@ -10,14 +10,14 @@ test("the cutting mode is part of the install, and junk is ignored", () => {
   const encoded = encodeConfig({
     src: ["https://aiostreams.example/manifest.json"],
     types: ["intro"],
-    cuts: "off",
+    cuts: "hls",
   });
-  assert.equal(decodeConfig(encoded)?.cuts, "off");
+  assert.equal(decodeConfig(encoded)?.cuts, "hls");
 
   const asAlways = Buffer.from(
     JSON.stringify({ src: ["https://a.example"], types: ["intro"], cuts: "always" }),
   ).toString("base64url");
-  assert.equal(decodeConfig(asAlways)?.cuts, "blocking", "a word a human would write is accepted");
+  assert.equal(decodeConfig(asAlways)?.cuts, "mkv", "a word a human would write is accepted");
 
   const nonsense = Buffer.from(
     JSON.stringify({ src: ["https://a.example"], types: ["intro"], cuts: "whenever" }),

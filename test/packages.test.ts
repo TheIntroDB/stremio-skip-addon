@@ -41,7 +41,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     port: 0,
     cacheDir: path.join(workDir, "cache"),
     cacheMaxBytes: 10 * 1024 ** 3,
-    cuts: "blocking",
+    cuts: "mkv",
     proxy: true,
     subtitles: false,
     subtitlesLanguage: "en",
@@ -257,7 +257,7 @@ test("the engine reports ffmpeg as available", async () => {
 });
 
 test("cutting can be switched off entirely", async () => {
-  const engine = new PackageEngine(settings({ cuts: "off" }));
+  const engine = new PackageEngine(settings({ cuts: "hls" }));
   const status = await engine.start();
   assert.equal(status.ok, true);
   assert.equal(engine.enabled, false);

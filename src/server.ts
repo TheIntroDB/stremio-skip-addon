@@ -91,7 +91,7 @@ export async function main(): Promise<void> {
       `  api key        ${(settings.TIDB_API_KEY ?? "").trim() ? "configured" : "MISSING - lookups will refuse with 403"}`,
     );
     console.log(
-      `  cutting        ${settings.cuts}${settings.cuts === "off" ? "" : ` (${settings.cacheDir}, max ${Math.round(settings.cacheMaxBytes / 1024 ** 3)} GB, ${settings.cutConcurrency} at a time)`}`,
+      `  cutting        ${settings.cuts}${settings.cuts === "hls" ? "" : ` (${settings.cacheDir}, max ${Math.round(settings.cacheMaxBytes / 1024 ** 3)} GB, ${settings.cutConcurrency} at a time)`}`,
     );
     console.log(`  ffmpeg         ${packageStatus.detail}`);
     if (!packageStatus.ok) {

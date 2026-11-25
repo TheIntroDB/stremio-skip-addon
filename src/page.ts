@@ -182,11 +182,10 @@ export function renderConfigPage(options: PageOptions): string {
     <div class="field">
       <label for="cuts">Cutting</label>
       <select id="cuts">
-        <option value="blocking">Always cut — start playing in a couple of seconds, no intro</option>
-        <option value="on">Start playing first — cut from the next playback</option>
-        <option value="off">Never cut files — playlists only, no disk use</option>
+        <option value="mkv">Cut .mkv files too — the processing card, then the title without its intro</option>
+        <option value="hls">Only cut HLS playlists — leave .mkv/.mp4 files alone</option>
       </select>
-      <p class="hint">A file with no playlist of its own (a debrid <span class="mono">.mkv</span>) is packaged as HLS on demand: the stretches that survive are copied into segments as the video is streamed, so <b>always cut</b> waits for the first segment — about two seconds of work, not the whole file — and the intro is already gone. <b>Start playing first</b> answers with the source immediately and cuts from the next playback. <b>Never cut</b> still splices HLS playlists and copies nothing. This choice is stored in your install link, so it can differ per install.</p>
+      <p class="hint">A file with no playlist of its own (a debrid <span class="mono">.mkv</span>) is packaged as HLS on demand: the stretches that survive are copied into segments as the video is streamed. <b>Cut .mkv files too</b> shows the processing card while the first ten seconds of the cut file are made, and then plays the title with the intro already gone — that buffered start is what stops a player reaching the end of a growing playlist and deciding the episode is over. <b>Only cut HLS</b> never touches a <span class="mono">.mkv</span>: playlists are still spliced, nothing is copied and no disk is used. This choice is stored in your install link, so it can differ per install.</p>
     </div>
 
     <div class="field">

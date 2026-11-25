@@ -235,7 +235,10 @@ async function handleStreams(
     : upstream.streams;
 
   if (cutSummary) {
-    preCut(settings, packages, upstream, config, lookup.windows);
+    // Nothing is cut, probed or packaged here. A stream list is a menu, and the work belongs to
+    // the playback that chooses from it (see `handlePlay`): an install that never plays a stream
+    // never costs anything, and a list cannot fail because a source was slow.
+    void 0;
   }
 
   return json(
@@ -252,38 +255,6 @@ async function handleStreams(
   );
 }
 
-/**
- * Warm the cut cache for the sources a player is most likely to pick.
- *
- * A cut of a feature takes a while (it copies the whole file once), and the stream
- * list is fetched moments before playback, so this is a head start rather than a
- * guarantee: the first playback may still be handed the original.
- */
-function preCut(
-  settings: Settings,
-  packages: PackageEngine,
-  upstream: { streams: Array<Record<string, unknown>>; used?: string },
-  config: AddonConfig,
-  windows: Parameters<PackageEngine["schedule"]>[1],
-): void {
-  if (!packages.enabled || windows.length === 0) return;
-  // An install that turned cutting off gets no head start either.
-  if ((config.cuts ?? settings.cuts) === "off") return;
-  const limit = settings.precutSources;
-  if (limit <= 0) return;
-  const sourceBase = upstream.used ?? config.src[0] ?? "";
-  let scheduled = 0;
-  for (const stream of upstream.streams) {
-    if (scheduled >= limit) break;
-    const target = resolveTarget(stream.url, sourceBase);
-    if (!target || !isFetchableByWorker(target, settings.ALLOW_PRIVATE_HOSTS === "1")) continue;
-    // The same identity the play URL carries, so the head start warms the package the
-    // player will look up -- by the time they have picked a stream, the playlist is
-    // usually already there.
-    packages.schedule(target, windows, streamIdentity(stream, sourceBase, target));
-    scheduled++;
-  }
-}
 
 function describeWindowsHeader(windows: readonly { type: string; startMs: number; endMs: number | null }[]): string {
   return windows

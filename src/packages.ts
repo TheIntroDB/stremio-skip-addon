@@ -150,10 +150,12 @@ export class PackageEngine {
 
   /** Check that ffmpeg exists and the cache directory is usable. */
   async start(): Promise<{ ok: boolean; detail: string }> {
-    if (this.settings.cuts === "off") {
-      this.available = false;
-      return { ok: true, detail: "cutting is off" };
-    }
+    // `hls` is not "cutting is off": playlists are still spliced, and the engine's own health is
+    // about the packaging path. Reporting it unavailable made an HLS-only install look broken.
+    const used = this.settings.cuts !== "hls";
+    // Nothing is packaged in this mode, so there is no engine to check, no cache to clear and no
+    // half-written package to sweep: say so and leave the disk alone.
+    if (!used) return { ok: true, detail: "only HLS playlists are cut" };
     try {
       await mkdir(this.root(), { recursive: true });
     } catch (error) {
@@ -219,7 +221,7 @@ export class PackageEngine {
   }
 
   get enabled(): boolean {
-    return this.settings.cuts !== "off" && this.available !== false;
+    return this.settings.cuts !== "hls" && this.available !== false;
   }
 
   /**
