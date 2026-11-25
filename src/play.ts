@@ -288,6 +288,15 @@ async function packageOrProxy(
   context.packages.schedule(target, windows, streamKey);
   if (mode !== "blocking") return passThrough(context, target, "package_warming", lookupReason);
 
+  // Nothing of the episode is ready yet, so show the processing card rather than holding
+  // the request: a player handed a playlist starts at once and sees what is happening,
+  // where a player handed nothing shows a spinner and then gives up on the stream. The
+  // card's pieces form the start of the same playlist the episode is appended to.
+  if (context.config.splash !== false) {
+    const card = await context.packages.splashView(key, windows);
+    if (card) return manifestResponse(card, key, lookupReason);
+  }
+
   const waited = await context.packages.waitForFirstSegment(
     key,
     context.settings.cutWaitSeconds * 1000,
@@ -305,6 +314,7 @@ function manifestResponse(view: ManifestView, key: string, lookupReason: string)
       // key even though the source re-minted its link in between.
       "x-tidb-package": key,
       "x-tidb-segments": String(view.segments),
+      ...(view.card > 0 ? { "x-tidb-card": String(view.card) } : {}),
       "x-tidb-content-ms": String(view.durationMs),
       ...(lookupReason ? { "x-tidb-lookup": lookupReason } : {}),
     },

@@ -20,7 +20,7 @@ import { MAX_MARGIN_SECONDS, parseCutMode, type CutMode, type Env } from "./type
  * an intro are exactly where dialogue goes missing. Skipping slightly less than the
  * reported window is the safe direction, and this is the amount.
  */
-const DEFAULT_MARGIN_SECONDS = 3;
+const DEFAULT_MARGIN_SECONDS = 2;
 
 export type { CutMode } from "./types.js";
 
@@ -34,6 +34,12 @@ export interface Settings extends Env {
   cuts: CutMode;
   /** The deployment's default margin on each cut; an install URL may override it. */
   skipMarginSeconds: number;
+  /**
+   * Whether a cold playback is shown the processing card (see `splash.ts`) instead of
+   * being held until the first segment of the episode is written. An install URL may turn
+   * it off for itself.
+   */
+  splash: boolean;
   cutWaitSeconds: number;
   cutConcurrency: number;
   /**
@@ -67,6 +73,7 @@ export function loadSettings(): Settings {
     cacheDir: process.env.CACHE_DIR ?? "./cache",
     cacheMaxBytes: Math.max(0, numberFrom("CACHE_MAX_GB", 50) * 1024 ** 3),
     cuts: cutMode(),
+    splash: !/^(off|false|0|no)$/i.test((process.env.SPLASH ?? "").trim()),
     skipMarginSeconds: Math.min(
       MAX_MARGIN_SECONDS,
       Math.max(0, Math.round(numberFrom("SKIP_MARGIN_SECONDS", DEFAULT_MARGIN_SECONDS))),
@@ -86,6 +93,7 @@ export function describeSettings(settings: Settings): Record<string, unknown> {
     apiKeyConfigured: Boolean((settings.TIDB_API_KEY ?? "").trim()),
     cuts: settings.cuts,
     skipMarginSeconds: settings.skipMarginSeconds,
+    splash: settings.splash,
     cacheDir: settings.cuts === "off" ? null : settings.cacheDir,
     cacheMaxGb: settings.cuts === "off" ? null : Math.round(settings.cacheMaxBytes / 1024 ** 3),
     cutConcurrency: settings.cuts === "off" ? null : settings.cutConcurrency,

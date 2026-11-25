@@ -111,7 +111,7 @@ Open your deployment's URL in a browser. The page builds your install link:
 1. **Paste your stream addon URL** — AIOStreams, Torrentio, Comet, MediaFusion, anything that serves Stremio streams (the `manifest.json` URL). One per line; they are tried in order and the first that answers with streams is used, so a second URL is a fallback.
 2. **Pick the segments to cut.** Intro, recap and credits are on; previews are off. Credits and previews run to the end of the file when TheIntroDB does not close them, so they are the destructive ones.
 3. **Pick the cutting mode** — *always cut* (the default: the first play waits a couple of seconds for the first segment, so the intro is gone from the start), *start playing first* (the source plays immediately and the cut applies from the next playback), or *never cut files* (playlists only, nothing copied). It lives in the install link, so your installs can differ.
-4. **Set the margin** below it — the seconds left alone at each end of every window (3 by default). If an intro cut feels too aggressive, this is the dial.
+4. **Set the margin** below it — the seconds left alone at each end of every window (2 by default). If an intro cut feels too aggressive, this is the dial.
 5. **The API key** is already handled if the service has one in its environment; paste one here only if you would rather carry it in the install URL. See [API key](#api-key).
 6. **Install** — the `stremio://` link opens the desktop or mobile app; *Open in Stremio Web* handles the browser player.
 
@@ -204,9 +204,17 @@ Nothing is re-encoded, so a cut can only be as precise as the keyframe grid, and
 
 Both ends of that: with a 2-second keyframe grid a 17.8 s window lost 17.3 s of itself, and with a 10-second grid up to 10 s of the window can remain.
 
+### The processing card
+
+A file is packaged on demand, so a cold playback has nothing of the episode to play for a moment. Rather than leave the player with a spinner — or hold the request until enough exists — it is handed a **processing card**: a black 1280×720 slide with the badge, `Processing…`, `TheIntroDB is currently cutting the segments from your stream`, how many segments have been cut, and the windows being removed. It is drawn two seconds at a time while the work goes on, so it moves, and the episode's own segments are appended to the same playlist as they are written: the card is the start of the film rather than a separate screen.
+
+- One `SPLASH=off` (or turning it off on the configuration page) restores the old behaviour: the play request is held until the first segment exists.
+- It needs a font and the badge. The image installs `fonts-dejavu-core` and vendors `assets/badge.png`; a deployment without them logs the reason at boot, reports it in `/health` (`cutsStatus.splashError`) and simply skips the card.
+- The text is passed to ffmpeg as files, not as filter arguments: a colon (`Intro 3:50-4:04`) cannot be passed through a filter graph at all — `\:` does not survive the graph parser and quoting the value does not either, both of which were measured against the ffmpeg in the image.
+
 ### Margin
 
-Because the cut is keyframe-limited, and because TheIntroDB's timings describe *a* release of a title rather than necessarily the one being watched, the first and last seconds of an intro are exactly where dialogue can go missing. Every window is therefore **shrunk before it is used**: the skip starts `SKIP_MARGIN_SECONDS` (default **3**) after the reported start, and ends that many seconds before the reported end — on every segment type, and in both cut paths. It can only ever remove *less* than the timings ask for, never more.
+Because the cut is keyframe-limited, and because TheIntroDB's timings describe *a* release of a title rather than necessarily the one being watched, the first and last seconds of an intro are exactly where dialogue can go missing. Every window is therefore **shrunk before it is used**: the skip starts `SKIP_MARGIN_SECONDS` (default **2**) after the reported start, and ends that many seconds before the reported end — on every segment type, and in both cut paths. It can only ever remove *less* than the timings ask for, never more.
 
 - `SKIP_MARGIN_SECONDS=0` cuts exactly what TheIntroDB reports.
 - It is a control on the configuration page too, stored in the install link, so one install can be cautious while another is literal. Changing it makes a different package (the windows are part of the key), so the next playback packages afresh.
@@ -300,7 +308,8 @@ Everything is an environment variable; there is nothing to edit in the image.
 | `CACHE_DIR` | `./cache` (`/cache` in the image) | Where package segments are kept. |
 | `CACHE_MAX_GB` | `50` | Disk budget for packages, evicted oldest-first. |
 | `CUT_WAIT_SECONDS` | `120` | `blocking` mode only: how long a play request waits for the first segment. A couple of seconds is the normal answer; the bound only matters when a source is slow. |
-| `SKIP_MARGIN_SECONDS` | `3` | Seconds left alone at each end of every window, so a cut never removes more than the timings ask for. A control on the configuration page sets it per install. |
+| `SPLASH` | `on` | Draw the processing card for a cold playback. `off` holds the play request instead. Also a control on the configuration page. |
+| `SKIP_MARGIN_SECONDS` | `2` | Seconds left alone at each end of every window, so a cut never removes more than the timings ask for. A control on the configuration page sets it per install. |
 | `CUT_CONCURRENCY` | `2` | Concurrent ffmpeg processes. |
 | `PRECUT_SOURCES` | `2` | Sources to start cutting when a stream list is fetched (0 disables the head start). |
 | `FFMPEG_PATH`, `FFPROBE_PATH` | `ffmpeg`, `ffprobe` | Override if they are not on `PATH`. |

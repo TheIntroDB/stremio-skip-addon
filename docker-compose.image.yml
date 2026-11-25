@@ -16,7 +16,7 @@ services:
     environment:
       TIDB_API_KEY: ${TIDB_API_KEY:?set TIDB_API_KEY}
       CUTS: ${CUTS:-blocking}
-      SKIP_MARGIN_SECONDS: ${SKIP_MARGIN_SECONDS:-3}
+      SKIP_MARGIN_SECONDS: ${SKIP_MARGIN_SECONDS:-2}
       CACHE_MAX_GB: ${CACHE_MAX_GB:-50}
       PRECUT_SOURCES: ${PRECUT_SOURCES:-2}
       TZ: ${TZ:-UTC}

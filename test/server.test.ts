@@ -34,6 +34,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     cacheMaxBytes: 0,
     cuts: "off",
     skipMarginSeconds: 0,
+    splash: false,
     cutWaitSeconds: 0,
     cutConcurrency: 1,
     precutSources: 2,

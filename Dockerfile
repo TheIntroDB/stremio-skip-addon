@@ -18,12 +18,16 @@ FROM node:22-bookworm-slim
 # ffmpeg is the only thing in here that is not a Node dependency: it does the
 # `-c copy` remux that removes a segment from a progressive file.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+    # fonts-dejavu-core is what the processing card (see src/splash.ts) draws its text
+    # with; without a font, ffmpeg refuses to draw the card at all.
+    && apt-get install -y --no-install-recommends ffmpeg ca-certificates fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
+# The badge the processing card draws, so drawing it never needs the network.
+COPY assets ./assets
 
 # Created and owned up front so a fresh named volume inherits the ownership it needs
 # (Docker copies the image's directory into an empty volume). A bind mount or a
@@ -33,7 +37,7 @@ RUN mkdir -p /cache && chown -R node:node /cache
 ENV NODE_ENV=production \
     CACHE_DIR=/cache \
     CUTS=blocking \
-    SKIP_MARGIN_SECONDS=3
+    SKIP_MARGIN_SECONDS=2
 # A platform may inject its own PORT; the service reads PORT and binds to it, so this
 # is the default for a plain `docker run`.
 EXPOSE 8787

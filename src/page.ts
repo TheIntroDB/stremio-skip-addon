@@ -191,8 +191,13 @@ export function renderConfigPage(options: PageOptions): string {
 
     <div class="field">
       <label for="margin">Margin on every cut <span class="badge">seconds</span></label>
-      <input type="number" id="margin" min="0" max="30" step="1" value="3">
-      <p class="hint">How much of each window's edges to leave alone. A cut can only land on a keyframe, and TheIntroDB's timings describe <i>a</i> release of a title rather than necessarily yours, so the first and last seconds of an intro are where dialogue goes missing. With a margin of 3, the skip starts three seconds after the reported start and ends three seconds before the reported end — it never skips more than the timings ask for. 0 cuts exactly what TheIntroDB reports.</p>
+      <input type="number" id="margin" min="0" max="30" step="1" value="2">
+      <p class="hint">How much of each window's edges to leave alone. A cut can only land on a keyframe, and TheIntroDB's timings describe <i>a</i> release of a title rather than necessarily yours, so the first and last seconds of an intro are where dialogue goes missing. With a margin of 2, the skip starts two seconds after the reported start and ends two seconds before the reported end — it never skips more than the timings ask for. 0 cuts exactly what TheIntroDB reports.</p>
+    </div>
+
+    <div class="field">
+      <label class="check" style="max-width:560px"><input type="checkbox" id="splash" checked> Show a processing card while a file is being cut</label>
+      <p class="hint">A file with no playlist is packaged on demand, so a cold playback has nothing of the episode to play for a moment. With this on, the player is handed a black card with the badge, "Processing…", how many segments are cut and which windows are being removed — it updates as the work goes, and the episode starts as soon as its first segments exist. With it off, the play request is simply held until then.</p>
     </div>
 
     <div class="field">
@@ -311,6 +316,7 @@ export function renderConfigPage(options: PageOptions): string {
     if (!isFinite(rawMargin)) rawMargin = 0;
     var margin = Math.max(0, Math.min(30, Math.round(rawMargin)));
     var config = { src: sources, types: types, cuts: document.getElementById("cuts").value, margin: margin };
+    if (!document.getElementById("splash").checked) config.splash = false;
     if (key) config.key = key;
     if (document.getElementById("proxy").checked) config.proxy = true;
     var name = document.getElementById("name").value.trim();
@@ -340,9 +346,10 @@ export function renderConfigPage(options: PageOptions): string {
   var cuts = data.cuts;
   // The deployment's own default is what a new install gets unless it says otherwise.
   document.getElementById("cuts").value = cuts.mode || "blocking";
+  document.getElementById("splash").checked = cuts.splash === undefined ? true : cuts.splash === true;
   document.getElementById("margin").value =
     cuts.skipMarginSeconds === undefined || cuts.skipMarginSeconds === null
-      ? 3
+      ? 2
       : cuts.skipMarginSeconds;
   document.getElementById("cuts-mode").textContent =
     cuts.mode === "off"
@@ -400,6 +407,7 @@ export function renderConfigPage(options: PageOptions): string {
     document.getElementById("proxy").checked = config.proxy === true;
     if (config.cuts) document.getElementById("cuts").value = config.cuts;
     if (typeof config.margin === "number") document.getElementById("margin").value = config.margin;
+    document.getElementById("splash").checked = config.splash !== false;
 
     notice("You are editing an install. Change what you need and install again — the new link replaces the old one, and the old one keeps working. Source URLs are shown without their /manifest.json, which the addon fetches for you. Keep this page's address private: it is the configuration, and it carries the API key if you put one in it.");
     generate();

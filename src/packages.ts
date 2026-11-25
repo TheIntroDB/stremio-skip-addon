@@ -30,10 +30,16 @@
  */
 
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { Settings } from "./env.js";
+import {
+  generateSplashPiece,
+  SPLASH_PIECE_MS,
+  SPLASH_RE,
+  splashAvailable,
+} from "./splash.js";
 import {
   delay,
   errorText,
@@ -65,7 +71,10 @@ export interface PackageState {
 export interface ManifestView {
   body: string;
   complete: boolean;
+  /** Segments of the episode itself that the playlist lists. */
   segments: number;
+  /** Pieces of the processing card in the playlist, before the episode. */
+  card: number;
   durationMs: number;
 }
 
@@ -77,11 +86,17 @@ interface Plan {
 }
 
 const PACKAGE_ROOT = "hls";
+/** Where the processing card's pieces are recorded, in the order they were drawn. */
+const SPLASH_LIST = "splash.list";
 const PLAN = "plan.json";
 const DONE = "done";
 const PASS = "pass-";
 /** How often a waiting play re-reads the CSVs while the first segment is written. */
 const POLL_MS = 250;
+/** How often a new piece of the processing card is drawn while a package is being made. */
+const SPLASH_MIN_INTERVAL_MS = 1000;
+/** How long a card stays part of a key's playlist after the last request for it. */
+const SPLASH_SESSION_MS = 15 * 60_000;
 /** Target segment length. Longer only happens when keyframes are further apart. */
 const SEGMENT_SECONDS = 4;
 const KEY_RE = /^[0-9a-f]{8,40}$/;
@@ -93,6 +108,19 @@ export class PackageEngine {
   private readonly states = new Map<string, PackageState>();
   /** When each package was last served, so eviction leaves alone what is being watched. */
   private readonly used = new Map<string, number>();
+  /**
+   * Keys whose playlist is carrying the processing card, and how far it has got.
+   *
+   * The card is part of that *playlist*, so it stays listed once it has been drawn: a
+   * player that started on the card must be able to finish it. A play request that arrives
+   * when the package is already complete never starts one, which is why the card does not
+   * appear before every episode.
+   */
+  private readonly cards = new Map<string, { pieces: number; lastAt: number; frozen: boolean }>();
+  /** null until the boot probe says whether a card can be drawn here. */
+  private cardOk: boolean | null = null;
+  /** The last reason a card could not be drawn, for /health. */
+  private cardError: string | null = null;
   private readonly running = new Map<string, Promise<PackageState>>();
   private readonly tasks: Array<() => void> = [];
   private active = 0;
@@ -148,11 +176,25 @@ export class PackageEngine {
 
     const probe = await run(this.settings.ffmpegPath, ["-version"], 10_000);
     this.available = probe.code === 0;
+    if (!this.available) {
+      return {
+        ok: false,
+        detail: `${this.settings.ffmpegPath} not runnable: ${probe.stderr.trim().slice(0, 200)}`,
+      };
+    }
+
+    // The processing card needs a font and the badge as well as ffmpeg; a deployment
+    // without them still works, it just shows nothing while a file is being packaged.
+    if (this.settings.splash) {
+      const card = await splashAvailable(this.settings);
+      this.cardOk = card.ok;
+      if (!card.ok) console.warn(`  warning        ${card.detail}`);
+    } else {
+      this.cardOk = false;
+    }
     return {
-      ok: this.available,
-      detail: this.available
-        ? `${(probe.stdout.split("\n")[0] ?? "ffmpeg").trim()} -> ${this.settings.cacheDir}`
-        : `${this.settings.ffmpegPath} not runnable: ${probe.stderr.trim().slice(0, 200)}`,
+      ok: true,
+      detail: `${(probe.stdout.split("\n")[0] ?? "ffmpeg").trim()} -> ${this.settings.cacheDir}`,
     };
   }
 
@@ -242,65 +284,190 @@ export class PackageEngine {
   }
 
   /**
-   * The playlist for this key, or null when no segment is complete yet.
+   * The episode's own segments, grouped by the stretch they came from, with durations.
    *
-   * Everything comes off disk, so a package made by an earlier process plays too.
-   * Only segments that ffmpeg has reported as closed are listed: a player asking for
-   * a segment that is still being written would fail, and the CSV is the signal that
-   * says which ones are whole.
+   * A stretch boundary is a jump in the clock and the playlist declares it, so the
+   * grouping has to survive this far.
    */
-  async manifest(key: string): Promise<ManifestView | null> {
-    const plan = await this.readPlan(key);
-    if (!plan) return null;
-    this.used.set(key, Date.now());
+  private async realStretches(
+    plan: Plan,
+    key: string,
+  ): Promise<Array<Array<{ name: string; ms: number }>>> {
     const dir = this.dirFor(key);
-    const lines: string[] = [];
-    let segments = 0;
-    let durationMs = 0;
-    let longestMs = 0;
-
+    const stretches: Array<Array<{ name: string; ms: number }>> = [];
     for (let i = 0; i < plan.ranges.length; i++) {
       const range = plan.ranges[i];
       if (!range) continue;
       const rows = await this.readCsv(path.join(dir, `${PASS}${i}.csv`));
       const wanted = range.endMs - range.startMs;
-      // ffmpeg stops at the keyframe after the requested end, so the last segment of
-      // a stretch can hold a little of the dropped window. Whole segments that start
-      // past the end are dropped; the remainder is left to the GOP.
-      const kept = rows.filter((row) => row.startMs < wanted);
-      if (kept.length === 0) continue;
-      if (segments > 0) lines.push("#EXT-X-DISCONTINUITY");
-      for (const row of kept) {
-        const duration = Math.max(0, row.endMs - row.startMs);
-        lines.push(`#EXTINF:${(duration / 1000).toFixed(3)},`);
-        lines.push(`seg?f=${encodeURIComponent(key)}/${row.name}`);
-        segments += 1;
-        durationMs += duration;
-        longestMs = Math.max(longestMs, duration);
+      // ffmpeg stops at the keyframe after the requested end, so the last segment of a
+      // stretch can hold a little of the dropped window. Whole segments that start past
+      // the end are dropped; the remainder is left to the GOP.
+      const kept = rows
+        .filter((row) => row.startMs < wanted)
+        .map((row) => ({ name: row.name, ms: Math.max(0, row.endMs - row.startMs) }));
+      if (kept.length > 0) stretches.push(kept);
+    }
+    return stretches;
+  }
+
+  /**
+   * The playlist for this key, or null when there is nothing to play at all.
+   *
+   * Everything comes off disk, so a package made by an earlier process plays too. Only
+   * segments that ffmpeg has reported as closed are listed: a player asking for a segment
+   * that is still being written would fail, and the CSV is the signal that says which ones
+   * are whole. When this key is showing the processing card, its pieces come first.
+   */
+  async manifest(key: string): Promise<ManifestView | null> {
+    const plan = await this.readPlan(key);
+    if (!plan) return null;
+    this.used.set(key, Date.now());
+    const card = await this.readSplashList(key);
+    const stretches = await this.realStretches(plan, key);
+    if (card.length === 0 && stretches.length === 0) return null;
+
+    const items: Array<{ uri: string; ms: number } | "disc"> = [];
+    const add = (group: Array<{ name: string; ms: number }>): void => {
+      if (group.length === 0) return;
+      // Between stretches -- and between the card and the episode -- the clock restarts,
+      // which is what the tag declares.
+      if (items.length > 0) items.push("disc");
+      for (const entry of group) {
+        items.push({ uri: `seg?f=${encodeURIComponent(key)}/${entry.name}`, ms: entry.ms });
+      }
+    };
+    add(card);
+    for (const stretch of stretches) add(stretch);
+
+    const segments = stretches.reduce((total, stretch) => total + stretch.length, 0);
+    const complete = segments > 0 && (await this.isDone(key));
+    return this.playlistView(items, {
+      complete,
+      segments,
+      card: card.length,
+    });
+  }
+
+  /**
+   * A playlist showing only the processing card, drawn up to date, or null.
+   *
+   * This is what a cold play gets instead of waiting: a player handed this starts
+   * immediately and shows what is happening, and the episode's segments are appended to
+   * the same playlist as they are written.
+   */
+  async splashView(key: string, windows: readonly SkipWindow[] = []): Promise<ManifestView | null> {
+    if (!this.settings.splash || this.cardOk === false) return null;
+    // The plan is written by the job that just started, so it may not be on disk yet: the
+    // caller passes the windows it is about to cut, and the plan only adds detail. Without
+    // either, nothing is being packaged for this key and there is no card to show.
+    const plan = await this.readPlan(key);
+    if (!plan && windows.length === 0) return null;
+    const shown = plan?.windows?.length ? plan.windows : windows;
+    const passes = plan?.ranges.length ?? 1;
+    this.used.set(key, Date.now());
+    this.sweepCards();
+
+    const state = this.cards.get(key) ?? { pieces: 0, lastAt: 0, frozen: false };
+    this.cards.set(key, state);
+    if (!state.frozen && Date.now() - state.lastAt >= SPLASH_MIN_INTERVAL_MS) {
+      const stretches = plan ? await this.realStretches(plan, key) : [];
+      const written = stretches.reduce((total, stretch) => total + stretch.length, 0);
+      // Which stretch ffmpeg is on: the first one with nothing in it yet.
+      const piece = await generateSplashPiece(this.settings, this.dirFor(key), state.pieces, {
+        segments: written,
+        windows: shown,
+        pass: Math.min(passes, stretches.length + 1),
+        passes,
+      });
+      if (piece.ok) {
+        await this.appendSplashList(key, piece.name, SPLASH_PIECE_MS);
+        state.pieces += 1;
+        state.lastAt = Date.now();
+        this.cardError = null;
+      } else {
+        // Cannot draw it here: stop trying, let the caller do what it used to, and keep
+        // the reason where /health can report it.
+        state.frozen = true;
+        this.cardError = piece.error;
+        console.warn(`  warning        the processing card cannot be drawn: ${piece.error}`);
       }
     }
 
-    if (segments === 0) return null;
-    const complete = await this.isDone(key);
+    const card = await this.readSplashList(key);
+    if (card.length === 0) return null;
+    const items: Array<{ uri: string; ms: number } | "disc"> = card.map((entry) => ({
+      uri: `seg?f=${encodeURIComponent(key)}/${entry.name}`,
+      ms: entry.ms,
+    }));
+    return this.playlistView(items, { complete: false, segments: 0, card: card.length });
+  }
+
+  /** Stop the card for a key that is finished, and forget cards nobody is watching. */
+  private sweepCards(): void {
+    const idle = Date.now() - SPLASH_SESSION_MS;
+    for (const [key, state] of this.cards) {
+      if (state.lastAt < idle) this.cards.delete(key);
+    }
+  }
+
+  /** The playlist itself: headers, the entries, and an end marker when it is finished. */
+  private playlistView(
+    items: Array<{ uri: string; ms: number } | "disc">,
+    facts: { complete: boolean; segments: number; card: number },
+  ): ManifestView {
+    const lines: string[] = [];
+    let durationMs = 0;
+    let longestMs = 0;
+    for (const item of items) {
+      if (item === "disc") {
+        lines.push("#EXT-X-DISCONTINUITY");
+        continue;
+      }
+      lines.push(`#EXTINF:${(item.ms / 1000).toFixed(3)},`);
+      lines.push(item.uri);
+      durationMs += item.ms;
+      longestMs = Math.max(longestMs, item.ms);
+    }
     const head = [
       "#EXTM3U",
       "#EXT-X-VERSION:3",
       `#EXT-X-TARGETDURATION:${Math.max(1, Math.ceil(longestMs / 1000))}`,
       "#EXT-X-MEDIA-SEQUENCE:0",
       "#EXT-X-DISCONTINUITY-SEQUENCE:0",
-      // EVENT while it grows: the player keeps re-reading the playlist, which is how
-      // it learns about the segments written after it started.
-      `#EXT-X-PLAYLIST-TYPE:${complete ? "VOD" : "EVENT"}`,
+      // EVENT while it grows: the player keeps re-reading the playlist, which is how it
+      // learns about the segments written after it started.
+      `#EXT-X-PLAYLIST-TYPE:${facts.complete ? "VOD" : "EVENT"}`,
     ];
-    const tail = complete ? ["#EXT-X-ENDLIST"] : [];
+    const tail = facts.complete ? ["#EXT-X-ENDLIST"] : [];
     return {
       body: `${[...head, ...lines, ...tail].join("\n")}\n`,
-      complete,
-      segments,
-      // Summed from the segment durations, so this is a float until it is rounded: it
-      // goes out in a header and is read by people.
+      complete: facts.complete,
+      segments: facts.segments,
+      card: facts.card,
       durationMs: Math.round(durationMs),
     };
+  }
+
+  /** The pieces of the card drawn for this key, oldest first. */
+  private async readSplashList(key: string): Promise<Array<{ name: string; ms: number }>> {
+    try {
+      const text = await readFile(path.join(this.dirFor(key), SPLASH_LIST), "utf8");
+      const entries: Array<{ name: string; ms: number }> = [];
+      for (const line of text.split("\n")) {
+        const [name, ms] = line.trim().split(" ");
+        if (!name || !SPLASH_RE.test(name)) continue;
+        const duration = Number(ms);
+        entries.push({ name, ms: Number.isFinite(duration) ? duration : SPLASH_PIECE_MS });
+      }
+      return entries;
+    } catch {
+      return [];
+    }
+  }
+
+  private async appendSplashList(key: string, name: string, ms: number): Promise<void> {
+    await appendFile(path.join(this.dirFor(key), SPLASH_LIST), `${name} ${ms}\n`);
   }
 
   /**
@@ -324,7 +491,7 @@ export class PackageEngine {
 
   /** A path inside this key's package, or null when the name is not one of ours. */
   segmentPath(key: string, name: string): string | null {
-    if (!KEY_RE.test(key) || !SEGMENT_RE.test(name)) return null;
+    if (!KEY_RE.test(key) || !(SEGMENT_RE.test(name) || SPLASH_RE.test(name))) return null;
     this.used.set(key, Date.now());
     return path.join(this.dirFor(key), name);
   }
@@ -351,6 +518,9 @@ export class PackageEngine {
       queued: this.tasks.length,
       packages: byStatus,
       segments,
+      cardPieces: [...this.cards.values()].reduce((total, state) => total + state.pieces, 0),
+      splash: this.settings.splash && this.cardOk !== false,
+      splashError: this.cardError,
       bytes,
       // Only the newest one: this is what an operator needs to see, and /health
       // stays small.
@@ -508,6 +678,10 @@ export class PackageEngine {
     await writeFile(path.join(state.dir, DONE), "").catch(() => undefined);
     state.status = "ready";
     state.finishedAt = Date.now();
+    // The card has served its purpose: no more pieces, and the playlist it is already in
+    // keeps the ones it has.
+    const card = this.cards.get(state.key);
+    if (card) card.frozen = true;
     await this.evict().catch(() => undefined);
     return state;
   }

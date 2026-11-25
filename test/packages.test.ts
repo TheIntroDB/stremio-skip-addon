@@ -43,6 +43,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     cacheMaxBytes: 10 * 1024 ** 3,
     cuts: "blocking",
     skipMarginSeconds: 0,
+    splash: false,
     cutWaitSeconds: 60,
     cutConcurrency: 2,
     precutSources: 2,
@@ -62,6 +63,17 @@ async function durationOf(file: string): Promise<number> {
   ], 60_000);
   assert.equal(result.code, 0, `ffprobe failed: ${result.stderr}`);
   return Math.round(Number(result.stdout.trim()) * 1000);
+}
+
+/** The first video timestamp in a file, in seconds: what a demuxer sees first. */
+async function firstVideoPts(file: string): Promise<number> {
+  const result = await run("ffprobe", [
+    "-v", "error", "-select_streams", "v",
+    "-show_entries", "packet=pts_time", "-of", "csv=p=0", file,
+  ], 60_000);
+  const first = Number(result.stdout.split("\n")[0]?.replace(",", "").trim());
+  assert.ok(Number.isFinite(first), `no timestamp in ${file}: ${result.stdout} ${result.stderr}`);
+  return first;
 }
 
 /** Decode a playlist end to end, the way a player would. */
@@ -498,19 +510,10 @@ test("the segments of a stretch share one timeline, so a player's clock does not
   assert.ok(stretches.length >= 2, `a window in the middle makes two stretches (${stretches.length})`);
 
   const dir = path.join(workDir, "cache-timeline", "hls", key);
-  const firstVideoPts = async (name: string): Promise<number> => {
-    const result = await run("ffprobe", [
-      "-v", "error", "-select_streams", "v",
-      "-show_entries", "packet=pts_time", "-of", "csv=p=0", path.join(dir, name),
-    ], 60_000);
-    const first = Number(result.stdout.split("\n")[0]?.replace(",", "").trim());
-    assert.ok(Number.isFinite(first), `no timestamp in ${name}: ${result.stdout} ${result.stderr}`);
-    return first;
-  };
-  const firstAudioPts = async (name: string): Promise<number> => {
+  const firstAudioPts = async (file: string): Promise<number> => {
     const result = await run("ffprobe", [
       "-v", "error", "-select_streams", "a",
-      "-show_entries", "packet=pts_time", "-of", "csv=p=0", path.join(dir, name),
+      "-show_entries", "packet=pts_time", "-of", "csv=p=0", file,
     ], 60_000);
     return Number(result.stdout.split("\n")[0]?.replace(",", "").trim());
   };
@@ -518,7 +521,7 @@ test("the segments of a stretch share one timeline, so a player's clock does not
   for (const stretch of stretches) {
     let previous = -1;
     for (const name of stretch) {
-      const video = await firstVideoPts(name);
+      const video = await firstVideoPts(path.join(dir, name));
       assert.ok(
         video > previous,
         `${name} starts at ${video}s, after the previous segment's ${previous}s -- the clock must climb`,
@@ -526,13 +529,73 @@ test("the segments of a stretch share one timeline, so a player's clock does not
       previous = video;
       // Audio must sit on the same clock, or the player drifts and speeds the video up
       // to catch up.
-      const audio = await firstAudioPts(name);
+      const audio = await firstAudioPts(path.join(dir, name));
       assert.ok(
         Math.abs(audio - video) < 0.5,
         `${name}: video at ${video}s, audio at ${audio}s`,
       );
     }
     // Every stretch begins at the beginning of its own timeline.
-    assert.ok(Math.abs(await firstVideoPts(stretch[0]!) - 0) < 0.5, "a stretch starts at zero");
+    assert.ok(
+      Math.abs(await firstVideoPts(path.join(dir, stretch[0]!)) - 0) < 0.5,
+      "a stretch starts at zero",
+    );
   }
+});
+
+test("a cold play gets the processing card, and the episode is appended to it", async () => {
+  // The bug this exists for is a player handed nothing: it shows a spinner, then "failed to
+  // start". The card is served immediately and the episode's own segments join the same
+  // playlist as they are written, so playback starts at once and nothing has to be waited on.
+  const window = { type: "intro" as const, startMs: 30_000, endMs: 36_000 };
+  const engine = new PackageEngine(settings({ cacheDir: path.join(workDir, "cache-card"), splash: true }));
+  await engine.start();
+  const url = `${base}/long.mkv`;
+  const key = engine.keyFor(url, [window], "stream:card");
+  engine.schedule(url, [window], "stream:card", LONG_SECONDS * 1000);
+
+  const started = Date.now();
+  // The handler passes the windows it is about to cut, because the plan is written by the
+  // job that has only just been queued.
+  const card = await engine.splashView(key, [window]);
+  assert.ok(card, "the card is served");
+  assert.ok(Date.now() - started < 15_000, `and quickly (${Date.now() - started}ms)`);
+  assert.equal(card.segments, 0, "with no episode segments in it yet");
+  assert.equal(card.card, 1, "one piece of the card");
+  assert.ok(card.body.includes("splash00000.ts"), "which the playlist lists");
+  assert.ok(!card.body.includes("#EXT-X-ENDLIST"), "and which keeps growing");
+  assert.ok(card.body.includes("#EXT-X-PLAYLIST-TYPE:EVENT"));
+
+  // A piece is a real, playable two seconds of video: a player has to be able to fetch it.
+  const first = engine.segmentPath(key, "splash00000.ts");
+  assert.ok(first, "a piece is servable by name");
+  const pieceMs = await durationOf(first!);
+  assert.ok(pieceMs > 1200 && pieceMs < 3_000, `a piece runs ${pieceMs}ms`);
+  const before = await firstVideoPts(first!);
+
+  // The card updates while the work goes on: another request draws another piece.
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  const later = await engine.splashView(key, [window]);
+  assert.ok(later && later.card > card.card, `another piece is drawn (${later?.card})`);
+  const second = engine.segmentPath(key, "splash00001.ts");
+  assert.ok(second);
+  assert.ok(
+    (await firstVideoPts(second!)) > before,
+    "and the pieces share one clock, the way a stretch does",
+  );
+
+  // The episode joins the same playlist, after a declared jump in the clock.
+  await engine.waitForFirstSegment(key, 180_000);
+  const view = await engine.manifest(key);
+  assert.ok(view, "the playlist is served");
+  assert.ok(view.card >= 1, "with the card still in it");
+  assert.ok(view.segments >= 1, "and the episode after it");
+  assert.match(
+    view.body,
+    /splash0000\d\.ts[\s\S]*#EXT-X-DISCONTINUITY[\s\S]*seg0000\d\.ts/,
+    "card, a declared jump, then the episode",
+  );
+  // The card is a stem, not a prefix on every playback: a new key that is already complete
+  // never starts one.
+  assert.equal((await engine.splashView("deadbeefdeadbeef0000")) , null, "no package, no card");
 });

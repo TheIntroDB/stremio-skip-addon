@@ -66,6 +66,7 @@ export function decodeConfig(encoded: string): AddonConfig | null {
   // ask for a negative one.
   const margin = parseMarginSeconds(input.margin);
   if (margin !== null) config.margin = margin;
+  if (input.splash === false) config.splash = false;
 
   const name = typeof input.name === "string" ? input.name.trim() : "";
   if (name) config.name = sanitizeName(name);
@@ -83,6 +84,7 @@ export function encodeConfig(config: AddonConfig): string {
   if (config.proxy) packed.proxy = true;
   if (config.cuts) packed.cuts = config.cuts;
   if (typeof config.margin === "number") packed.margin = config.margin;
+  if (config.splash === false) packed.splash = false;
   if (config.name) packed.name = sanitizeName(config.name);
   return toBase64Url(JSON.stringify(packed));
 }

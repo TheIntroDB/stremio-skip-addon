@@ -271,6 +271,7 @@ function testSettings(overrides: Partial<Settings> = {}): Settings {
     // engine has its own suite, which runs real ffmpeg (test/packages.test.ts).
     cuts: "off",
     skipMarginSeconds: 0,
+    splash: false,
     cutWaitSeconds: 0,
     cutConcurrency: 1,
     precutSources: 2,
@@ -347,6 +348,7 @@ test("the Worker serves a config page, a health check and a bare manifest", asyn
   assert.ok(body.includes('"cuts":{"mode"'), "and it defaults to what this deployment does");
   assert.ok(body.includes('"skipMarginSeconds":0'), "including its margin");
   assert.match(body, /<input type="number" id="margin"/, "the page offers the margin");
+  assert.match(body, /id="splash"[^>]*checked/, "and the processing card, on by default");
   for (const id of ["cuts-mode", "cuts-cache", "cuts-margin", "cuts-ffmpeg", "api", "origin"]) {
     assert.ok(body.includes(`id="${id}"`), `the page has the #${id} element the script writes to`);
   }
