@@ -192,6 +192,26 @@ test("windows in order leave the pieces between them", () => {
   ]);
 });
 
+test("a stream identity keeps a cut findable when the source re-mints its link", () => {
+  const cuts = new CutEngine(settings());
+  const windows = [{ type: "intro" as const, startMs: 0, endMs: 30_000 }];
+  const before = "https://source.example/playback/token-aaa";
+  const after = "https://source.example/playback/token-bbb";
+
+  // Without an identity the rotating token is the identity, so the cut is lost.
+  assert.notEqual(cuts.keyFor(before, windows), cuts.keyFor(after, windows));
+
+  // With one, both playback URLs find the same cut...
+  assert.equal(cuts.keyFor(before, windows, "abc123"), cuts.keyFor(after, windows, "abc123"));
+  // ...another release does not...
+  assert.notEqual(cuts.keyFor(before, windows, "abc123"), cuts.keyFor(after, windows, "def456"));
+  // ...and the windows still matter.
+  assert.notEqual(
+    cuts.keyFor(before, windows, "abc123"),
+    cuts.keyFor(before, [{ type: "credits" as const, startMs: 0, endMs: null }], "abc123"),
+  );
+});
+
 test("the engine reports ffmpeg as available", async () => {
   const cuts = new CutEngine(settings());
   const status = await cuts.start();

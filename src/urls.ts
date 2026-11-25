@@ -7,11 +7,25 @@ export function manifestUrl(origin: string, encodedConfig?: string): string {
   return encodedConfig ? `${origin}/${encodedConfig}/manifest.json` : `${origin}/manifest.json`;
 }
 
-/** Where the player should ask for a playlist, with the media id for the lookup. */
-export function playUrl(origin: string, encodedConfig: string, target: string, id: string): string {
+/**
+ * Where the player should ask for a playlist, with the media id for the lookup.
+ *
+ * `streamIdentity` is the stable identity of the source (see `streamIdentity` in
+ * upstream.ts). It rides along because the target URL itself cannot be one: a debrid
+ * link carries a token that is re-minted for every stream list, and a cut keyed on
+ * that would never be found again.
+ */
+export function playUrl(
+  origin: string,
+  encodedConfig: string,
+  target: string,
+  id: string,
+  streamIdentity?: string,
+): string {
   const url = new URL(`${origin}/${encodedConfig}/play`);
   url.searchParams.set("u", target);
   if (id) url.searchParams.set("id", id);
+  if (streamIdentity) url.searchParams.set("k", streamIdentity);
   return url.toString();
 }
 

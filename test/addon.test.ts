@@ -26,6 +26,7 @@ import type { SegmentType } from "../src/types.js";
 let server: Server;
 let base = "";
 let amplified = "";
+let rotatingTokens = 0;
 let proxyConfig = "";
 const apiCalls = new Map<string, number>();
 /** Every path the stub was asked for, so a test can prove nothing was fetched. */
@@ -189,6 +190,22 @@ before(async () => {
     }
     if (path === "/hls/movie.mp4" || path === "/blob") {
       return send(response, 200, "NOT-A-PLAYLIST-AT-ALL".padEnd(64, "."), "application/octet-stream");
+    }
+    if (path === "/rotating/manifest.json") {
+      return send(response, 200, JSON.stringify({
+        id: "org.rotating", version: "1.0.0", name: "Rotating", resources: ["stream"],
+        types: ["series"], idPrefixes: ["tt"],
+      }), "application/json");
+    }
+    if (path.startsWith("/rotating/stream/")) {
+      // A fresh token in the path on every request, exactly like a debrid source.
+      rotatingTokens += 1;
+      return send(response, 200, JSON.stringify({
+        streams: [
+          { name: "Comet 2160p", title: "Some.Release.2160p.WEB", url: `/playback/token-${rotatingTokens}` },
+          { name: "Comet 1080p", title: "Some.Release.1080p.WEB", url: `/playback/token-${rotatingTokens}-b` },
+        ],
+      }), "application/json");
     }
     if (path === "/echo") {
       // Answers with what it was asked for, so a forwarded range header is visible.
@@ -474,6 +491,39 @@ test("cuts are warmed for the first sources on a list, and turning that off stop
       assert.equal(scheduled[0], `${base}/hls/master.m3u8`);
     }
   }
+});
+
+test("a cut is keyed on the stream, not on the source's rotating link", async () => {
+  // Comet mints a fresh /playback/<token> for every stream list, so a cut keyed on the
+  // URL is never found again -- which is exactly how a ready cut got missed and the
+  // intro played a second time. The identity that rides on the play URL has to survive.
+  const config = encodeConfig({ src: [`${base}/rotating`], types: ["intro"] as SegmentType[] });
+
+  const first = (await (await call(`/${config}/stream/series/tt0903747:1:1.json`)).json()) as {
+    streams: Array<{ url: string }>;
+  };
+  const second = (await (await call(`/${config}/stream/series/tt0903747:1:1.json`)).json()) as {
+    streams: Array<{ url: string }>;
+  };
+
+  const target = (stream: { url: string }) => new URL(stream.url).searchParams.get("u");
+  const key = (stream: { url: string }) => new URL(stream.url).searchParams.get("k");
+
+  assert.notEqual(target(first.streams[0]!), target(second.streams[0]!), "the source re-minted the link");
+  assert.equal(key(first.streams[0]!), key(second.streams[0]!), "and the cut identity is unchanged");
+  assert.ok(key(first.streams[0]!), "the play URL carries the identity");
+
+  // Two different releases of the same episode are two different cuts.
+  assert.notEqual(key(first.streams[0]!), key(first.streams[1]!));
+
+  // And what the player is handed off the first list is what the second list agrees
+  // with, so the warmed cut is found: the engine's key derives from the identity.
+  const cuts = new CutEngine(testSettings());
+  const windows = [{ type: "intro" as const, startMs: 0, endMs: 30_000 }];
+  assert.equal(
+    cuts.keyFor(target(first.streams[0]!)!, windows, key(first.streams[0]!)),
+    cuts.keyFor(target(second.streams[0]!)!, windows, key(second.streams[0]!)),
+  );
 });
 
 test("the title TheIntroDB has no timings for is passed through untouched", async () => {

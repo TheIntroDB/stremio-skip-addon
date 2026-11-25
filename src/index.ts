@@ -33,7 +33,14 @@ import { ADDON_VERSION, buildManifest } from "./manifest.js";
 import { renderConfigPage } from "./page.js";
 import { handlePlay, handleSegment } from "./play.js";
 import type { AddonConfig } from "./types.js";
-import { fetchStreams, isFetchableByWorker, resolveTarget, sourceLabel, wrapStream } from "./upstream.js";
+import {
+  fetchStreams,
+  isFetchableByWorker,
+  resolveTarget,
+  sourceLabel,
+  streamIdentity,
+  wrapStream,
+} from "./upstream.js";
 import { playUrl } from "./urls.js";
 
 const CONFIG_ROUTE_RE =
@@ -185,7 +192,7 @@ async function handleStreams(
   const streams = cutSummary
     ? upstream.streams.map((stream) =>
         wrapStream(stream, {
-          playUrl: (target) => playUrl(origin, encoded, target, id),
+          playUrl: (target, streamIdentity) => playUrl(origin, encoded, target, id, streamIdentity),
           label,
           cutSummary,
           allowPrivateHosts: settings.ALLOW_PRIVATE_HOSTS === "1",
@@ -235,7 +242,9 @@ function preCut(
     if (scheduled >= limit) break;
     const target = resolveTarget(stream.url, sourceBase);
     if (!target || !isFetchableByWorker(target, settings.ALLOW_PRIVATE_HOSTS === "1")) continue;
-    cuts.schedule(target, windows);
+    // The same identity the play URL carries, so the head start warms the cut the
+    // player will look up.
+    cuts.schedule(target, windows, streamIdentity(stream, sourceBase, target));
     scheduled++;
   }
 }

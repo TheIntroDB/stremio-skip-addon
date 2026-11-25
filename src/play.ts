@@ -62,6 +62,10 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
   const requestUrl = new URL(context.request.url);
   const target = requestUrl.searchParams.get("u");
   const id = requestUrl.searchParams.get("id") ?? "";
+  // The stable identity of the source stream, from the stream list. Without it a cut
+  // is keyed on a URL that a debrid source re-mints, which is how a ready cut used to
+  // be missed on the next playback.
+  const streamKey = requestUrl.searchParams.get("k");
 
   if (!target) return text("Missing u parameter", { status: 400 });
   const blocked = targetRejection(target, context.settings);
@@ -71,7 +75,9 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
   const lookup = id ? await lookupSkipWindows(context.settings, context.config, id) : null;
   const windows = lookup?.windows ?? [];
   const cutKey =
-    windows.length > 0 && context.cuts.enabled ? context.cuts.keyFor(target, windows) : null;
+    windows.length > 0 && context.cuts.enabled
+      ? context.cuts.keyFor(target, windows, streamKey)
+      : null;
 
   // A finished cut is served like any other file. This is the path that makes a
   // debrid `.mkv` skip its intro on every playback after the first.
@@ -93,7 +99,7 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
     // otherwise the player opens the link from its own network and the source answers
     // "this stream link only works on the internet connection that requested it".
     if (looksLikeProgressiveFile(target)) {
-      warmCut(context, target, windows, cutKey);
+      warmCut(context, target, windows, cutKey, streamKey);
       return streamThrough(context.request, target, {
         cacheControl: "no-store",
         timeoutMs: null,
@@ -111,10 +117,10 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
       return redirectTo(target, "range_request");
     }
     if (looksLikeProgressiveFile(target)) {
-      return handleProgressive(context, target, windows, cutKey, "not_hls");
+      return handleProgressive(context, target, windows, cutKey, "not_hls", streamKey);
     }
     if (await cache.match(verdictKey)) {
-      return handleProgressive(context, target, windows, cutKey, "not_a_playlist_cached");
+      return handleProgressive(context, target, windows, cutKey, "not_a_playlist_cached", streamKey);
     }
   }
 
@@ -154,14 +160,14 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
       // A file behind a URL with no extension (a debrid `/playback/<token>`, for
       // instance): the prefix read above already had to come from here, so the rest
       // does too.
-      warmCut(context, target, windows, cutKey);
+      warmCut(context, target, windows, cutKey, streamKey);
       return streamThrough(context.request, target, {
         cacheControl: "no-store",
         timeoutMs: null,
         debug: proxyHeaders("proxied_file", lookup?.reason ?? ""),
       });
     }
-    return handleProgressive(context, target, windows, cutKey, "not_a_playlist");
+    return handleProgressive(context, target, windows, cutKey, "not_a_playlist", streamKey);
   }
 
   if (isMasterPlaylist(sniffed.text)) {
@@ -220,10 +226,11 @@ async function handleProgressive(
   windows: readonly SkipWindow[],
   cutKey: string | null,
   reason: string,
+  streamKey: string | null = null,
 ): Promise<Response> {
   if (!cutKey) return redirectTo(target, reason);
 
-  const state = context.cuts.schedule(target, windows);
+  const state = context.cuts.schedule(target, windows, streamKey);
 
   if (context.settings.cuts === "blocking") {
     const ready = await context.cuts.waitFor(cutKey, context.settings.cutWaitSeconds * 1000);
@@ -244,6 +251,9 @@ function serveCut(
   return serveFile(context.request, filePath, state?.container, {
     "x-tidb-play": "cut_file",
     "x-tidb-cut": "ready",
+    // Which cut was served. Two playbacks of the same release must show the same
+    // key even though the source re-minted its link in between.
+    "x-tidb-cut-key": cutKey,
     "x-tidb-lookup": lookupReason,
     "x-tidb-cuts": describeWindows(windows),
     "x-tidb-cut-bytes": String(state?.bytes ?? ""),
@@ -346,9 +356,10 @@ function warmCut(
   target: string,
   windows: readonly SkipWindow[],
   cutKey: string | null,
+  streamKey: string | null,
 ): void {
   if (!cutKey) return;
-  context.cuts.schedule(target, windows);
+  context.cuts.schedule(target, windows, streamKey);
 }
 
 /** Read a playlist body, sniffing anything whose content type does not say so. */

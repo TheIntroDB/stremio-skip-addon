@@ -96,15 +96,30 @@ export class CutEngine {
     return this.settings.cuts !== "off" && this.available !== false;
   }
 
-  /** Stable identity for one source file + one set of windows. */
-  keyFor(sourceUrl: string, windows: readonly SkipWindow[]): string {
+  /**
+   * Stable identity for one source + one set of windows.
+   *
+   * `streamIdentity` (from the stream list) wins when it is known: a debrid URL
+   * carries a token that is re-minted on every request, so keying on it would miss
+   * the cut that was already made. The URL path is the fallback for a stream that
+   * arrived without one.
+   */
+  keyFor(
+    sourceUrl: string,
+    windows: readonly SkipWindow[],
+    streamIdentity?: string | null,
+  ): string {
     let identity = sourceUrl;
-    try {
-      const url = new URL(sourceUrl);
-      // Query strings are usually rotating debrid tokens: key on the path only.
-      identity = `${url.origin}${url.pathname}`;
-    } catch {
-      // Keep the raw string when it is not a URL.
+    if (streamIdentity) {
+      identity = `stream:${streamIdentity}`;
+    } else {
+      try {
+        const url = new URL(sourceUrl);
+        // Query strings are usually rotating debrid tokens: key on the path only.
+        identity = `${url.origin}${url.pathname}`;
+      } catch {
+        // Keep the raw string when it is not a URL.
+      }
     }
     const shape = windows
       .map((window) => `${window.type}:${window.startMs}:${window.endMs ?? "end"}`)
@@ -117,8 +132,12 @@ export class CutEngine {
   }
 
   /** Queue a cut unless one is already queued, running or ready. */
-  schedule(sourceUrl: string, windows: readonly SkipWindow[]): CutState {
-    const key = this.keyFor(sourceUrl, windows);
+  schedule(
+    sourceUrl: string,
+    windows: readonly SkipWindow[],
+    streamIdentity?: string | null,
+  ): CutState {
+    const key = this.keyFor(sourceUrl, windows, streamIdentity);
     const existing = this.states.get(key);
     if (existing && existing.status !== "failed") return existing;
 

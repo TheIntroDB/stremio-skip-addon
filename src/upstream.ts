@@ -10,6 +10,8 @@
  * second URL is a backup rather than a second catalogue.
  */
 
+import { createHash } from "node:crypto";
+
 import type { AddonConfig, Env, UpstreamStream } from "./types.js";
 
 export interface SourceResult {
@@ -128,10 +130,45 @@ export function sourceLabel(base: string): string {
  * resolves on the user's own machine) are returned untouched: there is no playlist
  * to rewrite and a rewrite would break playback.
  */
+/**
+ * What makes one source stream *that* stream, in a way that survives a re-mint.
+ *
+ * A debrid link is useless as an identity: Comet hands out a fresh
+ * `/playback/<token>` for every stream list, so keying a cut on the URL would find a
+ * different key on every playback and the cut would never be reused. The episode, the
+ * source addon, the release labels and any torrent identity are stable, so those are
+ * what a cut is keyed on.
+ */
+export function streamIdentity(
+  stream: UpstreamStream,
+  sourceBase: string,
+  target: string,
+): string {
+  let host = sourceBase;
+  try {
+    host = new URL(target).host;
+  } catch {
+    // Keep the configured base.
+  }
+  return createHash("sha1")
+    .update(
+      [
+        host,
+        stream.infoHash ?? "",
+        stream.fileIdx === undefined ? "" : String(stream.fileIdx),
+        stream.name ?? "",
+        stream.title ?? "",
+        stream.description ?? "",
+      ].join("|"),
+    )
+    .digest("hex")
+    .slice(0, 16);
+}
+
 export function wrapStream(
   stream: UpstreamStream,
   options: {
-    playUrl: (target: string) => string;
+    playUrl: (target: string, streamIdentity: string) => string;
     label: string;
     cutSummary: string | null;
     allowPrivateHosts: boolean;
@@ -167,7 +204,7 @@ export function wrapStream(
     return wrapped;
   }
 
-  wrapped.url = options.playUrl(target);
+  wrapped.url = options.playUrl(target, streamIdentity(stream, options.sourceBase, target));
   const name = typeof stream.name === "string" ? stream.name.trim() : "";
   wrapped.name = name ? `${name} · TheIntroDB` : options.label;
   if (note) {

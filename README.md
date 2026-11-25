@@ -210,7 +210,8 @@ A progressive file has no segments to drop, so the only way to remove 30 seconds
 
 - The source is probed once (`ffprobe`) for its duration, and the windows are turned into **keep ranges** — the pieces before, between and after them.
 - Each keep range is copied (`ffmpeg -ss <start> -to <end> -c copy`), and the pieces are joined into one file. A copy can only start on a keyframe, so a cut is as precise as the source's keyframe grid (usually under a second to a few seconds).
-- The result is cached on disk, keyed by the file's URL path plus the windows, and **served with `Range` support** — so the second and every later playback of that item is cut, immediately.
+- The result is cached on disk and **served with `Range` support** — so the second and every later playback of that item is cut, immediately.
+- A cut is keyed on the **stream**, not on its URL: the episode, the source host and the release labels. That matters because a debrid source mints a fresh link (`/playback/<token>`, with a new token) for every stream list, so a key made from the URL would never be found again — the cut would be re-made and the intro would play a second time. `x-tidb-cut-key` in the response says which cut was served, and two playbacks of the same release report the same one.
 
 Because the copy takes as long as copying the file takes, the first playback is a question of policy (`CUTS`):
 
@@ -256,6 +257,7 @@ Every `/play` response says what it did, which is the fastest way to see whether
 | `x-tidb-upstream-status` | The status the source answered with, when the bytes were relayed |
 | `x-tidb-seg` | `streamed` on a proxied segment (`/seg`) |
 | `x-tidb-cut` | `ready` when the response is a cut file |
+| `x-tidb-cut-key` | Which cut was served; the same release reports the same key across playbacks |
 | `x-tidb-lookup` | `fresh`, `cache_hit`, `media_not_found`, `episode_not_found`, `missing_api_key`, `rate_limited…`, `request_failed…` |
 | `x-tidb-cuts` | The windows that applied, e.g. `intro 3:48-4:06, credits 57:12-end` |
 | `x-tidb-dropped-segments`, `x-tidb-dropped-ms`, `x-tidb-duration-ms` | What was removed from a playlist, and its length |
