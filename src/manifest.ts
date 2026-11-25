@@ -19,10 +19,11 @@ export const ADDON_LOGO =
 const REPO_URL = "https://github.com/TheIntroDB/stremio-skip-addon";
 
 const DESCRIPTION =
-  "Cuts intro, recap, credits and preview segments out of HLS streams using community " +
-  "timings from TheIntroDB (theintrodb.org). Streams are relayed from the source addon you " +
-  "configure; when TheIntroDB has no timings for an episode, the stream is passed through " +
-  "untouched.";
+  "Removes intro, recap, credits and preview segments from your Stremio streams using " +
+  "community timings from TheIntroDB (theintrodb.org). HLS sources are cut by rewriting " +
+  "their playlists; progressive .mkv/.mp4 sources are remuxed (no re-encode) and served " +
+  "from this server. Streams are relayed from the source addon you configure; when " +
+  "TheIntroDB has no timings for an episode, the stream is passed through untouched.";
 
 export interface ManifestShape {
   id: string;

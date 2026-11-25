@@ -60,10 +60,11 @@ export interface LookupOptions {
 /**
  * Look up the timings for one Stremio id and reduce them to skip windows.
  *
- * An API key is required, not optional: anonymous lookups are rate limited per IP,
- * and every Cloudflare Worker shares Cloudflare's egress addresses, so a deployment
- * without its own key would be limited by everyone else's traffic. Without a key
- * this returns `missing_api_key` and the caller passes streams through untouched.
+ * An API key is required, not optional: anonymous lookups are rate limited per IP, so
+ * a deployment is expected to have one of its own — a shared one would be limited by
+ * strangers' traffic and would look like an addon that silently never cuts anything.
+ * Without a key this returns `missing_api_key` and the caller passes streams through
+ * untouched.
  */
 export async function lookupSkipWindows(
   env: Env,
@@ -71,7 +72,7 @@ export async function lookupSkipWindows(
   stremioId: string,
   options: LookupOptions = {},
 ): Promise<LookupResult> {
-  const cache = options.cache ?? getHttpCache(env);
+  const cache = options.cache ?? getHttpCache();
   const fetchImpl = options.fetchImpl ?? fetch;
 
   const parsed = parseStremioId(stremioId);

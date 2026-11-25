@@ -4,25 +4,35 @@
 /**
  * `/play` -- the endpoint that makes the skip happen.
  *
- * It is handed the origin stream URL, and it answers with one of two things:
+ * It is handed the origin stream URL, and it answers with one of three things:
  *
  * - an HLS playlist with the skip windows removed (masters are rewritten so their
  *   variants come back here, then the variant playlist is spliced);
- * - a `302` to the origin URL, for anything that is not HLS.
+ * - a cut file, for a progressive `.mkv`/`.mp4` whose intro was remuxed out by
+ *   `cut.ts` (see there: the first playback warms it, later ones are cut);
+ * - a `302` to the origin URL, for anything that cannot be cut, or while a cut is
+ *   still being prepared.
  *
- * A progressive `.mkv`/`.mp4` cannot be cut in a Worker -- there is no transcoder
- * and no way to splice the container -- so those always take the redirect. That is
- * the honest boundary of a manifest-only implementation, and it is why the README
- * says the addon helps HLS sources only.
+ * Nothing here re-encodes: HLS is cut by dropping segments, a progressive file by
+ * copying the ranges that survive.
  */
 
-import { describeWindows } from "./format.js";
 import { getHttpCache } from "./cache.js";
-import { isMasterPlaylist, isPlaylist, rewriteMasterPlaylist, spliceMediaPlaylist, type UriRewriters } from "./hls.js";
+import type { CutEngine } from "./cut.js";
+import type { Settings } from "./env.js";
+import { serveFile } from "./files.js";
+import { describeWindows } from "./format.js";
+import {
+  isMasterPlaylist,
+  isPlaylist,
+  rewriteMasterPlaylist,
+  spliceMediaPlaylist,
+  type UriRewriters,
+} from "./hls.js";
 import { playlist, redirectTo, text } from "./http.js";
 import { lookupSkipWindows } from "./introdb.js";
 import { isPrivateHost } from "./upstream.js";
-import type { AddonConfig, Env } from "./types.js";
+import type { AddonConfig, SkipWindow } from "./types.js";
 import { playUrl, segmentUrl } from "./urls.js";
 
 /** Playlists are text and small; anything bigger is not a playlist. */
@@ -41,7 +51,8 @@ const MEDIA_EXTENSIONS = [
 
 export interface PlayContext {
   request: Request;
-  env: Env;
+  settings: Settings;
+  cuts: CutEngine;
   config: AddonConfig;
   encodedConfig: string;
   origin: string;
@@ -53,33 +64,46 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
   const id = requestUrl.searchParams.get("id") ?? "";
 
   if (!target) return text("Missing u parameter", { status: 400 });
-  const blocked = targetRejection(target, context.env);
+  const blocked = targetRejection(target, context.settings);
   if (blocked) return text(blocked, { status: 400 });
 
-  // The player asked for a byte range of a file it already knows, or a HEAD probe:
-  // nothing to rewrite, hand it straight to the origin. A progressive file is
-  // range-requested on every seek, so this shortcut is what keeps a source that
-  // cannot be cut from costing a relayed request per seek.
+  // The timings decide whether anything can be cut, so they come first.
+  const lookup = id ? await lookupSkipWindows(context.settings, context.config, id) : null;
+  const windows = lookup?.windows ?? [];
+  const cutKey =
+    windows.length > 0 && context.cuts.enabled ? context.cuts.keyFor(target, windows) : null;
+
+  // A finished cut is served like any other file. This is the path that makes a
+  // debrid `.mkv` skip its intro on every playback after the first.
+  if (cutKey) {
+    const ready = await context.cuts.ready(cutKey);
+    if (ready) {
+      return serveCut(context, ready, cutKey, windows, lookup?.reason ?? "");
+    }
+  }
+
+  // A HEAD probe, or a byte range the player already knows it wants: nothing to
+  // rewrite. A playlist is never range-requested in practice, and a progressive
+  // file is range-requested on every seek.
   if (context.request.method === "HEAD" || requestUrl.searchParams.has("whole")) {
     return redirectTo(target, "pass_through");
   }
-  if (context.request.headers.has("range")) {
+  if (context.request.headers.has("range") && !cutKey) {
     return redirectTo(target, "range_request");
   }
-  if (looksLikeProgressiveFile(target)) {
-    return redirectTo(target, "not_hls");
-  }
 
-  // A target already known not to be a playlist is not sniffed again.
-  const httpCache = getHttpCache(context.env);
+  const cache = getHttpCache();
   const verdictKey = `play:verdict:${target}`;
-  if (await httpCache.match(verdictKey)) {
-    return redirectTo(target, "not_a_playlist_cached");
+
+  if (looksLikeProgressiveFile(target)) {
+    return handleProgressive(context, target, windows, cutKey, "not_hls");
+  }
+  if (await cache.match(verdictKey)) {
+    return handleProgressive(context, target, windows, cutKey, "not_a_playlist_cached");
   }
 
   const rewriters: UriRewriters = {
-    playlistUri: (absoluteUri) =>
-      playUrl(context.origin, context.encodedConfig, absoluteUri, id),
+    playlistUri: (absoluteUri) => playUrl(context.origin, context.encodedConfig, absoluteUri, id),
     resourceUri: (absoluteUri) =>
       context.config.proxy
         ? segmentUrl(context.origin, context.encodedConfig, absoluteUri)
@@ -105,12 +129,12 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
   const sniffed = await readPlaylist(upstream, target, contentType);
 
   if (sniffed === null || !isPlaylist(sniffed.text)) {
-    await httpCache.put(
+    await cache.put(
       verdictKey,
       { status: 302, body: "not_a_playlist", contentType: "text/plain" },
       NOT_PLAYLIST_TTL_SECONDS,
     );
-    return redirectTo(target, "not_a_playlist");
+    return handleProgressive(context, target, windows, cutKey, "not_a_playlist");
   }
 
   if (isMasterPlaylist(sniffed.text)) {
@@ -118,10 +142,9 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
     return playlist(rewritten, { "x-tidb-play": "master" }, 60);
   }
 
-  const lookup = await lookupSkipWindows(context.env, context.config, id);
   const spliced = spliceMediaPlaylist(sniffed.text, {
     baseUrl: target,
-    windows: lookup.windows,
+    windows,
     rewriters,
     forceRewrite: context.config.proxy === true,
   });
@@ -131,24 +154,24 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
   if (spliced.degenerate) {
     // Every segment overlapped a window: serving an empty playlist would break
     // playback, so pass the original through and say so in the headers.
-    return playlistFor(target, sniffed.text, {
+    return playlistFor(sniffed.text, {
       "x-tidb-play": "degenerate_windows",
-      "x-tidb-lookup": lookup.reason,
+      "x-tidb-lookup": lookup?.reason ?? "",
     });
   }
 
   if (!spliced.changed) {
-    return playlistFor(target, sniffed.text, {
+    return playlistFor(sniffed.text, {
       "x-tidb-play": context.config.proxy ? "rewritten_uris" : "unchanged",
-      "x-tidb-lookup": lookup.reason,
+      "x-tidb-lookup": lookup?.reason ?? "",
       "x-tidb-windows": String(spliced.windows.length),
       "x-tidb-cuts": describeWindows(spliced.windows),
     });
   }
 
-  return playlistFor(target, spliced.text, {
+  return playlistFor(spliced.text, {
     "x-tidb-play": "spliced",
-    "x-tidb-lookup": lookup.reason,
+    "x-tidb-lookup": lookup?.reason ?? "",
     "x-tidb-windows": String(spliced.windows.length),
     "x-tidb-cuts": describeWindows(spliced.windows),
     "x-tidb-dropped-segments": String(spliced.droppedSegments),
@@ -158,18 +181,59 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
 }
 
 /**
+ * A file with no playlist to rewrite: get it cut, and serve it once it is.
+ *
+ * In `on` mode the first playback is handed to the origin and the remux runs in
+ * the background, so nothing blocks; `blocking` holds the request (bounded by
+ * CUT_WAIT_SECONDS) and falls back the same way.
+ */
+async function handleProgressive(
+  context: PlayContext,
+  target: string,
+  windows: readonly SkipWindow[],
+  cutKey: string | null,
+  reason: string,
+): Promise<Response> {
+  if (!cutKey) return redirectTo(target, reason);
+
+  const state = context.cuts.schedule(target, windows);
+
+  if (context.settings.cuts === "blocking") {
+    const ready = await context.cuts.waitFor(cutKey, context.settings.cutWaitSeconds * 1000);
+    if (ready) return serveCut(context, ready, cutKey, windows, "cut_ready");
+  }
+
+  return redirectTo(target, `cut_${state.status}`);
+}
+
+function serveCut(
+  context: PlayContext,
+  filePath: string,
+  cutKey: string,
+  windows: readonly SkipWindow[],
+  lookupReason: string,
+): Promise<Response> {
+  const state = context.cuts.state(cutKey);
+  return serveFile(context.request, filePath, state?.container, {
+    "x-tidb-play": "cut_file",
+    "x-tidb-cut": "ready",
+    "x-tidb-lookup": lookupReason,
+    "x-tidb-cuts": describeWindows(windows),
+    "x-tidb-cut-bytes": String(state?.bytes ?? ""),
+  });
+}
+
+/**
  * `/seg` -- optional passthrough for the media resources of a playlist.
  *
  * Used only when the config asks for it (a source that needs the same headers or
- * cookies for every segment). Real-Debrid-style links are bound to the IP that
- * generated them, so proxying segments moves the request to a Cloudflare egress
- * address and can be refused -- which is why this is opt-in.
+ * cookies for every segment).
  */
 export async function handleSegment(context: PlayContext): Promise<Response> {
   const requestUrl = new URL(context.request.url);
   const target = requestUrl.searchParams.get("u");
   if (!target) return text("Missing u parameter", { status: 400 });
-  const blocked = targetRejection(target, context.env);
+  const blocked = targetRejection(target, context.settings);
   if (blocked) return text(blocked, { status: 400 });
 
   const headers: Record<string, string> = {};
@@ -203,7 +267,7 @@ export async function handleSegment(context: PlayContext): Promise<Response> {
     const value = upstream.headers.get(name);
     if (value) passthrough.set(name, value);
   }
-  // Only relay the length when the body is not re-encoded by the edge.
+  // Only relay the length when the body is not re-encoded in between.
   if (!upstream.headers.get("content-encoding")) {
     const length = upstream.headers.get("content-length");
     if (length) passthrough.set("content-length", length);
@@ -221,7 +285,8 @@ async function readPlaylist(
   if (!response.body) return null;
 
   const declared =
-    /mpegurl/i.test(contentType) || /\.m3u8?(\?|$)/i.test(new URL(target).pathname + new URL(target).search);
+    /mpegurl/i.test(contentType) ||
+    /\.m3u8?(\?|$)/i.test(new URL(target).pathname + new URL(target).search);
 
   if (declared) {
     const body = await readCapped(response, MAX_PLAYLIST_BYTES);
@@ -297,11 +362,7 @@ function forwardedHeaders(request: Request): Record<string, string> {
   return headers;
 }
 
-function playlistFor(
-  target: string,
-  body: string,
-  debugHeaders: Record<string, string>,
-): Response {
+function playlistFor(body: string, debugHeaders: Record<string, string>): Response {
   return playlist(body, debugHeaders);
 }
 
@@ -315,7 +376,7 @@ function looksLikeProgressiveFile(target: string): boolean {
 }
 
 /** Null when the URL may be fetched, otherwise the reason to refuse it. */
-export function targetRejection(target: string, env: Env): string | null {
+export function targetRejection(target: string, env: Settings): string | null {
   let url: URL;
   try {
     url = new URL(target);

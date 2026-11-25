@@ -15,8 +15,10 @@ export interface PageOptions {
   origin: string;
   siteUrl: string;
   serverKeyConfigured: boolean;
-  /** Served over plain http on a local address: installation from another device will not work. */
+  /** Served over plain http on a local address. */
   insecure: boolean;
+  /** What /health reports about the cut cache and ffmpeg. */
+  cuts: Record<string, unknown>;
 }
 
 const REPO = "https://github.com/TheIntroDB/stremio-skip-addon";
@@ -29,6 +31,7 @@ export function renderConfigPage(options: PageOptions): string {
     version: ADDON_VERSION,
     repo: REPO,
     insecure: options.insecure,
+    cuts: options.cuts,
   }).replace(/</g, "\\u003c");
 
   return `<!doctype html>
@@ -129,7 +132,7 @@ export function renderConfigPage(options: PageOptions): string {
     <img src="https://raw.githubusercontent.com/TheIntroDB/theintrodb-assets/main/badge.png" alt="TheIntroDB">
     <div>
       <h1>TheIntroDB Skip</h1>
-      <p class="sub">A self-hosted Stremio addon that cuts intros, recaps, credits and previews out of HLS streams, using community timings from <a href="https://theintrodb.org">TheIntroDB</a>.</p>
+      <p class="sub">A self-hosted Stremio addon that removes intros, recaps, credits and previews from your streams, using community timings from <a href="https://theintrodb.org">TheIntroDB</a>.</p>
     </div>
   </header>
 
@@ -155,13 +158,13 @@ export function renderConfigPage(options: PageOptions): string {
 
     <div class="field">
       <label for="key">TheIntroDB API key <span class="badge">required</span></label>
-      <input type="password" id="key" spellcheck="false" autocomplete="off" placeholder="set TIDB_API_KEY as a Worker secret, or paste a key here">
+      <input type="password" id="key" spellcheck="false" autocomplete="off" placeholder="set TIDB_API_KEY in the environment, or paste a key here">
       <p class="hint" id="key-hint"></p>
     </div>
 
     <div class="field">
       <label class="check" style="max-width:420px"><input type="checkbox" id="proxy"> Proxy HLS segments through this Worker</label>
-      <p class="hint">Off by default: only playlists pass through the Worker, and segment URLs are handed to the player as-is. Turn this on if your source needs the same headers or cookies for every segment. Debrid links are usually bound to the requesting IP, and a Cloudflare Worker is not your IP, so proxying can be refused by the source.</p>
+      <p class="hint">Off by default: only playlists pass through this service, and segment URLs are handed to the player as-is. Turn this on if your source needs the same headers or cookies for every segment. Debrid links are usually bound to the requesting IP, so a relay from another IP can be refused by the source.</p>
     </div>
 
     <div class="field">
@@ -189,22 +192,33 @@ export function renderConfigPage(options: PageOptions): string {
   <section>
     <h2>How it works</h2>
     <ul>
-      <li>Stremio asks this Worker for streams. It asks your source addon and returns what it finds.</li>
+      <li>Stremio asks this service for streams. It asks your source addon and returns what it finds.</li>
       <li>For the title being played, timings are read from TheIntroDB (<span class="mono">/v4/media</span>) by IMDb id, plus season and episode.</li>
-      <li>When TheIntroDB has timings, the stream is offered back through <span class="mono">/play</span>: the playlists are fetched, the segments covering those ranges are dropped, and <span class="mono">#EXT-X-DISCONTINUITY</span> marks the jump.</li>
-      <li>When it has none — or the source is not HLS — the stream is passed through untouched.</li>
-      <li>No video data is relayed unless you turn on segment proxying, so playback does not spend Worker requests or bandwidth by default.</li>
+      <li><b>HLS sources</b> (an <span class="mono">.m3u8</span>): the playlists are fetched, the segments covering those ranges are dropped and <span class="mono">#EXT-X-DISCONTINUITY</span> marks the jump. No video passes through this service at all.</li>
+      <li><b>Progressive sources</b> (a debrid <span class="mono">.mkv</span>/<span class="mono">.mp4</span>): the ranges that survive are copied into a new file with ffmpeg (<span class="mono">-c copy</span>, no re-encode) and cached on this server, which then serves it with range support. That cut is prepared in the background, so the <i>first</i> playback of an item may still show the intro — every playback after that is cut.</li>
+      <li>When TheIntroDB has no timings — or the source cannot be cut — the stream is passed through untouched.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>This instance</h2>
+    <ul>
+      <li>Cuts: <span class="mono" id="cuts-mode"></span></li>
+      <li>Cut cache: <span class="mono" id="cuts-cache"></span></li>
+      <li>ffmpeg: <span class="mono" id="cuts-ffmpeg"></span></li>
+      <li>Reading timings from <span class="mono" id="api"></span> — instance <span class="mono" id="origin"></span></li>
     </ul>
   </section>
 
   <section>
     <h2>Know before you install</h2>
     <ul>
-      <li>Cuts are segment-aligned. HLS segments are 2-10 seconds long, and nothing is re-encoded, so the cut lands on a boundary: expect the intro to be gone and up to one segment of adjacent footage with it.</li>
-      <li>Only HLS sources can be cut. A direct <span class="mono">.mkv</span> or <span class="mono">.mp4</span> is played from the source itself, untouched — a Worker cannot remux it.</li>
+      <li>Cuts land on a keyframe for a progressive file and on a segment boundary for HLS. Nothing is ever re-encoded, so a cut can take up to a second or two of the adjacent footage with it.</li>
+      <li>Progressive cuts are served from this server, so a 6 GB episode costs 6 GB of its bandwidth (and disk) on the first playback. Set <span class="mono">CUTS=off</span> to relay only HLS and never touch video.</li>
+      <li>The cut cache is per file, and evicted oldest-first once <span class="mono">CACHE_MAX_GB</span> is reached.</li>
+      <li>Sources that need custom headers are not relayed, and a source that is a torrent (<span class="mono">infoHash</span>) has no URL to cut — both are passed through.</li>
       <li>Timings come from TheIntroDB only. There is no chapter detection and no second skip database.</li>
-      <li>Series numbering is the default order. If your library follows another order (streaming rips, absolute-numbered anime), the wrong episode's timings can apply and there is no way to know from a Stremio stream request.</li>
-      <li>This deployment: <span class="mono" id="origin"></span></li>
+      <li>Series numbering is the default order. If your library follows another order (streaming rips, absolute-numbered anime), the wrong episode's timings can apply.</li>
     </ul>
   </section>
 
@@ -247,7 +261,7 @@ export function renderConfigPage(options: PageOptions): string {
     }
     var key = document.getElementById("key").value.trim();
     if (!key && !data.serverKeyConfigured) {
-      return showError("This Worker has no TheIntroDB API key. Set TIDB_API_KEY as a Worker secret (npx wrangler secret put TIDB_API_KEY), or paste a key above.");
+      return showError("This service has no TheIntroDB API key. Set TIDB_API_KEY in its environment, or paste a key above.");
     }
     var types = SEGMENTS.filter(function (type) {
       return document.getElementById("type-" + type).checked;
@@ -276,15 +290,27 @@ export function renderConfigPage(options: PageOptions): string {
   });
 
   document.getElementById("origin").textContent = data.origin;
+  document.getElementById("api").textContent = data.cuts.api;
   document.getElementById("version").textContent = "v" + data.version;
+
+  var cuts = data.cuts;
+  document.getElementById("cuts-mode").textContent =
+    cuts.cuts === "off" ? "off — progressive files are passed through" : cuts.cuts;
+  document.getElementById("cuts-cache").textContent =
+    cuts.cuts === "off"
+      ? "disabled"
+      : cuts.cacheDir + " (max " + cuts.cacheMaxGb + " GB, " + cuts.cutConcurrency + " at a time)";
+  document.getElementById("cuts-ffmpeg").textContent =
+    cuts.available === true ? "available" : cuts.available === false ? "NOT available — cuts cannot run" : "unknown";
+
   var keyHint = document.getElementById("key-hint");
   if (data.serverKeyConfigured) {
-    keyHint.textContent = "This Worker already has a key configured as a secret, so you can leave this empty. A key pasted here is embedded in your install link and stored by Stremio.";
+    keyHint.textContent = "This service already has a key in its environment, so you can leave this empty. A key pasted here is embedded in your install link and stored by Stremio.";
   } else {
-    keyHint.textContent = "This Worker has no key yet, and TheIntroDB lookups need one: anonymous lookups are limited per IP and every Worker shares Cloudflare's addresses. Set TIDB_API_KEY as a Worker secret (npx wrangler secret put TIDB_API_KEY), or paste a key here.";
+    keyHint.textContent = "This service has no key yet, and TheIntroDB lookups need one: anonymous lookups are limited per IP. Set TIDB_API_KEY in the environment, or paste a key here.";
   }
   if (data.insecure) {
-    showError("This instance is served over plain http on a local address; Stremio will only install a worker it can reach.");
+    showError("This instance is served over plain http on a local address; Stremio will only install a server it can reach.");
   }
 }());
 </script>

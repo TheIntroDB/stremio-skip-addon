@@ -2,7 +2,7 @@
   "name": "stremio-skip-addon",
   "version": "1.0.0",
   "private": true,
-  "description": "A self-hosted Stremio stream addon that cuts intro, recap, credits and preview segments out of HLS streams using TheIntroDB timings.",
+  "description": "A self-hosted Stremio addon that removes intro, recap, credits and preview segments from your streams using TheIntroDB timings: it splices HLS playlists and remuxes progressive files.",
   "license": "GPL-3.0-or-later",
   "author": "TheIntroDB",
   "repository": {
@@ -11,27 +11,19 @@
   },
   "type": "module",
   "engines": {
-    "node": ">=22.12.0"
+    "node": ">=22"
   },
   "scripts": {
-    "deploy": "wrangler deploy",
-    "dev": "wrangler dev",
-    "start": "wrangler dev",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/server.js",
+    "dev": "tsx watch src/server.ts",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/*.test.ts",
     "check": "npm run typecheck && npm test"
   },
-  "cloudflare": {
-    "bindings": {
-      "TIDB_API_KEY": {
-        "description": "**Required.** Your [TheIntroDB API key](https://theintrodb.org/docs). Anonymous lookups are rate limited per IP, and every Worker shares Cloudflare's egress addresses, so the addon refuses to look anything up without a key of its own."
-      }
-    }
-  },
   "devDependencies": {
     "@types/node": "^22.10.2",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2",
-    "wrangler": "^4.168.0"
+    "typescript": "^5.7.2"
   }
 }

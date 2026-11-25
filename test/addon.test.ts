@@ -16,8 +16,10 @@ import { after, before, beforeEach, test } from "node:test";
 import { resetMemoryCache } from "../src/cache.js";
 import { encodeConfig } from "../src/config.js";
 import { INTRODB_API_BASE } from "../src/constants.js";
+import { CutEngine } from "../src/cut.js";
+import type { Settings } from "../src/env.js";
 import { handleRequest } from "../src/index.js";
-import type { Env, SegmentType } from "../src/types.js";
+import type { SegmentType } from "../src/types.js";
 
 let server: Server;
 let base = "";
@@ -228,15 +230,30 @@ beforeEach(() => {
   hits.clear();
 });
 
-const testEnv = (overrides: Partial<Env> = {}): Env => ({
-  TIDB_API_KEY: "test-key",
-  ALLOW_PRIVATE_HOSTS: "1",
-  CACHE_MODE: "memory",
-  ...overrides,
-});
+function testSettings(overrides: Partial<Settings> = {}): Settings {
+  return {
+    TIDB_API_KEY: "test-key",
+    ALLOW_PRIVATE_HOSTS: "1",
+    port: 0,
+    cacheDir: "./.test-cache",
+    cacheMaxBytes: 0,
+    // Off by default: these tests are about the playlist and relay paths. The cut
+    // engine has its own suite, which runs real ffmpeg.
+    cuts: "off",
+    cutWaitSeconds: 0,
+    cutConcurrency: 1,
+    ffmpegPath: "ffmpeg",
+    ffprobePath: "ffprobe",
+    ...overrides,
+  };
+}
 
-async function call(path: string, env: Env = testEnv(), init?: RequestInit): Promise<Response> {
-  return handleRequest(new Request(`https://worker.example${path}`, init), env);
+async function call(
+  path: string,
+  settings: Settings = testSettings(),
+  init?: RequestInit,
+): Promise<Response> {
+  return handleRequest(new Request(`https://worker.example${path}`, init), settings, new CutEngine(settings));
 }
 
 function playPath(target: string, id: string, encoded = amplified): string {
@@ -261,18 +278,19 @@ test("the Worker serves a config page, a health check and a bare manifest", asyn
 
   const health = await call("/health");
   assert.equal(health.status, 200);
-  assert.deepEqual(await health.json(), {
-    status: "ok",
-    name: "TheIntroDB Skip",
-    version: "1.0.0",
-    api: "https://api.theintrodb.org/v4/media",
-    site: "https://theintrodb.org",
-    apiKeyConfigured: true,
-  });
+  const healthBody = (await health.json()) as Record<string, unknown>;
+  assert.equal(healthBody.status, "ok");
+  assert.equal(healthBody.name, "TheIntroDB Skip");
+  assert.equal(healthBody.version, "1.0.0");
+  assert.equal(healthBody.api, "https://api.theintrodb.org/v4/media");
+  assert.equal(healthBody.site, "https://theintrodb.org");
+  assert.equal(healthBody.apiKeyConfigured, true);
+  assert.equal(healthBody.cuts, "off");
+  assert.ok(healthBody.cutsStatus);
 
   // The page knows whether this deployment has a key, and says so.
   assert.ok(body.includes('"serverKeyConfigured":true'));
-  const keylessPage = await call("/", testEnv({ TIDB_API_KEY: "" }));
+  const keylessPage = await call("/", testSettings({ TIDB_API_KEY: "" }));
   assert.ok((await keylessPage.text()).includes('"serverKeyConfigured":false'));
 
   const bare = await call("/manifest.json");
@@ -507,7 +525,7 @@ test("a target that is not a playlist is sniffed once, then remembered", async (
 });
 
 test("a range request goes straight to the origin, without a sniff", async () => {
-  const response = await call(playPath(`${base}/hls/media.m3u8`, "tt0903747:1:1"), testEnv(), {
+  const response = await call(playPath(`${base}/hls/media.m3u8`, "tt0903747:1:1"), testSettings(), {
     headers: { range: "bytes=0-1023" },
   });
   assert.equal(response.status, 302);
@@ -531,7 +549,7 @@ test("with segment proxying on, the segments point at the Worker", async () => {
 });
 
 test("a private target is refused unless the deployment allows it", async () => {
-  const strict = testEnv({ ALLOW_PRIVATE_HOSTS: "" });
+  const strict = testSettings({ ALLOW_PRIVATE_HOSTS: "" });
   const refused = await call(playPath("http://192.168.1.10/secret.m3u8", "tt0903747:1:1"), strict);
   assert.equal(refused.status, 400);
   assert.match(await refused.text(), /private address/);
@@ -542,12 +560,12 @@ test("a private target is refused unless the deployment allows it", async () => 
   );
   assert.equal(refusedSeg.status, 400);
 
-  const allowed = await call(playPath(`${base}/hls/media.m3u8`, "tt0903747:1:1"), testEnv());
+  const allowed = await call(playPath(`${base}/hls/media.m3u8`, "tt0903747:1:1"), testSettings());
   assert.equal(allowed.status, 200);
 });
 
 test("a deployment with no API key refuses to look anything up", async () => {
-  const keyless = testEnv({ TIDB_API_KEY: "" });
+  const keyless = testSettings({ TIDB_API_KEY: "" });
 
   const refused = await call(`/${amplified}/stream/series/tt0903747:1:1.json`, keyless);
   assert.equal(refused.status, 403);
@@ -596,7 +614,7 @@ test("a bare manifest and an unconfigured stream request behave predictably", as
 });
 
 test("OPTIONS is answered for cross-origin players", async () => {
-  const response = await call(`/${amplified}/manifest.json`, testEnv(), { method: "OPTIONS" });
+  const response = await call(`/${amplified}/manifest.json`, testSettings(), { method: "OPTIONS" });
   assert.equal(response.status, 204);
   assert.equal(response.headers.get("access-control-allow-origin"), "*");
 });

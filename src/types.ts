@@ -5,8 +5,9 @@
  * Shared types for the addon.
  *
  * The addon is deliberately narrow: it is a Stremio `stream` addon that relays
- * streams from whichever source addon the user configured, and rewrites the
- * HLS playlists of those streams using timings from TheIntroDB.
+ * streams from whichever source addon the user configured, then removes segments
+ * from those streams using timings from TheIntroDB -- by splicing HLS playlists,
+ * or by remuxing a progressive file.
  */
 
 /** The four segment kinds TheIntroDB serves. */
@@ -35,25 +36,23 @@ export interface AddonConfig {
   src: string[];
   /** Segment kinds to cut. Never guessed: whatever the config says, no more. */
   types: SegmentType[];
-  /** Optional per-config TheIntroDB API key. The Worker secret is preferred. */
+  /** Optional per-config TheIntroDB API key. The deployment's own key is preferred. */
   key?: string;
-  /** Route HLS segments (and keys/init segments) through this Worker too. */
+  /** Route HLS segments (and keys/init segments) through this service too. */
   proxy?: boolean;
   /** Overrides the addon name shown in Stremio. */
   name?: string;
 }
 
-/** Bindings and vars this Worker reads. See `wrangler.jsonc`. */
+/** Environment variables this service reads. See `.env.example`. */
 export interface Env {
-  /** Deployment-wide TheIntroDB API key. */
+  /** TheIntroDB API key. Required; without it no lookups happen. */
   TIDB_API_KEY?: string;
   /**
-   * Development escape hatch: allow fetching private/loopback hosts.
-   * Leave unset in production, it turns the playlist relay into an SSRF hole.
+   * Development escape hatch: allow fetching private/loopback hosts, so a source
+   * addon on the same machine can be used. Leave unset in production.
    */
   ALLOW_PRIVATE_HOSTS?: string;
-  /** Development/test override: use an in-process cache instead of the edge cache. */
-  CACHE_MODE?: string;
 }
 
 /** One stream as returned by the source addon (the fields we care about). */

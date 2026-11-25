@@ -1,7 +1,8 @@
 <img align="right" width="88" src="https://raw.githubusercontent.com/TheIntroDB/.github/main/integrations/stremio.png" alt="Stremio">
 
 [![License](https://img.shields.io/github/license/TheIntroDB/stremio-skip-addon?style=flat-square&logo=gnu&logoColor=4ade80&label=License&labelColor=0d0d0d&color=038939)](https://github.com/TheIntroDB/stremio-skip-addon/blob/main/LICENSE)
-[![Deploy to Cloudflare](https://img.shields.io/badge/Deploy%20to-Cloudflare-F38020?style=flat-square&logo=cloudflare&logoColor=4ade80&labelColor=0d0d0d)](https://deploy.workers.cloudflare.com/?url=https://github.com/TheIntroDB/stremio-skip-addon)
+[![Node](https://img.shields.io/badge/Node-22-038939?style=flat-square&logo=nodedotjs&logoColor=4ade80&labelColor=0d0d0d)](https://nodejs.org)
+[![FFmpeg](https://img.shields.io/badge/ffmpeg-7-038939?style=flat-square&logo=ffmpeg&logoColor=4ade80&labelColor=0d0d0d)](https://ffmpeg.org)
 
 [![Stars](https://img.shields.io/github/stars/TheIntroDB/stremio-skip-addon?style=flat-square&logo=github&logoColor=4ade80&label=Stars&labelColor=0d0d0d&color=038939)](https://github.com/TheIntroDB/stremio-skip-addon/stargazers)
 [![Issues](https://img.shields.io/github/issues/TheIntroDB/stremio-skip-addon?style=flat-square&logo=github&logoColor=4ade80&label=Issues&labelColor=0d0d0d&color=038939)](https://github.com/TheIntroDB/stremio-skip-addon/issues)
@@ -12,7 +13,9 @@
 
 ---
 
-A Stremio stream addon you deploy to your own Cloudflare Worker. Stremio has no skip API for addons, so this addon does the only thing that works without one: it removes the segments from the HLS playlists before the player ever sees them, using timings from **[TheIntroDB](https://theintrodb.org)**.
+A Stremio addon you run yourself that removes intros, recaps, credits and previews from your streams, using timings from **[TheIntroDB](https://theintrodb.org)**.
+
+Stremio has no skip API for addons, so this addon does the only thing that works without one: it takes the stream **before** the player sees it and removes the parts you asked it to remove — by dropping HLS segments, or by remuxing a progressive file. Nothing is re-encoded, so the video itself is untouched.
 
 Intros, recaps, credits and previews are gone from the timeline, on every platform, with nothing to press.
 
@@ -20,55 +23,119 @@ Intros, recaps, credits and previews are gone from the timeline, on every platfo
 
 ---
 
-## Deploy your own
+## Run your own
 
-Nobody hosts this for you: the addon runs on your Cloudflare account, on the free plan.
+Nobody hosts this for you. It is a small Node service that relays streams from a source addon you already have, so you run it where your bandwidth is: a Railway project, a VPS, a NAS, or Docker anywhere.
 
-### Option A: the button
+You need three things: **Node 22** (or Docker), **ffmpeg** on the host (only used to cut progressive files), and a **TheIntroDB API key**.
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/TheIntroDB/stremio-skip-addon)
+### Option A — Railway (recommended)
 
-Cloudflare clones the repository into your GitHub account, builds it with Workers Builds and deploys it. It will ask for one secret, `TIDB_API_KEY`, which is **required** — see [API key](#api-key) below.
+Railway runs the Dockerfile in this repository, gives you a public HTTPS domain, and keeps the cut cache on a volume. Two ways in:
 
-> **The button needs a public repository** — a Cloudflare limitation, not a setting: *"Repositories must be public in order for others to successfully use your Deploy to Cloudflare button."* While this repository is private, use Option B; making it public is what a shareable button needs anyway.
+**From the dashboard:** *New Project → Deploy from GitHub repo* → pick this repository. This works with the repository private, as long as you have access to it. Then:
 
-### Option B: from a clone
+- **Variables** → add `TIDB_API_KEY` (required, see [API key](#api-key)) and `CUTS=on`.
+- **Volumes** → add a volume mounted at `/cache`, sized for a few films' worth of cuts (see [Disk](#disk)).
+
+**From the CLI:**
+
+```bash
+npm i -g @railway/cli
+railway login
+railway init                                  # or: railway link
+railway up
+railway variable set TIDB_API_KEY=<your key>
+railway domain                                # prints your public URL
+```
+
+> **A "Deploy on Railway" button needs a published template.** Railway's button points at a *template code* (`https://railway.com/new/template/<code>`), not at a repository, so the owner of this project has to publish this repo as a template once from their own Railway account (dashboard: the project → *Share* → publish as template). After that the badge for this repository is:
+>
+> ```md
+> [![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/<template-code>)
+> ```
+>
+> `railway.json` in this repository is already written for it: Dockerfile build, `/health` healthcheck, restart on failure.
+
+### Option B — Docker
+
+```bash
+docker run -d --name tidb-skip \
+  -p 8787:8787 \
+  -e TIDB_API_KEY=<your key> \
+  -e CUTS=on \
+  -v tidb-cut-cache:/cache \
+  ghcr.io/theintrodb/stremio-skip-addon:latest
+```
+
+Or a compose file, which is what most people want on a NAS:
+
+```yaml
+services:
+  tidb-skip:
+    image: ghcr.io/theintrodb/stremio-skip-addon:latest
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      TIDB_API_KEY: "<your key>"
+      CUTS: "on"          # on | blocking | off
+      CACHE_MAX_GB: "50"
+    volumes:
+      - ./cache:/cache    # the cut cache: give it real disk
+```
+
+The image already contains ffmpeg. If you build it yourself: `docker build -t tidb-skip .` (it compiles TypeScript in a first stage and ships only `dist/` plus ffmpeg).
+
+> Mount the cache as a directory you own. The image runs as the `node` user, so a root-owned bind mount will not be writable — `docker run --user "$(id -u):$(id -g)"` fixes that, or let Docker manage the volume as above.
+
+### Option C — from a clone
 
 ```bash
 git clone https://github.com/TheIntroDB/stremio-skip-addon.git
 cd stremio-skip-addon
-npm install
-npx wrangler login
-npx wrangler secret put TIDB_API_KEY   # required, see below
-npx wrangler deploy
+npm ci
+npm run build
+TIDB_API_KEY=<your key> CUTS=on node dist/server.js
 ```
 
-That prints your Worker URL, for example `https://tidb-stremio-skip.<your-subdomain>.workers.dev`.
+It listens on `:8787` and prints its own configuration on boot, including whether ffmpeg was found:
+
+```
+TheIntroDB Stremio addon v1.0.0
+  listening      http://localhost:8787
+  config page    http://localhost:8787/
+  api key        configured
+  cuts           on (./cache, max 50 GB, 2 at a time)
+  ffmpeg         ffmpeg version 7.1.5-0+deb13u1 -> ./cache
+```
+
+Put it behind HTTPS before you install it in Stremio. Stremio fetches the manifest from wherever the URL points, and a plain-HTTP address only works if the player is on the same machine.
 
 ---
 
 ## Configure and install
 
-Open the Worker URL in a browser. The page builds your install link:
+Open your deployment's URL in a browser. The page builds your install link:
 
 1. **Paste your stream addon URL** — AIOStreams, Torrentio, Comet, MediaFusion, anything that serves Stremio streams (the `manifest.json` URL). One per line; they are tried in order and the first that answers with streams is used, so a second URL is a fallback.
 2. **Pick the segments to cut.** Intro, recap and credits are on; previews are off. Credits and previews run to the end of the file when TheIntroDB does not close them, so they are the destructive ones.
-3. **The API key** is already handled if you set the Worker secret; paste one here only if you would rather carry it in the install URL. See [API key](#api-key).
+3. **The API key** is already handled if the service has one in its environment; paste one here only if you would rather carry it in the install URL. See [API key](#api-key).
 4. **Install** — the `stremio://` link opens the desktop or mobile app; *Open in Stremio Web* handles the browser player.
 
-Your settings live in the install URL itself (base64url of a small JSON object), which is the only place a Stremio addon can keep per-user settings. **Keep that URL private:** anyone who has it can use your Worker.
+Your settings live in the install URL itself (base64url of a small JSON object), which is the only place a Stremio addon can keep per-user settings. **Keep that URL private:** anyone who has it can use your deployment.
 
 ### API key
 
-A TheIntroDB API key is **required**, not optional. Lookups are rate limited *per IP*, and every Cloudflare Worker shares Cloudflare's egress addresses — so a Worker without a key of its own is limited by everyone else's traffic, and it would look like an add-on that silently never cuts anything. Without a key this addon does no lookups at all: the config page will not give you an install link, and a stream request answers `403 missing_api_key` instead of pretending.
+A TheIntroDB API key is **required**, not optional. Anonymous lookups are rate limited *per IP*, and a self-hosted deployment is not alone on its address — a home connection, a VPS or a Railway egress all share it with strangers. Without a key this addon does no lookups at all: the config page will not give you an install link, and a stream request answers `403 missing_api_key` instead of pretending.
 
-Get a key at [theintrodb.org/docs](https://theintrodb.org/docs), then set it as a Worker secret so it stays out of your install URL:
+Get one at [theintrodb.org/docs](https://theintrodb.org/docs), then set it in the environment so it stays out of your install URL:
 
 ```bash
-npx wrangler secret put TIDB_API_KEY
+TIDB_API_KEY=...        # Docker: -e TIDB_API_KEY=...  ·  Railway: Variables tab
 ```
 
-The Deploy to Cloudflare flow asks for it too. A key can also be pasted into the config page, in which case it is embedded in the install URL and stored by Stremio — useful if you want a different key than the deployment's own, or if someone else is borrowing your Worker.
+A key can also be pasted into the config page, in which case it is embedded in the install URL and stored by Stremio — useful if you want a different key than the deployment's own, or if you are sharing one deployment between accounts.
 
 `GET /health` reports `apiKeyConfigured`, so it is one request to check.
 
@@ -76,7 +143,7 @@ The Deploy to Cloudflare flow asks for it too. A key can also be pasted into the
 
 ## How it works
 
-Stremio asks this Worker for streams. The Worker asks your source addon, and for each stream it knows the media id (`tt0111161`, or `tt0903747:1:1`), so it reads the timings from TheIntroDB:
+Stremio asks this service for streams. It asks your source addon, and for each stream it knows the media id (`tt0111161`, or `tt0903747:1:1`), so it reads the timings from TheIntroDB:
 
 ```
 GET https://api.theintrodb.org/v4/media?imdb_id=tt0903747&season=1&episode=1
@@ -86,16 +153,17 @@ GET https://api.theintrodb.org/v4/media?imdb_id=tt0903747&season=1&episode=1
  "credits":[{"start_ms":3432884,"end_ms":null}]}
 ```
 
-With timings in hand, the stream offered to Stremio points at `/play` on this Worker. When the player asks for it:
+With timings in hand, the stream offered to Stremio points at `/play` on this service. When the player asks for it:
 
-- **Master playlist** → every variant, audio rendition and trick-play playlist is re-pointed at `/play`, so each one gets cut in turn.
-- **Media playlist** → the segments whose time range overlaps a skip window are dropped, `#EXT-X-DISCONTINUITY` marks the jump, and a re-declared `#EXT-X-MAP` keeps fragmented-MP4 streams decodable. Byte-range playlists keep pointing at the same bytes.
+- **HLS master playlist** → every variant, audio rendition and trick-play playlist is re-pointed at `/play`, so each one gets cut in turn.
+- **HLS media playlist** → the segments whose time range overlaps a skip window are dropped, `#EXT-X-DISCONTINUITY` marks the jump, and a re-declared `#EXT-X-MAP` keeps fragmented-MP4 streams decodable. Byte-range playlists keep pointing at the same bytes. **No video passes through this service on this path** — the player still fetches every segment from your source.
+- **A progressive file** (`.mkv`, `.mp4`, what a debrid link usually is) → the ranges that survive are copied into a new file with ffmpeg (`-c copy`: no re-encode, no quality loss) and served from here with byte-range support, so seeking works normally.
 - **Anything else** (`302`) → the player is sent to the origin untouched.
 
 Measured on Apple's own fragmented-MP4 test stream (`img_bipbop_adv_example_fmp4`, 100 segments / 600s) with the Breaking Bad S1E1 timings:
 
 ```
-$ curl -sD - "$WORKER/$CONFIG/play?u=$MASTER&id=tt0903747:1:1"
+$ curl -sD - "$BASE/$CONFIG/play?u=$MASTER&id=tt0903747:1:1"
 x-tidb-play: spliced
 x-tidb-cuts: intro 3:48-4:06
 x-tidb-dropped-segments: 4
@@ -114,16 +182,38 @@ x-tidb-duration-ms: 600000
 #EXT-X-BYTERANGE:1503513@63207656
 ```
 
-**No video data passes through the Worker** unless you turn on segment proxying: segment URLs are handed to the player as absolute origin URLs, so playback costs no Worker requests and no Worker bandwidth. The Worker only handles playlists — a few kilobytes each — and TheIntroDB lookups, cached on the edge for six hours (fifteen minutes for a miss).
-
 When TheIntroDB has no timings for a title, or answers `429`, **the stream is returned exactly as your source addon sent it**: no wrapping, no relay, no cost.
 
-A source that turns out not to be a playlist is also cheap: the verdict is remembered for an hour, and a byte-range request (what a player sends on every seek) is handed straight to the origin. So a progressive `.mkv` costs one sniff per file, not one relayed request per seek.
+A source that turns out not to be a playlist is also cheap: the verdict is remembered for an hour, and a byte-range request (what a player sends on every seek) is handed straight to the origin. The exception is a file that is being cut — a finished cut is served from here before any of that happens, because that is the only way a debrid `.mkv` can skip its intro at all.
 
 Two request shapes are worth knowing about, because both are things Stremio does that a naive addon gets wrong:
 
 - Stremio percent-encodes every path component, so a series request arrives as `/stream/series/tt0903747%3A1%3A1.json`. The id is decoded before it is parsed.
 - Sources are asked with the plain id first, and retried with the percent-encoded form when that is refused — some addons only route the encoded shape.
+
+### Cutting a file
+
+A progressive file has no segments to drop, so the only way to remove 30 seconds from the middle of a 6 GB `.mkv` without re-encoding is to copy the ranges that survive into a new file. That is what ffmpeg does here:
+
+- The source is probed once (`ffprobe`) for its duration, and the windows are turned into **keep ranges** — the pieces before, between and after them.
+- Each keep range is copied (`ffmpeg -ss <start> -to <end> -c copy`), and the pieces are joined into one file. A copy can only start on a keyframe, so a cut is as precise as the source's keyframe grid (usually under a second to a few seconds).
+- The result is cached on disk, keyed by the file's URL path plus the windows, and **served with `Range` support** — so the second and every later playback of that item is cut, immediately.
+
+Because the copy takes as long as copying the file takes, the first playback is a question of policy (`CUTS`):
+
+| `CUTS` | First playback | Later playbacks |
+| --- | --- | --- |
+| `on` (default) | Plays uncut while the cut is prepared in the background | Cut |
+| `blocking` | Waits up to `CUT_WAIT_SECONDS` for the cut, then plays uncut if it is not ready | Cut |
+| `off` | Uncut, always | Uncut — only HLS playlists are spliced |
+
+The stream list is also fetched moments before playback, so a cut for the first one or two sources on the list is started then, as a head start.
+
+### Disk
+
+Cuts live in `CACHE_DIR` (default `/cache` in the container) and are evicted oldest-first once they exceed `CACHE_MAX_GB`. A two-hour 1080p episode is roughly 2-6 GB, so 50 GB is a reasonable starting point and a volume is worth attaching on Railway. Evicting a cut that is being watched is safe — the open file keeps streaming — it is simply cut again next time.
+
+Setting `CUTS=off` means no disk use at all and no video through the service.
 
 ### Response headers
 
@@ -131,12 +221,14 @@ Every `/play` response says what it did, which is the fastest way to see whether
 
 | Header | Meaning |
 | --- | --- |
-| `x-tidb-play` | `spliced`, `master`, `unchanged`, `rewritten_uris` (proxy mode), `not_hls`, `not_a_playlist`, `not_a_playlist_cached`, `range_request`, `degenerate_windows`, `pass_through`, `upstream_<status>` |
+| `x-tidb-play` | `spliced`, `master`, `unchanged`, `rewritten_uris` (proxy mode), `cut_file`, `not_hls`, `not_a_playlist`, `not_a_playlist_cached`, `range_request`, `degenerate_windows`, `pass_through`, `upstream_<status>` |
+| `x-tidb-cut` | `ready` when the response is a cut file |
 | `x-tidb-lookup` | `fresh`, `cache_hit`, `media_not_found`, `episode_not_found`, `missing_api_key`, `rate_limited…`, `request_failed…` |
 | `x-tidb-cuts` | The windows that applied, e.g. `intro 3:48-4:06, credits 57:12-end` |
-| `x-tidb-dropped-segments`, `x-tidb-dropped-ms`, `x-tidb-duration-ms` | What was removed, and the playlist's length |
+| `x-tidb-dropped-segments`, `x-tidb-dropped-ms`, `x-tidb-duration-ms` | What was removed from a playlist, and its length |
+| `x-tidb-cut-bytes` | The size of a served cut |
 
-`/health` reports the version, which API it talks to, and whether the deployment has a key.
+`/health` reports the version, which API it talks to, whether the deployment has a key, the cut mode and directory, and how many cuts are queued, running and ready.
 
 ---
 
@@ -144,45 +236,70 @@ Every `/play` response says what it did, which is the fastest way to see whether
 
 Worth reading before installing, because these are properties of the approach rather than bugs:
 
-- **HLS only.** A direct `.mkv` or `.mp4` cannot be cut in a Worker: there is no transcoder and no way to splice the container. Those streams are redirected to the origin and play in full. HLS sources (`index.m3u8`) are the ones that get cut.
-- **Cuts land on segment boundaries.** Segments are 2-10 seconds long and nothing is re-encoded, so a cut removes every segment that touches the window: the intro is fully gone, and up to one segment of the footage next to it goes with it. Nothing is ever cut inside a segment.
+- **HLS cuts land on segment boundaries.** Segments are 2-10 seconds long and nothing is re-encoded, so a cut removes every segment that touches the window: the intro is fully gone, and up to one segment of the footage next to it goes with it.
+- **File cuts land on keyframes.** Same idea, smaller grain: the copy starts at the keyframe at or before the window's edge, so a second or two of the intro can survive, and a second or two around it can go.
+- **A file cut costs bandwidth and disk.** The first playback of a 6 GB episode copies 6 GB through this service. HLS sources never do this — they cost a few kilobytes of playlists.
+- **ffmpeg has to be present for file cuts.** The Docker image has it. A bare install that does not will report it in `/health` and pass files through, HLS still working.
 - **Torrent streams are not relaid.** A stream that is an `infoHash` (Torrentio and friends without a debrid) has no URL to rewrite, so it is passed through with a note.
-- **Sources that need custom headers are not relaid**, because the Worker does not carry them. They are passed through untouched.
+- **Sources that need custom headers are not relaid**, because the relay does not carry them. They are passed through untouched.
 - **Series numbering is the default order.** If your library follows another order — streaming rips, absolute-numbered anime, some specials — the lookup answers from the default numbering and the wrong episode's timings can apply. A Stremio stream request carries no episode-order hint, so this cannot be detected client-side.
-- **Segment proxying is opt-in and often a bad idea.** Turn it on only for a source that needs the same headers or cookies on every segment. Debrid links are usually bound to the requesting IP, and a Cloudflare Worker is not your IP, so the source can refuse it.
-- **The install URL is the credential-ish thing.** It contains your config (and your API key if you pasted one there). Anyone with it can use your Worker; the Worker refuses to relay to private addresses, but treat the URL as private.
+- **Segment proxying is opt-in and often a bad idea.** Turn it on only for a source that needs the same headers or cookies on every segment. Debrid links are usually bound to the requesting IP, so a relay from another IP can be refused by the source.
+- **The install URL is the credential-ish thing.** It contains your config (and your API key if you pasted one there). Anyone with it can use your deployment; the service refuses to relay to private addresses, but treat the URL as private.
 - **This is not a Stremio `skip` API.** Stremio has no addon API for skip buttons; segments are removed from the stream instead, which is why it works on every platform.
+
+---
+
+## Configuration
+
+Everything is an environment variable; there is nothing to edit in the image.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `TIDB_API_KEY` | *(none)* | **Required.** TheIntroDB API key. Without it, lookups refuse with `403`. |
+| `PORT` | `8787` | Port to listen on. |
+| `CUTS` | `on` | `on`, `blocking` or `off` — see [Cutting a file](#cutting-a-file). |
+| `CACHE_DIR` | `./cache` (`/cache` in the image) | Where cut files are kept. |
+| `CACHE_MAX_GB` | `50` | Disk budget for cuts, evicted oldest-first. |
+| `CUT_WAIT_SECONDS` | `120` | `blocking` mode only: how long a play request waits for ffmpeg. |
+| `CUT_CONCURRENCY` | `2` | Concurrent ffmpeg processes. |
+| `FFMPEG_PATH`, `FFPROBE_PATH` | `ffmpeg`, `ffprobe` | Override if they are not on `PATH`. |
+| `ALLOW_PRIVATE_HOSTS` | *(unset)* | Development only: allow a source addon on a loopback/private address. |
+
+The API host and the site URL are **not** configurable: they are constants in `src/constants.ts`. A deployment pointed somewhere else would be a different addon.
 
 ---
 
 ## Development
 
 ```bash
-npm install          # Node 22+ (wrangler 4 requires 22.12+)
-npm run typecheck    # tsc --noEmit
-npm test             # 58 tests: unit + end-to-end through the Worker entry point
+npm ci                # Node 22+
+npm run typecheck     # tsc --noEmit
+npm test              # 81 tests: unit, plus a real server and real ffmpeg
 TIDB_LIVE=1 TIDB_API_KEY=<key> npm test   # the 2 live tests hit api.theintrodb.org
-npm run dev          # wrangler dev on http://127.0.0.1:8787 (put the key in .dev.vars)
+npm run build         # tsc -p tsconfig.build.json -> dist/
+npm run dev           # tsx watch src/server.ts
 ```
 
-The end-to-end tests drive the real `fetch` handler over HTTP against a stub source addon, a stub HLS origin and a stub TheIntroDB API whose answers are the figures measured from the live API (Breaking Bad S1E1: intro `228665-246498`, credits `3432884` to end of file). The API host is a constant, so the suite stands in front of `fetch` to answer it — nothing in `src/` has a test hook. The live tests assert shape only: they recompute the expected cut from whatever the API returns, so a new community submission cannot turn them red.
+The suite does not mock the things that matter: `test/cut.test.ts` generates a 30-second video, serves it over HTTP with range support and cuts it with the real ffmpeg; `test/server.test.ts` starts the real server on a port and talks to it with `fetch`. The addon tests drive the router over HTTP against a stub source addon, a stub HLS origin and a stub TheIntroDB API whose answers are the figures measured from the live API (Breaking Bad S1E1: intro `228665-246498`, credits `3432884` to end of file). The API host is a constant, so the suite stands in front of `fetch` to answer it — nothing in `src/` has a test hook. The live tests assert shape only: they recompute the expected cut from whatever the API returns, so a new community submission cannot turn them red.
 
 ```
 src/
-  index.ts     the Worker entry point and router
+  server.ts    the Node entry point: HTTP -> Request/Response, graceful shutdown
+  index.ts     the router
+  env.ts       settings from the environment
   constants.ts the fixed API host, site and API version
   config.ts    the install config packed into the URL
   manifest.ts  the addon manifest
   introdb.ts   the /v4/media lookup, and timings -> skip windows
   hls.ts       playlist parsing and splicing
   play.ts      /play and /seg
+  cut.ts       the ffmpeg cut engine and its disk cache
+  files.ts     serving a cut file with Range support
   upstream.ts  the source addon relay
   page.ts      the configuration page
   http.ts      responses and CORS
   format.ts    time formatting
 ```
-
-There are no tunables in `wrangler.jsonc`: the API host is fixed in `src/constants.ts`, and the API key is a secret (`wrangler secret put TIDB_API_KEY`), never a value in the repo.
 
 ---
 

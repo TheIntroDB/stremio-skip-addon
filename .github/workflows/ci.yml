@@ -12,11 +12,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          # wrangler 4 needs Node 22; the tests themselves run on 20 too.
           node-version: 22
           cache: npm
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
-      # Proves the Worker bundles and the wrangler config is valid, without deploying.
-      - run: npx wrangler deploy --dry-run --outdir dist
+      # Proves the service compiles to dist/ the way the image runs it.
+      - run: npm run build
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Proves the image builds and that ffmpeg is in it.
+      - run: docker build -t tidb-stremio-skip:ci .
+      - run: docker run --rm tidb-stremio-skip:ci ffmpeg -version

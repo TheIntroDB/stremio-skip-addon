@@ -1,6 +1,8 @@
 node_modules/
-.wrangler/
 dist/
-.dev.vars
+cache/
+.env
+.env.*
+!.env.example
 *.log
 .DS_Store

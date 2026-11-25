@@ -2,17 +2,20 @@
 // Copyright (C) 2026 TheIntroDB
 
 /**
- * The Worker entry point and router.
+ * The request router.
+ *
+ * Everything here is standard `Request`/`Response`: the core is runtime-agnostic
+ * and `server.ts` is the only place that knows about Node.
  *
  * Routes:
  *
  *   GET /                                  the configuration page
- *   GET /health                            liveness + which API it talks to
+ *   GET /health                            liveness, configuration, cut cache
  *   GET /manifest.json                     manifest for a bare install (needs configuring)
  *   GET /<config>/manifest.json            manifest for an install
  *   GET /<config>/stream/{movie,series}/<id>.json
  *                                          the stream list, relayed from the source addon
- *   GET /<config>/play?u=&id=              one playlist, spliced
+ *   GET /<config>/play?u=&id=              a playlist (spliced) or a cut file
  *   GET /<config>/seg?u=                   one media resource (opt-in proxy mode)
  *
  * Every request after install carries the config as the first path segment, which
@@ -21,52 +24,59 @@
 
 import { decodeConfig, parseStremioId } from "./config.js";
 import { INTRODB_API_BASE, INTRODB_API_VERSION, INTRODB_SITE } from "./constants.js";
+import type { CutEngine } from "./cut.js";
+import { describeSettings, type Settings } from "./env.js";
 import { describeCuts } from "./format.js";
 import { corsPreflight, errorResponse, html, json, text } from "./http.js";
 import { lookupSkipWindows } from "./introdb.js";
 import { ADDON_VERSION, buildManifest } from "./manifest.js";
 import { renderConfigPage } from "./page.js";
 import { handlePlay, handleSegment } from "./play.js";
-import type { AddonConfig, Env } from "./types.js";
-import { fetchStreams, sourceLabel, wrapStream } from "./upstream.js";
+import type { AddonConfig } from "./types.js";
+import { fetchStreams, isFetchableByWorker, resolveTarget, sourceLabel, wrapStream } from "./upstream.js";
 import { playUrl } from "./urls.js";
 
 const CONFIG_ROUTE_RE =
   /^\/([A-Za-z0-9_-]{1,4096})\/(manifest\.json|stream\/[^/]+\/[^/]+\.json|play|seg)$/;
 
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    return handleRequest(request, env);
-  },
-};
+/**
+ * How many of a title's sources get a cut prepared in the background when its
+ * stream list is fetched. Stremio's default pick is the first entry, so cutting
+ * one or two is what makes the first playback land on a ready cut.
+ */
+const PRECUT_SOURCES = 2;
 
-export async function handleRequest(request: Request, env: Env): Promise<Response> {
+export async function handleRequest(
+  request: Request,
+  settings: Settings,
+  cuts: CutEngine,
+): Promise<Response> {
   const url = new URL(request.url);
   const origin = url.origin;
   const path = url.pathname.replace(/\/+$/, "") || "/";
 
   if (request.method === "OPTIONS") return corsPreflight();
-  if (request.method === "POST") return errorResponse(405, "method_not_allowed", "This addon is read-only");
+  if (request.method === "POST") {
+    return errorResponse(405, "method_not_allowed", "This addon is read-only");
+  }
   if (request.method !== "GET" && request.method !== "HEAD") {
     return errorResponse(405, "method_not_allowed", "Only GET and HEAD are supported");
   }
 
-  if (path === "/") return configPage(env, origin);
-  if (path === "/configure") return configPage(env, origin);
+  if (path === "/" || path === "/configure") return configPage(settings, origin, cuts);
   if (path === "/health") {
     return json({
       status: "ok",
       name: "TheIntroDB Skip",
       version: ADDON_VERSION,
-      api: `${INTRODB_API_BASE}/${INTRODB_API_VERSION}/media`,
       site: INTRODB_SITE,
-      apiKeyConfigured: Boolean(env.TIDB_API_KEY && env.TIDB_API_KEY.trim()),
+      api: `${INTRODB_API_BASE}/${INTRODB_API_VERSION}/media`,
+      ...describeSettings(settings),
+      cutsStatus: cuts.stats(),
     });
   }
   if (path === "/robots.txt") return text("User-agent: *\nDisallow: /\n");
-  if (path === "/manifest.json") {
-    return json(buildManifest(null));
-  }
+  if (path === "/manifest.json") return json(buildManifest(null));
 
   const match = CONFIG_ROUTE_RE.exec(path);
   if (match) {
@@ -84,31 +94,28 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       );
     }
 
-    if (route === "manifest.json") {
-      return json(buildManifest(config, encoded));
-    }
+    if (route === "manifest.json") return json(buildManifest(config, encoded));
     if (route === "play") {
-      return handlePlay({ request, env, config, encodedConfig: encoded, origin });
+      return handlePlay({ request, settings, cuts, config, encodedConfig: encoded, origin });
     }
     if (route === "seg") {
-      return handleSegment({ request, env, config, encodedConfig: encoded, origin });
+      return handleSegment({ request, settings, cuts, config, encodedConfig: encoded, origin });
     }
 
     // stream/<type>/<id>.json
     const streamMatch = /^stream\/([^/]+)\/(.+)\.json$/.exec(route);
     if (streamMatch) {
-      return handleStreams(env, config, encoded, origin, streamMatch[1]!, streamMatch[2]!);
+      return handleStreams(settings, cuts, config, encoded, origin, streamMatch[1]!, streamMatch[2]!);
     }
   }
 
-  if (path.includes(".")) {
-    return errorResponse(404, "not_found", "Not found");
-  }
+  if (path.includes(".")) return errorResponse(404, "not_found", "Not found");
   return html(notFoundPage(origin), 404);
 }
 
 async function handleStreams(
-  env: Env,
+  settings: Settings,
+  cuts: CutEngine,
   config: AddonConfig,
   encoded: string,
   origin: string,
@@ -137,7 +144,7 @@ async function handleStreams(
 
   // One lookup decides whether any of this is worth doing. It is cached, and it is
   // what makes the "no timings" case a pure pass-through with no wrapping at all.
-  const lookup = await lookupSkipWindows(env, config, id);
+  const lookup = await lookupSkipWindows(settings, config, id);
 
   // The key is required, so a deployment without one gets a loud answer rather than
   // a silent pass-through that looks like "TheIntroDB has no timings for this".
@@ -145,13 +152,12 @@ async function handleStreams(
     return errorResponse(
       403,
       "missing_api_key",
-      "This deployment has no TheIntroDB API key, so it cannot look up timings. " +
-        "Set TIDB_API_KEY as a Worker secret (npx wrangler secret put TIDB_API_KEY) " +
-        "or add a key on the addon's configuration page, then reinstall.",
+      "This service has no TheIntroDB API key, so it cannot look up timings. " +
+        "Set TIDB_API_KEY in the environment (or add one on the configuration page), then reinstall.",
     );
   }
 
-  const upstream = await fetchStreams(env, config, type, id);
+  const upstream = await fetchStreams(settings, config, type, id);
 
   const label = `TheIntroDB Skip · ${sourceLabel(upstream.used ?? config.src[0] ?? "")}`;
   const cutSummary = lookup.windows.length > 0 ? `${describeCuts(lookup.windows)}.` : null;
@@ -162,11 +168,15 @@ async function handleStreams(
           playUrl: (target) => playUrl(origin, encoded, target, id),
           label,
           cutSummary,
-          allowPrivateHosts: env.ALLOW_PRIVATE_HOSTS === "1",
+          allowPrivateHosts: settings.ALLOW_PRIVATE_HOSTS === "1",
           sourceBase: upstream.used ?? config.src[0] ?? "",
         }),
       )
     : upstream.streams;
+
+  if (cutSummary) {
+    preCut(settings, cuts, upstream, config, lookup.windows);
+  }
 
   return json(
     { streams },
@@ -176,9 +186,42 @@ async function handleStreams(
         "x-tidb-lookup": lookup.reason,
         "x-tidb-windows": String(lookup.windows.length),
         "x-tidb-upstream-streams": String(upstream.streams.length),
+        "x-tidb-cuts": describeWindowsHeader(lookup.windows),
       },
     },
   );
+}
+
+/**
+ * Warm the cut cache for the sources a player is most likely to pick.
+ *
+ * A cut of a feature takes a while (it copies the whole file once), and the stream
+ * list is fetched moments before playback, so this is a head start rather than a
+ * guarantee: the first playback may still be handed the original.
+ */
+function preCut(
+  settings: Settings,
+  cuts: CutEngine,
+  upstream: { streams: Array<Record<string, unknown>>; used?: string },
+  config: AddonConfig,
+  windows: Parameters<CutEngine["schedule"]>[1],
+): void {
+  if (!cuts.enabled || windows.length === 0) return;
+  const sourceBase = upstream.used ?? config.src[0] ?? "";
+  let scheduled = 0;
+  for (const stream of upstream.streams) {
+    if (scheduled >= PRECUT_SOURCES) break;
+    const target = resolveTarget(stream.url, sourceBase);
+    if (!target || !isFetchableByWorker(target, settings.ALLOW_PRIVATE_HOSTS === "1")) continue;
+    cuts.schedule(target, windows);
+    scheduled++;
+  }
+}
+
+function describeWindowsHeader(windows: readonly { type: string; startMs: number; endMs: number | null }[]): string {
+  return windows
+    .map((window) => `${window.type} ${window.startMs}-${window.endMs ?? "end"}`)
+    .join(", ");
 }
 
 function decodePathComponent(value: string): string {
@@ -191,7 +234,7 @@ function decodePathComponent(value: string): string {
   }
 }
 
-function configPage(env: Env, origin: string): Response {
+function configPage(settings: Settings, origin: string, cuts: CutEngine): Response {
   const url = new URL(origin);
   const local = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(url.hostname);
 
@@ -199,8 +242,9 @@ function configPage(env: Env, origin: string): Response {
     renderConfigPage({
       origin,
       siteUrl: INTRODB_SITE,
-      serverKeyConfigured: Boolean(env.TIDB_API_KEY && env.TIDB_API_KEY.trim()),
+      serverKeyConfigured: Boolean(settings.TIDB_API_KEY && settings.TIDB_API_KEY.trim()),
       insecure: url.protocol === "http:" && local,
+      cuts: cuts.stats(),
     }),
   );
 }

@@ -4,7 +4,7 @@
 /**
  * Fixed endpoints. These are not configuration: the addon is TheIntroDB's, and a
  * deployment that pointed somewhere else would be a different addon. Nothing here
- * is read from the environment, so `wrangler.jsonc` cannot be edited into a state
+ * is read from the environment, so nothing in a deployment can be edited into a state
  * where the addon talks to a host it was not written for.
  */
 
