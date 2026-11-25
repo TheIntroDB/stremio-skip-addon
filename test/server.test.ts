@@ -35,6 +35,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     cuts: "off",
     cutWaitSeconds: 0,
     cutConcurrency: 1,
+    precutSources: 2,
     ffmpegPath: "ffmpeg",
     ffprobePath: "ffprobe",
     ...overrides,

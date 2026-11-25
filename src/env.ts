@@ -28,6 +28,13 @@ export interface Settings extends Env {
   cuts: CutMode;
   cutWaitSeconds: number;
   cutConcurrency: number;
+  /**
+   * How many of a title's sources get a cut prepared in the background when its
+   * stream list is fetched. Stremio's default pick is the first entry, so cutting
+   * one or two is what makes the first playback land on a ready cut — and 0 turns
+   * that off entirely for a deployment that does not want to spend the bandwidth.
+   */
+  precutSources: number;
   ffmpegPath: string;
   ffprobePath: string;
 }
@@ -56,6 +63,7 @@ export function loadSettings(): Settings {
     cuts: cutMode(),
     cutWaitSeconds: Math.max(0, numberFrom("CUT_WAIT_SECONDS", 120)),
     cutConcurrency: Math.max(1, Math.floor(numberFrom("CUT_CONCURRENCY", 2))),
+    precutSources: Math.min(5, Math.max(0, Math.floor(numberFrom("PRECUT_SOURCES", 2)))),
     ffmpegPath: process.env.FFMPEG_PATH ?? "ffmpeg",
     ffprobePath: process.env.FFPROBE_PATH ?? "ffprobe",
   };

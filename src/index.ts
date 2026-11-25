@@ -39,13 +39,6 @@ import { playUrl } from "./urls.js";
 const CONFIG_ROUTE_RE =
   /^\/([A-Za-z0-9_-]{1,4096})\/(manifest\.json|stream\/[^/]+\/[^/]+\.json|play|seg)$/;
 
-/**
- * How many of a title's sources get a cut prepared in the background when its
- * stream list is fetched. Stremio's default pick is the first entry, so cutting
- * one or two is what makes the first playback land on a ready cut.
- */
-const PRECUT_SOURCES = 2;
-
 export async function handleRequest(
   request: Request,
   settings: Settings,
@@ -207,10 +200,12 @@ function preCut(
   windows: Parameters<CutEngine["schedule"]>[1],
 ): void {
   if (!cuts.enabled || windows.length === 0) return;
+  const limit = settings.precutSources;
+  if (limit <= 0) return;
   const sourceBase = upstream.used ?? config.src[0] ?? "";
   let scheduled = 0;
   for (const stream of upstream.streams) {
-    if (scheduled >= PRECUT_SOURCES) break;
+    if (scheduled >= limit) break;
     const target = resolveTarget(stream.url, sourceBase);
     if (!target || !isFetchableByWorker(target, settings.ALLOW_PRIVATE_HOSTS === "1")) continue;
     cuts.schedule(target, windows);

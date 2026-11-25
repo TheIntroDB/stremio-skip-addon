@@ -9,6 +9,8 @@
  */
 
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { after, before, beforeEach, test } from "node:test";
@@ -235,13 +237,14 @@ function testSettings(overrides: Partial<Settings> = {}): Settings {
     TIDB_API_KEY: "test-key",
     ALLOW_PRIVATE_HOSTS: "1",
     port: 0,
-    cacheDir: "./.test-cache",
+    cacheDir: path.join(tmpdir(), "tidb-addon-test-cache"),
     cacheMaxBytes: 0,
     // Off by default: these tests are about the playlist and relay paths. The cut
     // engine has its own suite, which runs real ffmpeg.
     cuts: "off",
     cutWaitSeconds: 0,
     cutConcurrency: 1,
+    precutSources: 2,
     ffmpegPath: "ffmpeg",
     ffprobePath: "ffprobe",
     ...overrides,
@@ -252,8 +255,13 @@ async function call(
   path: string,
   settings: Settings = testSettings(),
   init?: RequestInit,
+  cuts?: CutEngine,
 ): Promise<Response> {
-  return handleRequest(new Request(`https://worker.example${path}`, init), settings, new CutEngine(settings));
+  return handleRequest(
+    new Request(`https://worker.example${path}`, init),
+    settings,
+    cuts ?? new CutEngine(settings),
+  );
 }
 
 function playPath(target: string, id: string, encoded = amplified): string {
@@ -393,6 +401,30 @@ test("a stream list relays the source addon and says what will be cut", async ()
   assert.equal(response.headers.get("x-tidb-lookup"), "fresh");
   assert.equal(response.headers.get("x-tidb-windows"), "2");
   assert.equal(response.headers.get("x-tidb-source"), new URL(base).host);
+});
+
+test("cuts are warmed for the first sources on a list, and turning that off stops it", async () => {
+  // A file cut copies the whole file, so asking for one when the stream list is
+  // fetched is a bandwidth decision: PRECUT_SOURCES is how a deployment controls it.
+  for (const [precut, expected] of [[1, 1], [0, 0]] as const) {
+    const settings = testSettings({ cuts: "on", precutSources: precut });
+    const engine = new CutEngine(settings);
+    const scheduled: string[] = [];
+    const realSchedule = engine.schedule.bind(engine);
+    engine.schedule = ((url: string, windows: Parameters<typeof realSchedule>[1]) => {
+      scheduled.push(url);
+      return realSchedule(url, windows);
+    }) as typeof engine.schedule;
+
+    const response = await call(`/${amplified}/stream/series/tt0903747:1:1.json`, settings, undefined, engine);
+    assert.equal(response.status, 200);
+    assert.equal(scheduled.length, expected, `precutSources=${precut} scheduled ${scheduled.length}`);
+    if (expected === 1) {
+      // The head start goes to the first stream on the list, which is the one
+      // Stremio's default pick would play.
+      assert.equal(scheduled[0], `${base}/hls/master.m3u8`);
+    }
+  }
 });
 
 test("the title TheIntroDB has no timings for is passed through untouched", async () => {

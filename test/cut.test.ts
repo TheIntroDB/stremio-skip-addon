@@ -39,6 +39,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     cuts: "blocking",
     cutWaitSeconds: 60,
     cutConcurrency: 2,
+    precutSources: 2,
     ffmpegPath: "ffmpeg",
     ffprobePath: "ffprobe",
     ...overrides,

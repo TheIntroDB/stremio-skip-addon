@@ -44,6 +44,7 @@ const settings: Settings = {
   cuts: "blocking",
   cutWaitSeconds: 600,
   cutConcurrency: 1,
+  precutSources: 0,
   ffmpegPath: process.env.FFMPEG_PATH ?? "ffmpeg",
   ffprobePath: process.env.FFPROBE_PATH ?? "ffprobe",
 };

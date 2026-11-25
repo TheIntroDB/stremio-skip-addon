@@ -269,6 +269,7 @@ Everything is an environment variable; there is nothing to edit in the image.
 | `CACHE_MAX_GB` | `50` | Disk budget for cuts, evicted oldest-first. |
 | `CUT_WAIT_SECONDS` | `120` | `blocking` mode only: how long a play request waits for ffmpeg. |
 | `CUT_CONCURRENCY` | `2` | Concurrent ffmpeg processes. |
+| `PRECUT_SOURCES` | `2` | Sources to start cutting when a stream list is fetched (0 disables the head start). |
 | `FFMPEG_PATH`, `FFPROBE_PATH` | `ffmpeg`, `ffprobe` | Override if they are not on `PATH`. |
 | `ALLOW_PRIVATE_HOSTS` | *(unset)* | Development only: allow a source addon on a loopback/private address. |
 
