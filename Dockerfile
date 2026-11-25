@@ -1,7 +1,11 @@
-# syntax=docker/dockerfile:1
 #
 # TheIntroDB Stremio addon, as a self-hosted service with ffmpeg for cutting
 # progressive files.
+#
+# No `# syntax=` directive and no `VOLUME` instruction on purpose: a platform that
+# builds this for you (Railway) rejects `VOLUME` and asks for its own volume instead,
+# and the syntax frontend is one more network fetch in the build. A `VOLUME` is not
+# what makes `-v` work anyway -- see the README for mounting /cache.
 
 FROM node:22-bookworm-slim AS build
 WORKDIR /app
@@ -22,11 +26,16 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 
+# Created and owned up front so a fresh named volume inherits the ownership it needs
+# (Docker copies the image's directory into an empty volume). A bind mount or a
+# platform volume brings its own ownership -- if it is root-owned, /health says the
+# cache is unusable and the README says what to do.
 RUN mkdir -p /cache && chown -R node:node /cache
 ENV NODE_ENV=production \
-    PORT=8787 \
-    CACHE_DIR=/cache
-VOLUME ["/cache"]
+    CACHE_DIR=/cache \
+    CUTS=on
+# Railway (and most platforms) inject their own PORT; the service reads PORT and
+# binds to it, so this is only the default for a plain `docker run`.
 EXPOSE 8787
 
 USER node

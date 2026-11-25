@@ -29,14 +29,14 @@ Nobody hosts this for you. It is a small Node service that relays streams from a
 
 You need three things: **Node 22** (or Docker), **ffmpeg** on the host (only used to cut progressive files), and a **TheIntroDB API key**.
 
-### Option A — Railway (recommended)
+### Option A — Railway
 
-Railway runs the Dockerfile in this repository, gives you a public HTTPS domain, and keeps the cut cache on a volume. Two ways in:
+Railway builds the Dockerfile in this repository, gives you a public HTTPS domain, and keeps the cut cache on a volume. Two ways in:
 
 **From the dashboard:** *New Project → Deploy from GitHub repo* → pick this repository. This works with the repository private, as long as you have access to it. Then:
 
-- **Variables** → add `TIDB_API_KEY` (required, see [API key](#api-key)) and `CUTS=on`.
-- **Volumes** → add a volume mounted at `/cache`, sized for a few films' worth of cuts (see [Disk](#disk)).
+- **Variables** → add `TIDB_API_KEY` (required, see [API key](#api-key)). `CUTS` is `on` by default.
+- **Volumes** → add a Railway Volume with the mount path `/cache`, sized for a few films' worth of cuts (see [Disk](#disk)). Railway Volumes are the only kind of persistent storage here: the Dockerfile deliberately has **no `VOLUME` instruction**, because Railway rejects one (`docker VOLUME … is not supported, use Railway Volumes`).
 
 **From the CLI:**
 
@@ -46,8 +46,15 @@ railway login
 railway init                                  # or: railway link
 railway up
 railway variable set TIDB_API_KEY=<your key>
-railway domain                                # prints your public URL
+railway volume add --mount-path /cache         # persistent cut cache
+railway domain                                 # prints your public URL
 ```
+
+Notes for a metered or small plan:
+
+- **The port is the platform's.** Railway injects `PORT`; the service reads it and binds to it, so the image's `8787` default only applies to a plain `docker run`. `railway.json` asks Railway to healthcheck `/health` before it routes traffic.
+- **Watch disk and egress.** A file cut copies the whole source once and then serves it, so a 4 GB episode is 4 GB of volume and 4 GB out. `CUTS=off` removes both entirely and still cuts HLS sources (which is a text rewrite — a few kilobytes of playlists). `CACHE_MAX_GB` bounds the volume, and `PRECUT_SOURCES=0` stops the head-start cuts when a stream list is fetched.
+- **If `/health` says the cache is unusable** (`cutsStatus.available: false`), the volume is mounted with an owner the `node` user cannot write to. Either set the service's *User* to `root` in Railway's settings, or point `CACHE_DIR` at a directory you can write. Nothing else breaks meanwhile: HLS sources keep being cut.
 
 > **A "Deploy on Railway" button needs a published template.** Railway's button points at a *template code* (`https://railway.com/new/template/<code>`), not at a repository, so the owner of this project has to publish this repo as a template once from their own Railway account (dashboard: the project → *Share* → publish as template). After that the badge for this repository is:
 >
@@ -57,36 +64,29 @@ railway domain                                # prints your public URL
 >
 > `railway.json` in this repository is already written for it: Dockerfile build, `/health` healthcheck, restart on failure.
 
-### Option B — Docker
+### Option B — Docker (your own stack)
 
-Build the image (Node 22 plus ffmpeg, about 200 MB):
+One command, from a clone of this repository:
+
+```bash
+cp .env.example .env      # put TIDB_API_KEY in it
+docker compose up -d
+```
+
+That is `docker-compose.yml` in this repository: it builds the image (or pulls `ghcr.io/theintrodb/stremio-skip-addon:latest` if you remove `build:`), publishes `:8787`, and keeps the cut cache in a named volume.
+
+Without compose (Node 22 plus ffmpeg in the image, about 200 MB):
 
 ```bash
 docker build -t tidb-skip .
 docker run -d --name tidb-skip \
   -p 8787:8787 \
   -e TIDB_API_KEY=<your key> \
-  -e CUTS=on \
   -v tidb-cut-cache:/cache \
   tidb-skip
 ```
 
-Or a compose file, which is what most people want on a NAS:
-
-```yaml
-services:
-  tidb-skip:
-    build: .                # or: image: ghcr.io/theintrodb/stremio-skip-addon:latest
-    restart: unless-stopped
-    ports:
-      - "8787:8787"
-    environment:
-      TIDB_API_KEY: "<your key>"
-      CUTS: "on"          # on | blocking | off
-      CACHE_MAX_GB: "50"
-    volumes:
-      - ./cache:/cache    # the cut cache: give it real disk
-```
+**Mount `/cache`.** The image creates it, but without a volume your cuts live in the container's writable layer and are lost when it is recreated — you would cut the same episode again on every update. Any of `-v tidb-cut-cache:/cache` (named volume), `-v ./cache:/cache` (a directory on the host) or `-v /mnt/media/tidb-cache:/cache` (a NAS share) works.
 
 An image is published to `ghcr.io/theintrodb/stremio-skip-addon` (`latest` from `main`,
 plus `x.y.z` for a release tag) for `linux/amd64` and `linux/arm64`. While this
