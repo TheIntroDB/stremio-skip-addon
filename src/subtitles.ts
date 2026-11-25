@@ -355,7 +355,14 @@ export class SubtitleEngine {
       // cues, which is exactly what a subtitle segment with nothing to say looks like.
       try {
         await mkdir(dir, { recursive: true });
-        await writeFile(path.join(dir, "chunk-card.vtt"), "WEBVTT\n");
+        // A track a player can see something in from the first frame: the card is on screen
+        // while the first seconds are cut and recognised, and a rendition with no cue in it at
+        // all is one a player may not register (or may drop) before the film has begun.
+        await writeFile(
+          path.join(dir, "chunk-card.vtt"),
+          `WEBVTT\n\n00:00:00.000 --> 00:00:${String(card).padStart(2, "0")}.000\n` +
+            "TheIntroDB is preparing the subtitles for this title\n",
+        );
         entries.push({ uri: `vtt?f=${encodeURIComponent(key)}&c=card`, seconds: card });
       } catch {
         // Without it every cue would be a card's length early. Better no track than a wrong one.

@@ -284,6 +284,7 @@ function testSettings(overrides: Partial<Settings> = {}): Settings {
     proxy: relaying,
 subtitles: false,
 subtitlesLanguage: "en",
+subtitlesRendition: false,
 subtitlesChunkSeconds: 300,
 subtitlesTtlHours: 24,
     skipMarginSeconds: 0,

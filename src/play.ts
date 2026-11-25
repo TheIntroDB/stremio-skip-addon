@@ -360,7 +360,10 @@ function packageResponse(
   // Only when a track is actually being made: a master that points at a rendition with nothing
   // behind it is a track a player will drop, or worse, a master it will refuse.
   const wants =
-    enabled && context.subtitles!.tracking(key) && url.searchParams.get("m") !== "1";
+    enabled &&
+    context.settings.subtitlesRendition &&
+    context.subtitles!.tracking(key) &&
+    url.searchParams.get("m") !== "1";
   if (!wants) return mediaResponse(view, key, lookupReason);
   context.subtitles!.served.masters += 1;
 

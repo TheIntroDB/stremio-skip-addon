@@ -43,6 +43,7 @@ const settings: Settings = {
   proxy: true,
 subtitles: false,
 subtitlesLanguage: "en",
+subtitlesRendition: false,
 subtitlesChunkSeconds: 300,
 subtitlesTtlHours: 24,
   splash: true,

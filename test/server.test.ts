@@ -36,6 +36,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     proxy: true,
     subtitles: false,
     subtitlesLanguage: "en",
+    subtitlesRendition: false,
     subtitlesChunkSeconds: 300,
   subtitlesTtlHours: 24,
     skipMarginSeconds: 0,
