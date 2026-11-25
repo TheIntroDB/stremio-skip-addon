@@ -247,6 +247,13 @@ export function masterPlaylist(options: MasterOptions): string {
   return [
     "#EXTM3U",
     "#EXT-X-VERSION:7",
+    // While a package is still being made its playlist is an EVENT one, and a player treats an
+    // EVENT playlist as live: hls.js starts at `liveSyncPosition`, which -- because the playlist
+    // declares the whole episode from its first response and pads the rest -- is the *end* of it.
+    // A viewer who opened the file landed twenty minutes in and could not get back. This says
+    // where playback starts, and in the multivariant playlist it applies to the audio and
+    // subtitle controllers too, so their clocks match.
+    "#EXT-X-START:TIME-OFFSET=0",
     [
       "#EXT-X-MEDIA:TYPE=SUBTITLES",
       quoted("GROUP-ID", "subs"),

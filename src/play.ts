@@ -511,7 +511,12 @@ export async function handleSegment(context: PlayContext): Promise<Response> {
     const local =
       slash > 0 ? context.packages.segmentPath(file.slice(0, slash), file.slice(slash + 1)) : null;
     if (!local) return text("Malformed f parameter", { status: 400 });
-    return serveFile(context.request, local, "ts", {
+    // An fMP4 package is an initialisation section plus media segments; both are served from here
+    // and both have to say what kind of file they are (`video/iso.segment` is the HLS media
+    // segment type, `video/mp4` the init section).
+    const named = file.slice(slash + 1);
+    const container = named.endsWith(".m4s") ? "m4s" : named.endsWith(".mp4") ? "mp4" : "ts";
+    return serveFile(context.request, local, container, {
       "x-tidb-play": "package_segment",
       "cache-control": "public, max-age=21600",
     });

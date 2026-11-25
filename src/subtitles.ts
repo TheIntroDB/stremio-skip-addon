@@ -557,6 +557,10 @@ export class SubtitleEngine {
       "#EXTM3U",
       "#EXT-X-VERSION:7",
       `#EXT-X-TARGETDURATION:${Math.max(1, Math.ceil(longest))}`,
+      // The film's playlist is an EVENT one while it is being made, and a player joins an EVENT
+      // playlist at its live edge; the rendition has to say the same thing or the cues would be
+      // read from a different place than the picture.
+      "#EXT-X-START:TIME-OFFSET=0",
       `#EXT-X-PLAYLIST-TYPE:${job.ready ? "VOD" : "EVENT"}`,
       "#EXT-X-MEDIA-SEQUENCE:0",
     ];

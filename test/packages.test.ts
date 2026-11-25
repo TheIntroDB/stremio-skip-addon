@@ -712,6 +712,69 @@ test("the card covers the wait for the buffer, and is the buffer's length", asyn
   assert.equal(await engine.cardMs(key), 10_000, "and still the same length");
 });
 
+test("an fMP4 package is described with its initialisation section", async () => {
+  // HEVC cannot be demuxed out of MPEG-TS by hls.js, which is every browser player, so those
+  // packages are written as fMP4. A player needs the initialisation section before any sample,
+  // and without it the playlist is a pile of unreadable fragments.
+  const engine = new PackageEngine(settings({ splash: true }));
+  await engine.start();
+  const windows = [INTRO];
+  const key = engine.keyFor(samplePath, windows, "fmp4-test");
+  const dir = path.join(workDir, "cache", "hls", key);
+  await mkdir(dir, { recursive: true });
+
+  await writeFile(
+    path.join(dir, "plan.json"),
+    JSON.stringify({
+      key,
+      windows,
+      ranges: [{ startMs: 0, endMs: INTRO.startMs }, { startMs: INTRO.endMs, endMs: SAMPLE_SECONDS * 1000 }],
+      createdAt: Date.now(),
+    }),
+  );
+  await writeFile(
+    path.join(dir, "duration.json"),
+    JSON.stringify({
+      durationMs: SAMPLE_SECONDS * 1000,
+      bitrate: 5359114,
+      width: 3840,
+      height: 2160,
+      codecs: "hvc1.2.4.L153.B0,ec-3",
+    }),
+  );
+  await writeFile(path.join(dir, "format.json"), JSON.stringify({
+    container: "mp4",
+    inits: ["init-0.mp4", "init-1.mp4"],
+  }));
+  await writeFile(path.join(dir, "pass-0.csv"), "seg00000.m4s,0.000000,3.000000\n");
+  await writeFile(path.join(dir, "pass-1.csv"), "seg00001.m4s,0.000000,8.500000\nseg00002.m4s,8.500000,17.000000\n");
+  await writeFile(path.join(dir, "done"), "");
+  await writeFile(path.join(dir, "init-0.mp4"), "INIT");
+
+  const view = (await engine.manifest(key))!;
+  const lines = view.body.split("\n");
+  const firstMap = lines.findIndex((line) => line.startsWith("#EXT-X-MAP"));
+  const firstSegment = lines.findIndex((line) => line.includes("seg00000.m4s"));
+  assert.ok(firstMap >= 0, "the playlist declares an initialisation section");
+  assert.ok(lines[firstMap]!.includes(`init-0.mp4`), "the one written for that pass");
+  assert.ok(firstMap < firstSegment, "before the first sample, which a player needs it for");
+  assert.equal(
+    lines.filter((line) => line.startsWith("#EXT-X-MAP")).length,
+    2,
+    "one per stretch, since each pass was cut by its own ffmpeg run",
+  );
+  assert.ok(!lines.some((line) => line.includes("splash")), "an fMP4 package has no TS card");
+  assert.ok(
+    lines.includes("#EXT-X-START:TIME-OFFSET=0"),
+    "and playback starts at the head, not at the live edge an EVENT playlist is joined at",
+  );
+  assert.equal(view.card, 0, "and says so");
+
+  // And the initialisation section is servable, typed as what it is.
+  const init = engine.segmentPath(key, "init-0.mp4");
+  assert.ok(init, "the init section is a name the segment route accepts");
+});
+
 test("the processing card goes away once the film has been ready for a while", async () => {
   // The card exists to cover the packaging. A playback that starts long after the film was cut is
   // given the film at position zero, because watching ten seconds of "preparing" for something that

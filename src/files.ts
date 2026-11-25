@@ -22,6 +22,8 @@ export function contentTypeFor(container: string | undefined): string {
       return "video/mp4";
     case "ts":
       return "video/mp2t";
+    case "m4s":
+      return "video/iso.segment";
     case "mkv":
     default:
       return "video/x-matroska";

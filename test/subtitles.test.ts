@@ -81,6 +81,10 @@ test("the playlist grows chunk by chunk, and only then closes", async () => {
   const started = await engine.playlist("key1", CARD_MS);
   assert.ok(started, "the playlist is served before any of it is made");
   assert.ok(started!.body.includes("#EXT-X-PLAYLIST-TYPE:EVENT"), "an event playlist");
+  assert.ok(
+    started!.body.includes("#EXT-X-START:TIME-OFFSET=0"),
+    "joined at the head, not at the live edge of an event playlist",
+  );
   assert.ok(!started!.body.includes("#EXT-X-ENDLIST"), "with no end while the work goes on");
   assert.ok(started!.body.includes("subs/card.vtt"), "the processing card is covered first");
   assert.equal(started!.complete, false);
@@ -501,6 +505,14 @@ test("the master's rendition line is one a strict parser accepts", async () => {
   assert.ok(media.includes('LANGUAGE="en"'), "with its language quoted, as HLS requires");
   assert.ok(media.includes('URI="subs.m3u8?f=key"'), "and a URI to read");
   assert.ok(!media.includes("FORCED"), "and not marked forced: these are the whole track");
+  // A playlist that is still growing is an EVENT one, and a player joins an EVENT playlist at its
+  // live edge -- which, with the episode's length declared up front, is the end of it. This is the
+  // one tag that says where playback starts, and in the master it covers the audio and subtitle
+  // controllers as well.
+  assert.ok(
+    master.split("\n").includes("#EXT-X-START:TIME-OFFSET=0"),
+    "and it says playback starts at the head",
+  );
   const variant = master.split("\n").find((line) => line.startsWith("#EXT-X-STREAM-INF"))!;
   assert.ok(variant.includes('SUBTITLES="subs"'), "the variant claims the group");
   assert.ok(variant.includes("RESOLUTION=1920x1080"), "and says what it is");

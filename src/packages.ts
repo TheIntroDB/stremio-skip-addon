@@ -73,6 +73,20 @@ export interface PackageState {
 }
 
 /** What a player needs in order to start, and how far along it is. */
+/**
+ * What container a package's segments are in.
+ *
+ * It is not a free choice: hls.js, and therefore every browser-based player, refuses to demux
+ * HEVC from an MPEG-TS segment at all ("Unsupported HEVC in M2TS found"), so an HEVC source is
+ * written as fragmented MP4, which those players pass through to a platform that can decode it.
+ * Everything else stays TS, which is what every player already reads.
+ */
+export interface PackageFormat {
+  container: "ts" | "mp4";
+  /** The `#EXT-X-MAP` file of each pass, empty for TS. */
+  inits: string[];
+}
+
 export interface ManifestView {
   body: string;
   complete: boolean;
@@ -123,7 +137,10 @@ const SEGMENT_SECONDS = 4;
 const KEY_RE = /^[0-9a-f]{8,40}$/;
 /** How long a package stays off the eviction list after it was last served. */
 const RECENT_MS = 3 * 60 * 60_000;
-const SEGMENT_RE = /^seg\d{5}\.ts$/;
+const FORMAT = "format.json";
+const SEGMENT_RE = /^seg\d{5}\.(ts|m4s)$/;
+/** The `#EXT-X-MAP` initialisation section of an fMP4 package. */
+const INIT_RE = /^init-\d+\.mp4$/;
 
 export class PackageEngine {
   private readonly states = new Map<string, PackageState>();
@@ -378,9 +395,10 @@ export class PackageEngine {
   private async realStretches(
     plan: Plan,
     key: string,
-  ): Promise<Array<Array<{ name: string; ms: number }>>> {
+  ): Promise<Array<{ segments: Array<{ name: string; ms: number }>; init: string | null }>> {
     const dir = this.dirFor(key);
-    const stretches: Array<Array<{ name: string; ms: number }>> = [];
+    const format = await this.formatFor(key);
+    const stretches: Array<{ segments: Array<{ name: string; ms: number }>; init: string | null }> = [];
     for (let i = 0; i < plan.ranges.length; i++) {
       const range = plan.ranges[i];
       if (!range) continue;
@@ -392,7 +410,10 @@ export class PackageEngine {
       const kept = rows
         .filter((row) => row.startMs < wanted)
         .map((row) => ({ name: row.name, ms: Math.max(0, row.endMs - row.startMs) }));
-      if (kept.length > 0) stretches.push(kept);
+      if (kept.length > 0) {
+        const init = format.container === "mp4" ? (format.inits[i] ?? null) : null;
+        stretches.push({ segments: kept, init });
+      }
     }
     return stretches;
   }
@@ -419,28 +440,34 @@ export class PackageEngine {
     // the way, and a playback that starts now gets the film immediately, at position zero. The
     // window is the card's own length: inside it, a player that started on the card is still on
     // it, and removing it would move the head of a playlist that player is already reading.
-    const segments = stretches.reduce((total, stretch) => total + stretch.length, 0);
+    const segments = stretches.reduce((total, stretch) => total + stretch.segments.length, 0);
     const doneAt = segments > 0 ? await this.doneAt(key) : null;
     const cardMs = card.reduce((total, entry) => total + entry.ms, 0);
+    // An fMP4 package has no card: the card is a TS piece, and mixing containers inside one
+    // playlist is exactly the kind of thing players disagree about. It is not needed either --
+    // the card covers the packaging, and fMP4 packaging is the same ffmpeg copy.
     const stale = doneAt !== null && Date.now() - doneAt > cardMs + 5_000;
-    const shown = stale ? [] : card;
+    const shown = stale || stretches.some((stretch) => stretch.init !== null) ? [] : card;
 
-    const items: Array<{ uri: string; ms: number } | "disc"> = [];
-    const add = (group: Array<{ name: string; ms: number }>): void => {
+    const items: Array<{ uri: string; ms: number } | { map: string } | "disc"> = [];
+    const add = (group: Array<{ name: string; ms: number }>, init: string | null = null): void => {
       if (group.length === 0) return;
       // Between stretches -- and between the card and the episode -- the clock restarts,
       // which is what the tag declares.
       if (items.length > 0) items.push("disc");
+      // An fMP4 stretch begins with its initialisation section, which a player needs before it
+      // can read a single sample.
+      if (init) items.push({ map: `seg?f=${encodeURIComponent(key)}/${init}` });
       for (const entry of group) {
         items.push({ uri: `seg?f=${encodeURIComponent(key)}/${entry.name}`, ms: entry.ms });
       }
     };
     add(shown);
-    for (const stretch of stretches) add(stretch);
+    for (const stretch of stretches) add(stretch.segments, stretch.init);
 
     const complete = doneAt !== null;
     const realMs = stretches.reduce(
-      (total, stretch) => total + stretch.reduce((sum, entry) => sum + entry.ms, 0),
+      (total, stretch) => total + stretch.segments.reduce((sum, entry) => sum + entry.ms, 0),
       0,
     );
     // The placeholder keeps the declared length honest while the packaging is still running.
@@ -512,6 +539,7 @@ export class PackageEngine {
     if (this.cardOk === false) return;
     const state = this.cards.get(key);
     if (!state) return;
+    if ((await this.formatFor(key)).container === "mp4") return;
     if (state.pieces > 0) return;
     if (state.frozen) return;
     this.used.set(key, Date.now());
@@ -521,7 +549,7 @@ export class PackageEngine {
     const shown = plan?.windows?.length ? plan.windows : windows;
     const passes = plan?.ranges.length ?? 1;
     const stretches = plan ? await this.realStretches(plan, key) : [];
-    const written = stretches.reduce((total, stretch) => total + stretch.length, 0);
+    const written = stretches.reduce((total, stretch) => total + stretch.segments.length, 0);
     const piece = await generateSplashPiece(this.settings, this.dirFor(key), state.pieces, {
       segments: written,
       windows: shown,
@@ -553,7 +581,7 @@ export class PackageEngine {
 
   /** The playlist itself: headers, the entries, and an end marker when it is finished. */
   private playlistView(
-    items: Array<{ uri: string; ms: number } | "disc">,
+    items: Array<{ uri: string; ms: number } | { map: string } | "disc">,
     facts: {
       complete: boolean;
       segments: number;
@@ -570,6 +598,10 @@ export class PackageEngine {
         lines.push("#EXT-X-DISCONTINUITY");
         continue;
       }
+      if ("map" in item) {
+        lines.push(`#EXT-X-MAP:URI="${item.map}"`);
+        continue;
+      }
       lines.push(`#EXTINF:${(item.ms / 1000).toFixed(3)},`);
       lines.push(item.uri);
       durationMs += item.ms;
@@ -583,6 +615,10 @@ export class PackageEngine {
       "#EXT-X-DISCONTINUITY-SEQUENCE:0",
       // EVENT while it grows: the player keeps re-reading the playlist, which is how it
       // learns about the segments written after it started.
+      // An incomplete playlist is an EVENT one, which players treat as live and join at the end
+      // of -- twenty minutes in, when the rest of the episode is still padding. This is where
+      // playback starts instead.
+      "#EXT-X-START:TIME-OFFSET=0",
       `#EXT-X-PLAYLIST-TYPE:${facts.complete ? "VOD" : "EVENT"}`,
     ];
     const tail = facts.complete ? ["#EXT-X-ENDLIST"] : [];
@@ -774,7 +810,10 @@ export class PackageEngine {
 
   /** A path inside this key's package, or null when the name is not one of ours. */
   segmentPath(key: string, name: string): string | null {
-    if (!KEY_RE.test(key) || !(SEGMENT_RE.test(name) || SPLASH_RE.test(name) || PAD_RE.test(name))) {
+    if (
+      !KEY_RE.test(key) ||
+      !(SEGMENT_RE.test(name) || SPLASH_RE.test(name) || PAD_RE.test(name) || INIT_RE.test(name))
+    ) {
       return null;
     }
     this.used.set(key, Date.now());
@@ -853,6 +892,57 @@ export class PackageEngine {
    * `name,start,end`, seconds relative to the start of that stretch. A line that is
    * still being flushed is ignored rather than guessed at.
    */
+  /**
+   * Decide, once, what container this key's segments go in, and record it.
+   *
+   * HEVC in MPEG-TS is unreadable to hls.js -- the whole browser world -- while fMP4 hands the
+   * samples to a platform that can decode them. Everything else keeps TS, which is what every
+   * player already reads and what this service has been producing all along.
+   */
+  private async chooseFormat(key: string, dir: string): Promise<PackageFormat> {
+    const existing = await this.formatFor(key);
+    if (existing.container === "mp4") return existing;
+    const info = await this.sourceInfo(key);
+    if (!info?.codecs.startsWith("hvc1")) return existing;
+    const plan = await this.readPlan(key);
+    const chosen: PackageFormat = {
+      container: "mp4",
+      inits: (plan?.ranges ?? []).map((_, index) => `init-${index}.mp4`),
+    };
+    await writeFile(path.join(dir, FORMAT), JSON.stringify(chosen)).catch(() => undefined);
+    return chosen;
+  }
+
+  /** Whether this key's segments are fMP4, and what starts each pass. */
+  async formatFor(key: string): Promise<PackageFormat> {
+    try {
+      const parsed = JSON.parse(await readFile(path.join(this.dirFor(key), FORMAT), "utf8")) as PackageFormat;
+      if (parsed.container === "mp4" && Array.isArray(parsed.inits)) return parsed;
+      return { container: "ts", inits: [] };
+    } catch {
+      return { container: "ts", inits: [] };
+    }
+  }
+
+  /** Write the segment list the fMP4 pass did not, from the playlist ffmpeg left behind. */
+  private async writeCsvFromPlaylist(playlist: string, csv: string): Promise<void> {
+    const text = await readFile(playlist, "utf8");
+    const lines = text.split("\n").map((line) => line.trim());
+    const rows: string[] = [];
+    let at = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const span = /^#EXTINF:([0-9.]+),/.exec(lines[i] ?? "");
+      if (!span) continue;
+      const name = lines[i + 1];
+      if (!name || name.startsWith("#")) continue;
+      const seconds = Number(span[1]);
+      if (!Number.isFinite(seconds)) continue;
+      rows.push(`${name},${at.toFixed(6)},${(at + seconds).toFixed(6)}`);
+      at += seconds;
+    }
+    if (rows.length > 0) await writeFile(csv, `${rows.join("\n")}\n`);
+  }
+
   private async readCsv(file: string): Promise<Array<{ name: string; startMs: number; endMs: number }>> {
     let text: string;
     try {
@@ -915,6 +1005,10 @@ export class PackageEngine {
       return state;
     }
 
+    // HEVC cannot be demuxed out of MPEG-TS by hls.js -- which is every browser player -- so an
+    // HEVC source is written as fMP4 instead. The decision is recorded beside the segments,
+    // because a package made by an earlier process has to be read back the same way.
+    const format = await this.chooseFormat(state.key, state.dir);
     let recorded = 0;
     for (let i = 0; i < ranges.length; i++) {
       const range = ranges[i];
@@ -922,9 +1016,30 @@ export class PackageEngine {
       const wanted = range.endMs - range.startMs;
       if (wanted < 500) continue;
       const csv = path.join(state.dir, `${PASS}${i}.csv`);
+      const init = format.inits[i] ?? "";
       const result = await run(
         this.settings.ffmpegPath,
-        [
+        format.container === "mp4"
+          ? [
+              "-nostdin", "-hide_banner", "-v", "error", "-y",
+              ...inputOptions(),
+              "-ss", seconds(range.startMs),
+              "-i", sourceUrl,
+              "-t", seconds(wanted),
+              "-c", "copy",
+              // `hvc1` is the sample entry Apple's spec asks for and the one browsers accept.
+              "-tag:v", "hvc1",
+              "-avoid_negative_ts", "make_zero",
+              "-f", "hls",
+              "-hls_time", String(SEGMENT_SECONDS),
+              "-hls_list_size", "0",
+              "-hls_segment_type", "fmp4",
+              "-hls_fmp4_init_filename", init,
+              "-hls_segment_filename", path.join(state.dir, "seg%05d.m4s"),
+              "-start_number", String(recorded),
+              path.join(state.dir, "perpass.m3u8"),
+            ]
+          : [
           "-nostdin", "-hide_banner", "-v", "error", "-y",
           ...inputOptions(),
           "-ss", seconds(range.startMs),
@@ -951,6 +1066,11 @@ export class PackageEngine {
         this.timeoutFor(wanted),
         this.signal,
       );
+      // The fMP4 arm has no segment list of its own: the playlist ffmpeg wrote is the record, so
+      // the same CSV is written from it and everything downstream reads one shape.
+      if (format.container === "mp4" && result.code === 0) {
+        await this.writeCsvFromPlaylist(path.join(state.dir, "perpass.m3u8"), csv).catch(() => undefined);
+      }
       const rows = await this.readCsv(csv);
       recorded += rows.length;
       state.segments = recorded;
