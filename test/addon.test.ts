@@ -293,6 +293,18 @@ test("the Worker serves a config page, a health check and a bare manifest", asyn
   const keylessPage = await call("/", testSettings({ TIDB_API_KEY: "" }));
   assert.ok((await keylessPage.text()).includes('"serverKeyConfigured":false'));
 
+  // The instance panel is filled in by script, so the data it reads has to be in the
+  // page: a field rename that missed the script would show "undefined" to the user.
+  const data = /<script id="config-data" type="application\/json">(.*?)<\/script>/s.exec(body)?.[1];
+  assert.ok(data, "the page carries its data blob");
+  const parsed = JSON.parse(data.replace(/\\u003c/g, "<")) as { cuts: Record<string, unknown> };
+  for (const field of ["mode", "available", "cacheDir", "cacheMaxGb", "cutConcurrency"]) {
+    assert.ok(field in parsed.cuts, `the page's cut data has ${field}`);
+  }
+  for (const id of ["cuts-mode", "cuts-cache", "cuts-ffmpeg", "api", "origin"]) {
+    assert.ok(body.includes(`id="${id}"`), `the page has the #${id} element the script writes to`);
+  }
+
   const bare = await call("/manifest.json");
   const manifest = (await bare.json()) as { behaviorHints: Record<string, unknown>; id: string };
   assert.equal(manifest.behaviorHints.configurationRequired, true);

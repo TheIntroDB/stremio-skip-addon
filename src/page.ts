@@ -295,9 +295,9 @@ export function renderConfigPage(options: PageOptions): string {
 
   var cuts = data.cuts;
   document.getElementById("cuts-mode").textContent =
-    cuts.cuts === "off" ? "off — progressive files are passed through" : cuts.cuts;
+    cuts.mode === "off" ? "off — progressive files are passed through" : cuts.mode;
   document.getElementById("cuts-cache").textContent =
-    cuts.cuts === "off"
+    cuts.mode === "off"
       ? "disabled"
       : cuts.cacheDir + " (max " + cuts.cacheMaxGb + " GB, " + cuts.cutConcurrency + " at a time)";
   document.getElementById("cuts-ffmpeg").textContent =

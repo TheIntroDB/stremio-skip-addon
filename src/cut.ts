@@ -167,6 +167,7 @@ export class CutEngine {
       available: this.available,
       cacheDir: this.settings.cacheDir,
       cacheMaxGb: Math.round(this.settings.cacheMaxBytes / 1024 ** 3),
+      cutConcurrency: this.settings.cutConcurrency,
       active: this.active,
       queued: this.queue.length,
       known: byStatus,
