@@ -25,6 +25,7 @@ import { trackKey, type SubtitleEngine } from "./subtitles.js";
 import type { Settings } from "./env.js";
 import { serveFile } from "./files.js";
 import { describeWindows } from "./format.js";
+import { knownCodecs } from "./known.js";
 import {
   isMasterPlaylist,
   isPlaylist,
@@ -369,6 +370,12 @@ async function packageOrProxy(
   // Only mkvs get here, and a package always waits for its first segment, so the length is
   // always worth learning: the playlist declares it from its first response.
   const durationMs = await context.packages.rememberDuration(key, target);
+  // What this release turned out to be, so the stream list for the same release can warn before
+  // the next playback spends the same minute finding out again.
+  if (streamKey) {
+    const probed = await context.packages.sourceInfo(key);
+    if (probed?.video) await knownCodecs(context.settings.cacheDir).remember(streamKey, probed.video);
+  }
   // The probe that learnt the length also listed the audio tracks, which is only available now on
   // a key seen for the first time.
   if (!audio) audio = await audioFor(context, key);
@@ -690,7 +697,7 @@ function playlistFor(body: string, debugHeaders: Record<string, string>): Respon
   return playlist(body, debugHeaders);
 }
 
-function looksLikeProgressiveFile(target: string): boolean {
+export function looksLikeProgressiveFile(target: string): boolean {
   try {
     const path = new URL(target).pathname.toLowerCase();
     return MEDIA_EXTENSIONS.some((extension) => path.endsWith(extension));

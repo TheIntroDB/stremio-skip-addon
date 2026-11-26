@@ -36,11 +36,12 @@ import { renderDebugJson, renderDebugPage, type DebugOptions } from "./debug.js"
 import { diagnostics } from "./diagnostics.js";
 import { cacheReport, formatBytes, purgeCache } from "./drain.js";
 import { renderConfigPage } from "./page.js";
-import { handlePlay, handleSegment } from "./play.js";
+import { knownCodecs } from "./known.js";
+import { handlePlay, handleSegment, looksLikeProgressiveFile } from "./play.js";
 import { handleSubtitleChunk, handleSubtitlePlaylist, SubtitleEngine } from "./subtitles.js";
 import { cardSeconds } from "./splash.js";
 import { Transcriber } from "./transcribe.js";
-import type { AddonConfig } from "./types.js";
+import { DEFAULT_CUT_MODE, type AddonConfig, type UpstreamStream } from "./types.js";
 import {
   fetchStreams,
   isFetchableByWorker,
@@ -48,6 +49,7 @@ import {
   sourceLabel,
   streamIdentity,
   wrapStream,
+  labelledHevc,
 } from "./upstream.js";
 import { playUrl } from "./urls.js";
 
@@ -260,6 +262,26 @@ async function handleStreams(
   const relay = cutSummary !== null || settings.proxy === true;
   const note = cutSummary ?? "TheIntroDB has no timings for this title yet, so this stream is relayed but not cut.";
 
+  // A stream that will be packaged without the processing card in front of it starts slowly and
+  // shows nothing while it does: an HEVC file (most 4K releases) is written as fMP4, and the card
+  // is a TS piece, so the first play waits for a segment with nothing on screen. A list cannot
+  // probe to find that out, so it says what it can: what an earlier playback of the same release
+  // learnt, or what the release calls itself. Both are hints, and both are phrased as such.
+  const learnt = await knownCodecs(settings.cacheDir).read();
+  const packaging = packages.enabled && (config.cuts ?? DEFAULT_CUT_MODE) !== "hls";
+  const cardOff = settings.splash !== true;
+  const warningFor = (_identity: string, stream: UpstreamStream, target: string): string | null => {
+    if (!packaging || !looksLikeProgressiveFile(target)) return null;
+    const video = learnt[_identity]?.video ?? (labelledHevc(stream) ? "hevc" : "");
+    if (video === "hevc") {
+      return "⚠ HEVC: prepared without a preview card, so the first play can take a minute to start.";
+    }
+    if (cardOff) {
+      return "⚠ Prepared without a preview card, so the first play can take a minute to start.";
+    }
+    return null;
+  };
+
   const streams = relay
     ? upstream.streams.map((stream) =>
         wrapStream(stream, {
@@ -268,6 +290,7 @@ async function handleStreams(
           cutSummary: note,
           allowPrivateHosts: settings.ALLOW_PRIVATE_HOSTS === "1",
           sourceBase: upstream.used ?? config.src[0] ?? "",
+          warningFor,
         }),
       )
     : upstream.streams;
@@ -396,6 +419,8 @@ async function drainNow(
   if (secret && request.headers.get("x-tidb-drain-secret") !== secret) {
     return errorResponse(403, "drain_refused", "This deployment requires the drain secret");
   }
+  // A drain is "start a new stream": what was learnt about the last one is no longer useful.
+  await knownCodecs(settings.cacheDir).clear();
   const jobs = engine.drain();
   const stoppedPackages = packages.drain();
   const purged = await purgeCache(settings.cacheDir);

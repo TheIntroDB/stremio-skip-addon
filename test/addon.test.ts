@@ -24,6 +24,8 @@ import { SubtitleEngine } from "../src/subtitles.js";
 import type { Transcriber } from "../src/transcribe.js";
 import type { Settings } from "../src/env.js";
 import { handleRequest } from "../src/index.js";
+import { knownCodecs } from "../src/known.js";
+import { streamIdentity } from "../src/upstream.js";
 import type { SegmentType } from "../src/types.js";
 
 let server: Server;
@@ -482,6 +484,58 @@ test("a source that only routes the percent-encoded id is retried", async () => 
   assert.equal(response.headers.get("x-tidb-upstream-streams"), "4");
   const body = (await response.json()) as { streams: unknown[] };
   assert.equal(body.streams.length, 4);
+});
+
+test("what a playback learnt about a release reaches the next list", async () => {
+  // The list cannot probe -- that is the whole point of it being cheap -- so the warning has to
+  // come from somewhere: the probe an earlier play already paid for, keyed by the stream's own
+  // identity so a re-minted debrid link still matches.
+  const cacheDir = await mkdtemp(path.join(tmpdir(), "tidb-known-http-"));
+  const sourceBase = `${base}/upstream`;
+  const target = `${base}/hls/movie.mp4`;
+  const identity = streamIdentity(
+    { name: "StubSource", title: "Another.Release.2160p", url: "/hls/movie.mp4" },
+    sourceBase,
+    target,
+  );
+  await knownCodecs(cacheDir).remember(identity, "hevc");
+
+  const response = await call(
+    `/${cutConfig}/stream/series/tt0903747:1:1.json`,
+    testSettings({ splash: true, cacheDir }),
+  );
+  const body = (await response.json()) as { streams: Array<Record<string, unknown>> };
+  const file = body.streams.find((stream) => String(stream.url).includes("movie.mp4"))!;
+  assert.match(
+    String(file.description),
+    /HEVC/,
+    "the release is named as the one that starts slowly, with the card otherwise on",
+  );
+});
+
+test("a stream that will be prepared without a preview says so", async () => {
+  // An HEVC file is packaged as fMP4 and the card is a TS piece, so there is nothing to show
+  // while it prepares -- and the first play waits for a segment. The list cannot probe, so it
+  // warns from what a playback learnt or what the release calls itself; here the card is off for
+  // the whole deployment, which is the same wait for every packaged file.
+  const response = await call(
+    `/${cutConfig}/stream/series/tt0903747:1:1.json`,
+    testSettings({ splash: false }),
+  );
+  assert.equal(response.status, 200);
+  const body = (await response.json()) as { streams: Array<Record<string, unknown>> };
+
+  const file = body.streams.find((stream) => String(stream.url).includes("movie.mp4"))!;
+  assert.match(
+    String(file.description),
+    /prepared without a preview card/i,
+    "a file that will be packaged says it can take a minute",
+  );
+  const playlist = body.streams.find((stream) => String(stream.url).includes("master.m3u8"))!;
+  assert.ok(
+    !/preview card/i.test(String(playlist.description)),
+    "a playlist is spliced, which is instant, so it says nothing",
+  );
 });
 
 test("a stream list relays the source addon and says what will be cut", async () => {

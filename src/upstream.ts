@@ -165,6 +165,30 @@ export function streamIdentity(
     .slice(0, 16);
 }
 
+/**
+ * Whether a stream's own labels say it is HEVC.
+ *
+ * A list cannot probe, so all there is before a playback is what the source called the release:
+ * "1080p x265", "HEVC", "H.265.10bit". It is a hint rather than a fact, which is why the line it
+ * produces reads like one -- and why what a playback actually learns (see `known.ts`) wins.
+ */
+export function labelledHevc(stream: UpstreamStream): boolean {
+  const filename = stream.behaviorHints?.filename;
+  const text = [
+    stream.name,
+    stream.title,
+    stream.description,
+    typeof filename === "string" ? filename : "",
+    stream.url,
+  ]
+    .filter((part): part is string => typeof part === "string")
+    .join(" ")
+    .toLowerCase();
+  // A release that says "x264" is not HEVC, whatever else it says.
+  if (/\b(x264|h\.?264|avc)\b/.test(text)) return false;
+  return /\b(x265|h\.?265|hevc)\b/.test(text);
+}
+
 export function wrapStream(
   stream: UpstreamStream,
   options: {
@@ -174,6 +198,13 @@ export function wrapStream(
     allowPrivateHosts: boolean;
     /** The source addon base, used to resolve a relative stream URL. */
     sourceBase: string;
+    /**
+     * A line to add to the item when this stream is one that starts slowly.
+     *
+     * Asked with the stream's identity so the answer can come from what an earlier playback
+     * learnt about the release (see `known.ts`) -- the list itself does no probing.
+     */
+    warningFor?: (identity: string, stream: UpstreamStream, target: string) => string | null;
   },
 ): UpstreamStream {
   const target = resolveTarget(stream.url, options.sourceBase);
@@ -204,11 +235,13 @@ export function wrapStream(
     return wrapped;
   }
 
-  wrapped.url = options.playUrl(target, streamIdentity(stream, options.sourceBase, target));
+  const identity = streamIdentity(stream, options.sourceBase, target);
+  wrapped.url = options.playUrl(target, identity);
   const name = typeof stream.name === "string" ? stream.name.trim() : "";
   wrapped.name = name ? `${name} · TheIntroDB` : options.label;
-  if (note) {
-    wrapped.description = [base, `${note}`].filter(Boolean).join("\n");
+  const warning = options.warningFor?.(identity, stream, target) ?? null;
+  if (note || warning) {
+    wrapped.description = [base, note, warning].filter(Boolean).join("\n");
   }
   return wrapped;
 }
