@@ -91,6 +91,9 @@ export async function main(): Promise<void> {
     () => packages.lastActivity,
   );
   const packageStatus = await packages.start();
+  // A package nobody has asked for in five minutes is deleted, and so is its subtitle track: this is
+  // one viewer's addon, not a cache for a crowd.
+  packages.onIdle = (key) => void subtitles.forget(key);
   // A TTL is only real if something sweeps: expired tracks at boot, and then hourly while the
   // process lives. Unref'd, so it never keeps the process up on its own.
   void subtitles.sweep();

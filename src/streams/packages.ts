@@ -46,7 +46,7 @@ import {
   SPLASH_RE,
   splashAvailable,
 } from "./splash.js";
-import { chooseAudio, parseProbe, type StreamInfo } from "./streaminfo.js";
+import { chooseAudio, parseProbe, placeholderAudio, type StreamInfo } from "./streaminfo.js";
 
 export type PackageStatus = "queued" | "generating" | "ready" | "failed";
 
@@ -181,6 +181,16 @@ const PAD_HORIZON_MS = 12_000;
  * length somebody can sit through.
  */
 const CARD_MAX_PIECES = 15;
+/**
+ * How long a package may sit untouched before it is thrown away.
+ *
+ * This is one viewer's addon, not a cache for a crowd: a film nobody has asked for in five minutes is
+ * dead weight -- the cut segments, the card, the placeholder, the subtitle chunks and the ffmpeg that
+ * is still writing them. Everything for that key goes on the next sweep.
+ */
+const IDLE_MS = 5 * 60_000;
+/** How often the idle sweep runs. Unref'd: it never keeps the process (or a test) alive. */
+const SWEEP_MS = 30_000;
 const PLAN = "plan.json";
 const DONE = "done";
 const PASS = "pass-";
@@ -243,6 +253,14 @@ export class PackageEngine {
    * "Processing…" with what was actually removed, after the fact.
    */
   private readonly finishings = new Map<string, Promise<void>>();
+  /** Per-package ffmpeg control, so one film that nobody is watching can be stopped on its own. */
+  private readonly aborts = new Map<string, AbortController>();
+  /**
+   * Called when a package is thrown away after five idle minutes, so whatever else holds state for it
+   * -- the subtitle engine and its chunks -- can forget it too.
+   */
+  onIdle?: (key: string) => void;
+  private reaper?: ReturnType<typeof setInterval>;
   private readonly tasks: Array<() => void> = [];
   private active = 0;
   private available: boolean | null = null;
@@ -290,6 +308,39 @@ export class PackageEngine {
     return stopped;
   }
 
+  /**
+   * Delete every package nobody has asked for in `IDLE_MS`, and stop what is still working on it.
+   *
+   * `used` is written by every playlist read and every segment fetch, so this is "no player has shown
+   * any interest" rather than "the job finished a while ago" -- a package still being written is being
+   * asked for, and a package from a previous process is left to the size limit.
+   */
+  private sweepIdle(): void {
+    const cutoff = Date.now() - IDLE_MS;
+    for (const [key, at] of [...this.used]) {
+      if (at > cutoff) continue;
+      void this.discard(key);
+    }
+  }
+
+  /** Throw one package away: stop its ffmpeg, delete its segments, and tell the rest of the world. */
+  async discard(key: string): Promise<void> {
+    this.aborts.get(key)?.abort();
+    this.aborts.delete(key);
+    this.states.delete(key);
+    this.used.delete(key);
+    this.cards.delete(key);
+    this.inFlight.delete(key);
+    this.finishings.delete(key);
+    try {
+      await rm(this.dirFor(key), { recursive: true, force: true });
+    } catch {
+      // A deletion that races a write is tried again on the next sweep, and the size limit is behind
+      // this either way.
+    }
+    this.onIdle?.(key);
+  }
+
   /** Note that a player asked for the film (see `lastActivity`). */
   noteActivity(): void {
     this.lastActivity = Date.now();
@@ -297,6 +348,8 @@ export class PackageEngine {
 
   /** Check that ffmpeg exists and the cache directory is usable. */
   async start(): Promise<{ ok: boolean; detail: string }> {
+    // One viewer: a package nobody has asked for in five minutes is deleted, workers and all.
+    if (!this.reaper) this.reaper = setInterval(() => this.sweepIdle(), SWEEP_MS).unref();
     // Always probed: whether a file is packaged is the install's choice, so any install this
     // deployment serves may need this engine, and a broken ffmpeg has to be visible at boot
     // rather than discovered by the first person who plays a `.mkv`.
@@ -567,11 +620,12 @@ export class PackageEngine {
     // An fMP4 package has no card: the card is a TS piece, and mixing containers inside one
     // playlist is exactly the kind of thing players disagree about.
     const fmp4 = stretches.some((stretch) => stretch.init !== null);
+    // Playback starts when the pre-roll is there. Until then the film is not listed at all -- the
+    // card is, and its cushion -- so a player cannot reach a film that has only a segment or two
+    // behind it and stall there waiting for the rest.
+    const playable = complete || realMs >= Math.max(1, this.settings.prerollSeconds * 1000);
     let shown = fmp4 || card.length === 0 ? [] : card;
-    if (
-      shown.length > 0 &&
-      (complete || realMs >= Math.max(1, this.settings.prerollSeconds * 1000))
-    ) {
+    if (shown.length > 0 && playable) {
       this.replaceCard(key, card, plan);
       // Listed only once it exists: the processing pieces and the finished card are the same length,
       // so swapping them moves nothing, and a card that is still being drawn must not be a 404.
@@ -592,7 +646,7 @@ export class PackageEngine {
       }
     };
     add(shown);
-    for (const stretch of stretches) add(stretch.segments, stretch.init);
+    if (playable) for (const stretch of stretches) add(stretch.segments, stretch.init);
 
     // A short cushion of placeholder past the film while it is still being packaged -- never the
     // rest of the episode (see `PAD_HORIZON_MS`).
@@ -697,6 +751,7 @@ export class PackageEngine {
         name: `splash${String(state.pieces).padStart(5, "0")}.ts`,
         offsetMs: state.pieces * SPLASH_PIECE_MS,
         seconds: SPLASH_PIECE_MS / 1000,
+        audio: await this.placeholderAudioFor(key),
       },
       {
         segments: written,
@@ -730,32 +785,50 @@ export class PackageEngine {
    * begins.
    */
   private replaceCard(key: string, pieces: Array<{ ms: number }>, plan: Plan): void {
+    // Frozen before anything is awaited: a poll that arrives while the audio codec is being read must
+    // not draw another processing piece into a card that is finished.
     const state = this.cards.get(key);
     if (state) state.frozen = true;
     if (this.finishings.has(key)) return;
     const totalMs = pieces.reduce((sum, piece) => sum + piece.ms, 0);
     if (totalMs <= 0) return;
-    const task = generateCardPiece(
-      this.settings,
-      this.dirFor(key),
-      { name: DONE_NAME, offsetMs: 0, seconds: totalMs / 1000 },
-      {
-        segments: 0,
-        windows: plan.windows ?? [],
-        pass: 1,
-        passes: plan.ranges.length || 1,
-        state: "done",
-        waitMs: totalMs,
-      },
-    )
-      .then((piece) => {
-        if (piece.ok) return;
-        this.cardError = piece.error;
-        console.warn(`  warning        the finished card cannot be drawn: ${piece.error}`);
-      })
+    const task = (async () => {
+      const piece = await generateCardPiece(
+        this.settings,
+        this.dirFor(key),
+        {
+          name: DONE_NAME,
+          offsetMs: 0,
+          seconds: totalMs / 1000,
+          audio: await this.placeholderAudioFor(key),
+        },
+        {
+          segments: 0,
+          windows: plan.windows ?? [],
+          pass: 1,
+          passes: plan.ranges.length || 1,
+          state: "done",
+          waitMs: totalMs,
+        },
+      );
+      if (piece.ok) return;
+      this.cardError = piece.error;
+      console.warn(`  warning        the finished card cannot be drawn: ${piece.error}`);
+    })()
       .catch(() => undefined)
       .finally(() => this.finishings.delete(key));
     this.finishings.set(key, task);
+  }
+
+  /**
+   * The audio codec a placeholder has to carry for this package (see `placeholderAudio`).
+   *
+   * A card or cushion with silent AAC in front of an E-AC-3 film is a player that builds its audio
+   * buffer for AAC and then refuses the film's sound: the picture plays and there is no audio.
+   */
+  private async placeholderAudioFor(key: string): Promise<string> {
+    const info = await this.sourceInfo(key);
+    return placeholderAudio(chooseAudio(info?.audio, "", "en"));
   }
 
   /** Whether this key's finished card is on disk yet (see `replaceCard`). */
@@ -913,6 +986,7 @@ export class PackageEngine {
       this.dirFor(key),
       format.container,
       info?.video,
+      placeholderAudio(chooseAudio(info?.audio, "", "en")),
     );
     return fallback
       ? { init: fallback.init, pieces: [{ name: fallback.name, ms: PAD_SECONDS * 1000 }] }
@@ -1295,6 +1369,11 @@ export class PackageEngine {
     audioLanguage?: string,
   ): Promise<PackageState> {
     const ranges = keptRanges(windows, durationMs);
+    // One controller per package, on top of the engine's: a drain stops everything, and an idle sweep
+    // stops one film without touching the others.
+    const local = new AbortController();
+    this.aborts.set(state.key, local);
+    const signal = AbortSignal.any([this.signal, local.signal]);
     state.status = "generating";
     state.startedAt = Date.now();
     state.passes = ranges.length;
@@ -1415,7 +1494,7 @@ export class PackageEngine {
               path.join(state.dir, "seg%05d.ts"),
             ],
         this.timeoutFor(wanted),
-        this.signal,
+        signal,
       );
       // The fMP4 arm has no segment list of its own: the playlist ffmpeg wrote is the record, so
       // the same CSV is written from it and everything downstream reads one shape.
@@ -1439,6 +1518,7 @@ export class PackageEngine {
       state.error ??= "ffmpeg produced no usable segments";
       return state;
     }
+    this.aborts.delete(state.key);
     // The end marker is what turns an EVENT playlist into a seekable one.
     await writeFile(path.join(state.dir, DONE), "").catch(() => undefined);
     state.status = "ready";

@@ -958,6 +958,9 @@ test("the card grows a piece per poll and is frozen by the pre-roll", async () =
   );
   const nine = (await engine.manifest(key))!;
   assert.equal(nine.bufferedMs, 9_000, "nine seconds of the film");
+  // ... and the film is not in the playlist yet: a player must not be able to reach a film that has
+  // one segment behind it and stall there.
+  assert.ok(!nine.body.includes("seg00000.ts"), "nine seconds is not enough to start on");
   const third = await engine.advanceCard(key);
   assert.equal(third?.card, 3, "is not the pre-roll, so the card grows");
   assert.equal(third?.cardMs, 6_000, "to six seconds");
@@ -980,6 +983,42 @@ test("the card grows a piece per poll and is frozen by the pre-roll", async () =
     `the film starts right after the three card pieces (${uris.join(" ")})`,
   );
   assert.match(uris[firstFilm] ?? "", /seg00000\.ts/, "from its first frame");
+});
+
+test("an idle package is deleted, with its segments and its workers", async () => {
+  // One viewer's addon, not a cache for a crowd: five minutes without a request and the package goes,
+  // along with anything still writing it -- and whatever else holds state for the key is told.
+  const engine = new PackageEngine(
+    settings({ cacheDir: path.join(workDir, "cache-idle"), splash: true }),
+  );
+  await engine.start();
+  const windows = [INTRO];
+  const key = engine.keyFor(samplePath, windows, "stream:idle");
+  const dir = path.join(workDir, "cache-idle", "hls", key);
+  await mkdir(dir, { recursive: true });
+  await writeFile(
+    path.join(dir, "plan.json"),
+    JSON.stringify({
+      key,
+      windows,
+      ranges: [{ startMs: 0, endMs: INTRO.startMs }],
+      createdAt: Date.now(),
+    }),
+  );
+  await writeFile(path.join(dir, "pass-0.csv"), "seg00000.ts,0.000000,5.000000\n");
+  await writeFile(path.join(dir, "done"), "");
+  assert.ok(await engine.manifest(key), "the package is servable");
+
+  let forgotten: string | null = null;
+  engine.onIdle = (gone) => {
+    forgotten = gone;
+  };
+  await engine.discard(key);
+
+  assert.equal(forgotten, key, "everything that holds state for it is told");
+  assert.equal(await engine.manifest(key), null, "and there is no package left to serve");
+  assert.equal(engine.state(key), null, "nor anything in memory");
+  assert.equal(await engine.existing(key), null, "and the segments are off the disk");
 });
 
 test("an fMP4 package is described with its initialisation section", async () => {

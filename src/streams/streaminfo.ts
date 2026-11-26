@@ -24,6 +24,8 @@ export interface AudioStream {
   language: string;
   /** Whether the file marks this track as the default one. */
   isDefault: boolean;
+  /** The codec's name as ffprobe reports it (`eac3`, `aac`, `ac3`, ...). */
+  codec?: string;
 }
 
 /** The parts of a probe a master playlist needs. */
@@ -248,8 +250,30 @@ export function parseProbe(text: string): StreamInfo | null {
         index: Number(stream.index),
         language: normalizeLanguage(stream.tags?.language),
         isDefault: Number(stream.disposition?.default) === 1,
+        codec: (stream.codec_name ?? "").toLowerCase(),
       })),
   };
+}
+
+/**
+ * The audio codec a placeholder piece should carry, so a player never changes decoder mid-stream.
+ *
+ * hls.js builds its audio `SourceBuffer` from the first segment it parses. A card with silent AAC in
+ * front of a film whose audio is E-AC-3 hands it an AAC buffer, and the film's audio is then refused:
+ * the picture plays and there is no sound at all. The placeholder has to speak the film's codec, and
+ * this is the nearest one it can encode.
+ */
+export function placeholderAudio(track: { codec?: string } | null | undefined): string {
+  switch ((track?.codec ?? "").toLowerCase()) {
+    case "eac3":
+      return "eac3";
+    case "ac3":
+      return "ac3";
+    case "mp3":
+      return "libmp3lame";
+    default:
+      return "aac";
+  }
 }
 
 /**
