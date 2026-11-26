@@ -899,24 +899,6 @@ export class PackageEngine {
    * samples to a platform that can decode them. Everything else keeps TS, which is what every
    * player already reads and what this service has been producing all along.
    */
-  private async chooseFormat(key: string, dir: string): Promise<PackageFormat> {
-    const existing = await this.formatFor(key);
-    if (existing.container === "mp4") return existing;
-    const info = await this.sourceInfo(key);
-    // The codec string is the better signal but it is not always spellable (an unfamiliar HEVC
-    // profile leaves it empty), and a HEVC package written as TS is a black picture in every
-    // browser. The name ffprobe reported is the fallback.
-    const hevc = info?.video === "hevc" || (info?.codecs ?? "").startsWith("hvc1");
-    if (!hevc) return existing;
-    const plan = await this.readPlan(key);
-    const chosen: PackageFormat = {
-      container: "mp4",
-      inits: (plan?.ranges ?? []).map((_, index) => `init-${index}.mp4`),
-    };
-    await writeFile(path.join(dir, FORMAT), JSON.stringify(chosen)).catch(() => undefined);
-    return chosen;
-  }
-
   /** Whether this key's segments are fMP4, and what starts each pass. */
   async formatFor(key: string): Promise<PackageFormat> {
     try {
@@ -924,7 +906,23 @@ export class PackageEngine {
       if (parsed.container === "mp4" && Array.isArray(parsed.inits)) return parsed;
       return { container: "ts", inits: [] };
     } catch {
-      return { container: "ts", inits: [] };
+      // Not recorded yet: decide now, from what the probe already knows. This is asked before the
+      // processing card is drawn as well as before packaging, and the two must agree -- a card
+      // written into an fMP4 playlist is one container inside another.
+      const info = await this.sourceInfo(key);
+      // The codec string is the better signal but it is not always spellable (an unfamiliar HEVC
+      // profile leaves it empty), and a HEVC package written as TS is a black picture in every
+      // browser. The name ffprobe reported is the fallback.
+      const hevc = info?.video === "hevc" || (info?.codecs ?? "").startsWith("hvc1");
+      if (!hevc) return { container: "ts", inits: [] };
+      const plan = await this.readPlan(key);
+      const chosen: PackageFormat = {
+        container: "mp4",
+        inits: (plan?.ranges ?? []).map((_, index) => `init-${index}.mp4`),
+      };
+      await mkdir(this.dirFor(key), { recursive: true }).catch(() => undefined);
+      await writeFile(path.join(this.dirFor(key), FORMAT), JSON.stringify(chosen)).catch(() => undefined);
+      return chosen;
     }
   }
 
@@ -1012,7 +1010,7 @@ export class PackageEngine {
     // HEVC cannot be demuxed out of MPEG-TS by hls.js -- which is every browser player -- so an
     // HEVC source is written as fMP4 instead. The decision is recorded beside the segments,
     // because a package made by an earlier process has to be read back the same way.
-    const format = await this.chooseFormat(state.key, state.dir);
+    const format = await this.formatFor(state.key);
     let recorded = 0;
     for (let i = 0; i < ranges.length; i++) {
       const range = ranges[i];
@@ -1030,6 +1028,10 @@ export class PackageEngine {
               "-ss", seconds(range.startMs),
               "-i", sourceUrl,
               "-t", seconds(wanted),
+              // Only the picture and the sound. A source with an embedded WebVTT track is common,
+              // and copying it makes the HLS muxer refuse the whole output ("Exactly one WebVTT
+              // stream is needed"), which is a package that never gets made at all.
+              "-sn", "-dn",
               "-c", "copy",
               // `hvc1` is the sample entry Apple's spec asks for and the one browsers accept.
               "-tag:v", "hvc1",
@@ -1049,6 +1051,8 @@ export class PackageEngine {
           "-ss", seconds(range.startMs),
           "-i", sourceUrl,
           "-t", seconds(wanted),
+          // See above: the segments carry the picture and the sound, nothing else.
+          "-sn", "-dn",
           "-c", "copy",
           "-f", "segment",
           "-segment_time", String(SEGMENT_SECONDS),

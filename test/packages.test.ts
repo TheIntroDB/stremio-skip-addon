@@ -94,13 +94,22 @@ before(async () => {
   workDir = await mkdtemp(path.join(tmpdir(), "tidb-package-"));
   samplePath = path.join(workDir, "sample.mkv");
 
-  // 30 seconds of something predictable, in Matroska, with a keyframe every second.
+  // 30 seconds of something predictable, in Matroska, with a keyframe every second -- and an
+  // embedded WebVTT track, because most releases have one. ffmpeg 8 happens to tolerate copying it
+  // into the HLS muxer; the build in the deployment image does not and refuses the entire output
+  // ("Exactly one WebVTT stream is needed"), which is a package that never gets made at all. The
+  // segments are written with `-sn -dn`, so the release a source arrives in cannot decide whether
+  // a package can be made.
+  const subPath = path.join(workDir, "sample.vtt");
+  await writeFile(subPath, "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nhello\n");
   const generated = await run("ffmpeg", [
     "-nostdin", "-hide_banner", "-v", "error",
     "-f", "lavfi", "-i", `testsrc=size=320x240:rate=10:duration=${SAMPLE_SECONDS}`,
     "-f", "lavfi", "-i", `sine=frequency=440:duration=${SAMPLE_SECONDS}`,
+    "-i", subPath,
+    "-map", "0:v:0", "-map", "1:a:0", "-map", "2:s:0",
     "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-g", "10",
-    "-c:a", "aac", "-b:a", "64k",
+    "-c:a", "aac", "-b:a", "64k", "-c:s", "webvtt",
     "-y", samplePath,
   ], 120_000);
   assert.equal(generated.code, 0, `could not generate the sample: ${generated.stderr}`);
