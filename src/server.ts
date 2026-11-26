@@ -16,7 +16,7 @@ import { Readable } from "node:stream";
 import { PackageEngine } from "./packages.js";
 import { recordFailure } from "./diagnostics.js";
 import { SubtitleEngine } from "./subtitles.js";
-import { Transcriber } from "./transcribe.js";
+import { ProcessTranscriber } from "./transcribe.js";
 import { loadSettings, type Settings } from "./env.js";
 import { handleRequest } from "./index.js";
 import { ADDON_VERSION } from "./manifest.js";
@@ -86,7 +86,7 @@ export async function main(): Promise<void> {
   const packages = new PackageEngine(settings);
   // One transcriber and one engine for the process: the speech models are loaded once and kept,
   // and the tracks they produce outlive any single request.
-  const subtitles = new SubtitleEngine(settings, new Transcriber(settings), () => packages.lastActivity);
+  const subtitles = new SubtitleEngine(settings, new ProcessTranscriber(settings), () => packages.lastActivity);
   const packageStatus = await packages.start();
   // A TTL is only real if something sweeps: expired tracks at boot, and then hourly while the
   // process lives. Unref'd, so it never keeps the process up on its own.

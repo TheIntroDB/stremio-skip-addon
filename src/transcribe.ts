@@ -16,10 +16,28 @@
  * it into a failure, which is what the Silo Tiny Subtitles plugin hit in production.
  */
 
+import { spawn, type ChildProcess } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { availableParallelism } from "node:os";
 
 import type { Word } from "./cues.js";
 import type { Settings } from "./env.js";
+
+/**
+ * What the engine needs from the models, whoever owns them.
+ *
+ * Both implementations fit it: {@link Transcriber} loads them in this process (which is what the
+ * tests drive, one chunk at a time), and {@link ProcessTranscriber} keeps them in a child so the
+ * server's own loop is never at their mercy.
+ */
+export interface SpeechModels {
+  lastError: string | null;
+  available(): Promise<boolean>;
+  transcribe(wavPath: string, language: string): Promise<Transcript>;
+  refine?(wavPath: string, words: readonly Word[], language: string): Promise<Word[]>;
+  /** Stop whatever is running, for a drain. Only a child process can do this at all. */
+  cancel?(): void;
+}
 
 /** What a recogniser gives back. */
 export interface Transcript {
@@ -267,4 +285,135 @@ export async function readWav(path: string): Promise<{ samples: Float32Array; sa
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message || error.name : String(error);
+}
+
+/**
+ * The same interface, with the models in a child process.
+ *
+ * Recognition is native work with a thread pool the size of the machine, and while it runs the
+ * process that owns the sockets only gets what the scheduler has left: starting a playback could
+ * make every page -- `/health`, the drain button -- stop answering, and an inference already under
+ * way could not be interrupted, so a drain could only time out. This keeps the models out of the
+ * server: it spawns {@link transcribe-worker}, `nice`s it so the sockets win, caps its threads, and
+ * can kill it outright. Run it in production; the tests drive `Transcriber` directly.
+ */
+export class ProcessTranscriber {
+  lastError: string | null = null;
+  private child: ChildProcess | null = null;
+  private nextId = 1;
+  private pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+  private buffer = "";
+
+  constructor(private readonly settings: Settings) {}
+
+  /** Whether the models are loaded in the child. Starts it if it is not running. */
+  async available(): Promise<boolean> {
+    try {
+      const reply = (await this.send({ cmd: "available" })) as { available?: boolean; error?: string | null };
+      this.lastError = reply.error ?? null;
+      return reply.available === true;
+    } catch (error) {
+      this.lastError = message(error);
+      return false;
+    }
+  }
+
+  /** Load the models ahead of the first chunk. Never throws. */
+  async warm(): Promise<boolean> {
+    return this.available();
+  }
+
+  /**
+   * Alignment happens in the child, with the words it just produced there, so this side is the
+   * passthrough: the engine calls it and the words come back as they arrived.
+   */
+  async refine(_wavPath: string, words: readonly Word[], _language: string): Promise<Word[]> {
+    return [...words];
+  }
+
+  /** Recognise and align one WAV file, in the child. */
+  async transcribe(wavPath: string, language: string): Promise<Transcript> {
+    const reply = (await this.send({ cmd: "transcribe", wav: wavPath, language })) as {
+      transcript?: Transcript;
+    };
+    if (!reply.transcript) throw new Error("the recogniser gave nothing back");
+    return reply.transcript;
+  }
+
+  /** End the child, if it is running. A drain uses this: inference cannot be cancelled politely. */
+  cancel(): void {
+    const child = this.child;
+    this.child = null;
+    for (const waiter of this.pending.values()) waiter.reject(new Error("the recogniser was stopped"));
+    this.pending.clear();
+    this.buffer = "";
+    if (child) {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    }
+  }
+
+  /** One request, one reply, matched by id so a late answer cannot be taken for this one's. */
+  private send(request: Record<string, unknown>): Promise<unknown> {
+    const child = this.ensure();
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      child.stdin?.write(`${JSON.stringify({ ...request, id })}\n`);
+    });
+  }
+
+  private ensure(): ChildProcess {
+    if (this.child) return this.child;
+    // One thread fewer than the machine, so the server and its sockets always have somewhere to
+    // run. `nice` is what makes that a preference rather than a hope.
+    const threads = String(Math.max(1, Math.min(4, availableParallelism() - 1)));
+    const env = { ...process.env, OMP_NUM_THREADS: threads, ORT_NUM_THREADS: threads };
+    const worker = new URL("./transcribe-worker.js", import.meta.url).pathname;
+    const child = spawn("nice", ["-n", "15", process.execPath, worker], {
+      env,
+      stdio: ["pipe", "pipe", "inherit"],
+    });
+    child.on("error", () => {
+      // No `nice` on this host: run it unpolitely rather than not at all.
+      this.child = null;
+      this.lastError = "the recogniser could not be started";
+    });
+    child.on("exit", () => {
+      if (this.child === child) this.child = null;
+      for (const [id, waiter] of this.pending) {
+        waiter.reject(new Error("the recogniser exited"));
+        this.pending.delete(id);
+      }
+    });
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => this.receive(chunk));
+    this.child = child;
+    return child;
+  }
+
+  private receive(chunk: string): void {
+    this.buffer += chunk;
+    for (;;) {
+      const end = this.buffer.indexOf("\n");
+      if (end === -1) return;
+      const line = this.buffer.slice(0, end).trim();
+      this.buffer = this.buffer.slice(end + 1);
+      if (line === "") continue;
+      let reply: { id?: number; ok?: boolean; error?: string };
+      try {
+        reply = JSON.parse(line) as { id?: number; ok?: boolean; error?: string };
+      } catch {
+        continue;
+      }
+      const waiter = reply.id === undefined ? undefined : this.pending.get(reply.id);
+      if (!waiter) continue;
+      this.pending.delete(reply.id as number);
+      if (reply.ok === false) waiter.reject(new Error(reply.error ?? "the recogniser failed"));
+      else waiter.resolve(reply);
+    }
+  }
 }

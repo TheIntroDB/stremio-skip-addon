@@ -28,7 +28,7 @@ import type { Settings } from "./env.js";
 import { run } from "./ffmpeg.js";
 import { CORS_HEADERS } from "./http.js";
 import { planStretches, type ChunkJob, type StretchJob } from "./stretches.js";
-import type { Transcriber } from "./transcribe.js";
+import type { SpeechModels } from "./transcribe.js";
 import type { SkipWindow } from "./types.js";
 
 /** What a title needs transcribed, in the terms the packager already knows it. */
@@ -108,7 +108,7 @@ export class SubtitleEngine {
 
   constructor(
     private readonly settings: Settings,
-    private readonly transcriber: Transcriber,
+    private readonly transcriber: SpeechModels,
     /**
      * When the film was last asked for at all -- a playlist read or a segment fetch.
      *
@@ -235,6 +235,9 @@ export class SubtitleEngine {
   drain(): number {
     const stopped = this.jobs.size + this.queue.length;
     this.controller.abort();
+    // Inference cannot be asked to stop -- it is seconds of native work with no cancellation -- so
+    // a drain ends it. Without this the button only ever timed out.
+    this.transcriber.cancel?.();
     this.controller = new AbortController();
     this.epoch += 1;
     this.jobs.clear();
@@ -474,7 +477,9 @@ export class SubtitleEngine {
         if (extracted.code !== 0) throw new Error(extracted.stderr.trim().slice(-200) || `ffmpeg exited ${extracted.code}`);
         const transcript = await this.transcriber.transcribe(wav, language);
         if (transcript.realtimeFactor > 0) job.realtimeFactor = transcript.realtimeFactor;
-        const words = await this.transcriber.refine(wav, transcript.words, language);
+        const words = this.transcriber.refine
+          ? await this.transcriber.refine(wav, transcript.words, language)
+          : transcript.words;
         // Times are relative to this chunk, which is what an HLS subtitle segment must hold:
         // the player places the segment itself, from its position in the playlist.
         return buildCues(words);
