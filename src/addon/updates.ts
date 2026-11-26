@@ -39,13 +39,17 @@ export interface UpdateStatus {
 /**
  * `1.4.0` is newer than `1.3.9`: compared as numbers, so ten is not less than nine.
  *
- * Only the numeric part counts, and a prerelease of the *current* version is not an update (a `-rc`
- * tag on `latest` is not something to tell a viewer about). Anything unparseable answers false: a
- * wrong "update available" is worse than none.
+ * Only the numeric part counts, and a prerelease is never an update: a `-rc` tag on `latest` is a
+ * mistake in the release, not an upgrade. Anything unparseable answers false — a wrong "update
+ * available" is worse than none, and a deployment that nags is a deployment people stop believing.
  */
 export function isNewer(candidate: string, current: string): boolean {
   const parse = (value: string): number[] | null => {
-    const core = value.trim().replace(/^v/i, "").split("-")[0] ?? "";
+    const trimmed = value.trim().replace(/^v/i, "");
+    // A prerelease is not something to tell a viewer about: `0.2.0-rc.1` on `latest` is a mistake in
+    // the release, not an upgrade, and stripping the suffix would announce it as `0.2.0`.
+    if (trimmed.includes("-")) return null;
+    const core = trimmed.split("-")[0] ?? "";
     if (!/^\d+(\.\d+)*$/.test(core)) return null;
     return core.split(".").map(Number);
   };
@@ -108,6 +112,11 @@ export class UpdateChecker {
       } catch (error) {
         this.status = {
           ...this.status,
+          // A registry that cannot be reached has no opinion: keeping the last `behind` would leave a
+          // deployment telling its viewer to update for another six hours on the strength of a check
+          // that has since stopped working.
+          latest: null,
+          behind: false,
           checkedAt: Date.now(),
           error: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200),
         };

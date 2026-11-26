@@ -24,6 +24,11 @@ test("a bigger version is newer, whatever the digits are", () => {
   assert.equal(isNewer("1.0.0", "1.0.0"), false, "the same version is not an update");
   assert.equal(isNewer("0.0.9", "0.1.0"), false, "and an older one is not either");
   assert.equal(isNewer("v1.2.0", "1.1.0"), true, "a leading v is not a different version");
+  // A prerelease on `latest` is a mistake in the release, not an upgrade: stripping the suffix would
+  // announce `0.2.0-rc.1` as `0.2.0` and send every deployment chasing a version that is not released.
+  assert.equal(isNewer("0.2.0-rc.1", "0.1.0"), false, "a prerelease is never an update");
+  assert.equal(isNewer("0.2.0-beta", "0.1.0"), false);
+  assert.equal(isNewer("1.0.0-rc.1", "0.9.0"), false);
   // A tag nobody can parse is not something to tell a viewer about.
   assert.equal(isNewer("nightly", "0.1.0"), false);
   assert.equal(isNewer("1.0.0", "dev"), false);
@@ -64,6 +69,26 @@ test("a registry that is up to date, or down, never claims an update", async () 
   }) as typeof fetch).check();
   assert.equal(missing.latest, null);
   assert.equal(missing.behind, false);
+});
+
+test("a check that fails has no opinion, even if the last one had", async () => {
+  // behind=true, then the registry goes away: the deployment must stop telling its viewer to update,
+  // not keep saying so for another six hours on the strength of a check that no longer works.
+  let fail = false;
+  const checker = new UpdateChecker("0.1.0", true, (async () => {
+    if (fail) throw new Error("ECONNREFUSED");
+    return new Response(JSON.stringify({ version: "0.2.0" }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }) as typeof fetch);
+  assert.equal((await checker.check()).behind, true, "it starts out behind");
+  fail = true;
+  const after = await checker.check();
+  assert.equal(after.behind, false, "and stops claiming so when it cannot check");
+  assert.equal(after.latest, null);
+  assert.equal(after.current, "0.1.0", "who it is does not change");
+  assert.match(after.error ?? "", /ECONNREFUSED/);
 });
 
 test("a deployment that has turned the check off never asks", async () => {

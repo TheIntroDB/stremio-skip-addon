@@ -69,7 +69,18 @@ Releases are cut from `main` and published to both channels, so updating is pull
 
 - `npx @theintrodb/stremio-skip-addon@latest` — `npx` resolves `latest` on every start.
 - `npm install -g @theintrodb/stremio-skip-addon@latest`
-- `docker pull ghcr.io/theintrodb/stremio-skip-addon:latest`, then restart the container.
+- Docker: a container keeps the image it was created from, so restarting it is not updating it. Pull
+  the new one **and recreate the container**:
+
+  ```bash
+  # the `docker run` install: the named volume keeps the cache
+  docker pull ghcr.io/theintrodb/stremio-skip-addon:latest
+  docker stop stremio-skip-addon && docker rm stremio-skip-addon
+  # ...then the same `docker run` as before
+
+  # the compose install: pull and recreate in one step
+  docker compose -f docker-compose.image.yml up -d --pull always
+  ```
 
 **A deployment that is behind says so.** It asks npm for the newest release every few hours and reports it in two places: `curl -s localhost:8787/health | jq .update` and an _update available_ badge on the configuration page. Set `UPDATE_CHECK=off` to stop it asking entirely.
 
