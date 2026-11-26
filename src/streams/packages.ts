@@ -145,10 +145,26 @@ const DURATION = "duration.json";
  *
  * A player's reload cadence comes from #EXT-X-TARGETDURATION, so the padding cannot be one
  * enormous entry -- a two-hour target would mean the player waited two hours before noticing
- * the episode had arrived. One segment's worth keeps it behaving like any other playlist,
- * which is what it is: a two-hour episode is ~1200 entries whether or not some are placeholder.
+ * the episode had arrived. One segment's worth keeps it behaving like any other playlist.
  */
 const PAD_ENTRY_MS = PAD_SECONDS * 1000;
+/**
+ * How far past the packaged film the placeholder reaches.
+ *
+ * This is the whole reason a player can sit on "Processing…" over an episode that is right there:
+ * an `#EXT-X-PLAYLIST-TYPE:EVENT` playlist is joined at its **live edge**, three target durations
+ * before the end (`liveSyncDurationCount` in hls.js, the same rule in AVFoundation), whether or not
+ * the player honours `#EXT-X-START`. A tail that declares the *whole episode* therefore puts the
+ * live edge inside the placeholder for the entire packaging -- measured on a 20-minute episode:
+ * 45 of its 284 entries were placeholder, they sat exactly at the end, and the player opened there
+ * and stayed. When the film finished the playlist shrank to its real length, the player's position
+ * fell at the very end of the episode, and the only way out was to close it and start again.
+ *
+ * So the tail is a short cushion instead: under three target durations, which keeps the live edge
+ * inside the film that has already been packaged. The tail then moves forward as the film arrives,
+ * and the position a player is already at is replaced by real segments under it.
+ */
+const PAD_HORIZON_MS = 12_000;
 /** A padded playlist is still a playlist; this bounds a pathological file length. */
 const PAD_MAX_ENTRIES = 2000;
 const PLAN = "plan.json";
@@ -555,7 +571,8 @@ export class PackageEngine {
     for (const stretch of stretches) add(stretch.segments, stretch.init);
 
     const complete = doneAt !== null;
-    // The placeholder keeps the declared length honest while the packaging is still running.
+    // A short cushion of placeholder past the film while it is still being packaged -- never the
+    // rest of the episode (see `PAD_HORIZON_MS`).
     const padding = complete
       ? { entries: [], init: null }
       : await this.paddingEntries(plan, key, realMs);
@@ -730,10 +747,11 @@ export class PackageEngine {
   }
 
   /**
-   * The length the playlist should declare: the source minus the windows being cut.
+   * The episode's own length: the source minus the windows being cut.
    *
-   * Null when the source's length was never probed, in which case nothing can be padded and
-   * the playlist grows as it did before.
+   * Null when the source's length was never probed, in which case nothing can be padded and the
+   * playlist grows as it did before. It is the cap on the placeholder's tail, not the length the
+   * playlist declares (see `PAD_HORIZON_MS`).
    */
   private async episodeMs(plan: Plan): Promise<number | null> {
     const duration = await this.readDuration(plan.key);
@@ -763,10 +781,14 @@ export class PackageEngine {
     if (remaining <= PAD_ENTRY_MS / 2) return { entries: [], init: null };
     const media = await this.paddingMedia(key);
     if (media.names.length === 0) return { entries: [], init: null };
-    const count = Math.min(PAD_MAX_ENTRIES, Math.ceil(remaining / PAD_ENTRY_MS));
+    // A cushion past the write head, not the rest of the episode (see `PAD_HORIZON_MS`): what the
+    // player reloads into has to be near where it is, and the end of the playlist is where a live
+    // player starts.
+    const span = Math.min(remaining, PAD_HORIZON_MS);
+    const count = Math.min(PAD_MAX_ENTRIES, Math.ceil(span / PAD_ENTRY_MS));
     const entries: Array<{ uri: string; ms: number }> = [];
     for (let i = 0; i < count; i += 1) {
-      const ms = i === count - 1 ? remaining - PAD_ENTRY_MS * (count - 1) : PAD_ENTRY_MS;
+      const ms = i === count - 1 ? span - PAD_ENTRY_MS * (count - 1) : PAD_ENTRY_MS;
       if (ms <= 0) continue;
       entries.push({
         uri: `seg?f=${encodeURIComponent(key)}/${media.names[i % media.names.length]!}`,
@@ -777,21 +799,17 @@ export class PackageEngine {
   }
 
   /**
-   * What the padding points at: the card's own pieces when it has drawn any, so a player that
-   * outruns the packaging sees the card, otherwise one plain black piece.
+   * What the placeholder points at: a plain piece in the package's own container, and with its own
+   * video codec.
    *
-   * The piece is written in the package's own container, and with its own video codec: a TS
-   * segment, or an AVC one, sitting inside an fMP4 HEVC playlist is a demux error -- the player
-   * stops at the end of its buffer instead of waiting on a placeholder, which is worse than the
-   * place it was standing in for.
+   * Never the processing card. A player that joins at the live edge lands in this tail, so a tail
+   * built from the card is a player watching "Processing…" while the film it asked for is seconds
+   * behind it -- which is exactly the report this exists to answer. A TS piece (or an AVC one) is
+   * just as wrong: inside an fMP4 HEVC playlist it is a demux error, so the player stops where the
+   * placeholder was supposed to keep it waiting.
    */
   private async paddingMedia(key: string): Promise<{ init: string | null; names: string[] }> {
     const format = await this.formatFor(key);
-    // The card is a TS piece, so it can only stand in for a TS package.
-    if (format.container === "ts") {
-      const card = await this.readSplashList(key);
-      if (card.length > 0) return { init: null, names: card.slice(-8).map((entry) => entry.name) };
-    }
     const info = await this.sourceInfo(key);
     const fallback = await generatePadPiece(
       this.settings,
