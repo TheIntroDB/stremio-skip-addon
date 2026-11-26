@@ -901,17 +901,15 @@ test("timings that do not fit the file are not applied", async () => {
 test("an install can choose its own cutting mode", async () => {
   // The choice rides in the install URL, so one deployment can serve an install that
   // always cuts and another that copies nothing.
-  // A real wait window, so the assertion can see that the install's choice was used
-  // (the stub's target is not a video, so generation fails fast and the wait ends).
   const settings = testSettings({ precutSources: 0, cutWaitSeconds: 5 });
 
   const waiting = new PackageEngine(settings);
-  const waits: number[] = [];
-  const realWait = waiting.waitForFirstSegment.bind(waiting);
-  waiting.waitForFirstSegment = ((key: string, ms: number) => {
-    waits.push(ms);
-    return realWait(key, ms);
-  }) as typeof waiting.waitForFirstSegment;
+  const prerolls: number[] = [];
+  const realWait = waiting.waitForPreroll.bind(waiting);
+  waiting.waitForPreroll = ((key: string, ms: number, budget: number) => {
+    prerolls.push(ms);
+    return realWait(key, ms, budget);
+  }) as typeof waiting.waitForPreroll;
   const always = encodeConfig({
     src: [`${base}/upstream`],
     types: ["intro"] as SegmentType[],
@@ -924,10 +922,10 @@ test("an install can choose its own cutting mode", async () => {
     waiting,
   );
   assert.ok(
-    waits.length > 0,
-    "this install's link says cut files, so the play waited for a segment",
+    prerolls.length > 0,
+    "this install's link says cut files, so the play waited for the pre-roll",
   );
-  assert.equal(waits[0], 5000, "and it waited the deployment's window, not zero");
+  assert.equal(prerolls[0], 10_000, "and that pre-roll is the deployment's, not zero");
 
   const never = new PackageEngine(settings);
   let asked = 0;

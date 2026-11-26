@@ -37,7 +37,6 @@ import { describeCuts } from "./streams/format.js";
 import { knownCodecs } from "./streams/known.js";
 import type { PackageEngine } from "./streams/packages.js";
 import { handlePlay, handleSegment, looksLikeProgressiveFile } from "./streams/play.js";
-import { cardSeconds } from "./streams/splash.js";
 import { fetchStreams, labelledHevc, sourceLabel, wrapStream } from "./streams/upstream.js";
 import {
   handleSubtitleChunk,
@@ -182,13 +181,12 @@ export async function handleRequest(
     // is read again and again while a track is being made (hence never cached); the chunks are
     // written once and never change.
     if (route === "subs.m3u8") {
-      // `nc=1` is a playback with no processing card in front of it (see `play.ts`), so its track
-      // must not carry the card's segment either -- the cue positions come from the playlist's.
-      const cardless = new URL(request.url).searchParams.get("nc") === "1";
-      return handleSubtitlePlaylist(
-        { settings, subtitles: engine, request },
-        cardless ? 0 : settings.splash ? cardSeconds(settings) * 1000 : 0,
-      );
+      // A rendition is the *film's* timeline: the processing card is only the wait for the pre-roll
+      // and is dropped the moment the film can play (see `packages.ts`, `manifest`), so a card's
+      // segment here would put every cue one card late. A track with nothing in it yet is answered
+      // with a zero-length placeholder by `handleSubtitlePlaylist`, which is what makes a player
+      // register it at all.
+      return handleSubtitlePlaylist({ settings, subtitles: engine, request }, 0);
     }
     // A chunk is addressed by its own name in the path (`subs/0.vtt`) rather than by a query
     // parameter: ffmpeg's HLS demuxer refuses a subtitle segment whose URI has no extension at

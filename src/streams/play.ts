@@ -45,6 +45,14 @@ const MAX_PLAYLIST_BYTES = 4 * 1024 * 1024;
 const SNIFF_BYTES = 8192;
 const UPSTREAM_TIMEOUT_MS = 10000;
 const SEGMENT_TIMEOUT_MS = 30000;
+/**
+ * How long a cold play waits for the pre-roll before it settles for the processing card.
+ *
+ * The card exists so that nothing has to wait long, so this is a short grace and not a budget: it
+ * is long enough for a source that is keeping up to deliver `PREROLL_SECONDS` of the cut film, and
+ * short enough that the player's own request is not the thing being waited on.
+ */
+const PREROLL_WAIT_MS = 2500;
 /** How long a "this target is not a playlist" verdict is remembered. */
 const NOT_PLAYLIST_TTL_SECONDS = 60 * 60;
 
@@ -448,22 +456,30 @@ async function packageOrProxy(
   // a key seen for the first time.
   if (!audio) audio = await audioFor(context, key);
   context.packages.schedule(target, windows, streamKey, durationMs, audioLanguage);
-  // The card is the pre-roll the deployment configured, and the film starts after it, so that is
-  // the offset a track is timed from. (With the card off, the film starts at zero.) The same
-  // choice as a warm play makes: the source's own subtitles if it has any, recognition otherwise.
-  await offerTrack(
-    context,
-    target,
+  // The pre-roll: wait, briefly, for `PREROLL_SECONDS` of the cut film. A source that is keeping up
+  // then hands the player the film itself, from its first frame, and no card is ever drawn. The
+  // wait is short on purpose -- the card is what covers a source that is not keeping up, and what
+  // the wait has to beat is one poll of a growing playlist.
+  const preroll = await context.packages.waitForPreroll(
     key,
-    windows,
-    context.settings.splash ? cardSeconds(context.settings) * 1000 : 0,
+    context.settings.prerollSeconds * 1000,
+    PREROLL_WAIT_MS,
   );
-  // Nothing of the episode is ready yet, so show the processing card rather than holding
-  // the request: a player handed a playlist starts at once and sees what is happening,
-  // where a player handed nothing shows a spinner and then gives up on the stream. The
-  // card's pieces form the start of the same playlist the episode is appended to.
+  if (preroll) {
+    const resolved = await offerTrack(context, target, key, windows, 0);
+    return packageResponse(context, preroll, key, lookupReason, resolved);
+  }
+  // Not enough of it yet, so show what is happening rather than holding the request: a player
+  // handed a playlist starts at once and sees the card, where a player handed nothing shows a
+  // spinner and then gives up on the stream. The card goes the moment the film can play.
   const card = await context.packages.splashView(key, windows, wantsSubtitles);
   if (card) return packageResponse(context, card, key, lookupReason, audio);
+
+  // Nothing to hand over and nothing being made: a failure, or no card can be drawn here. Waiting
+  // the whole `CUT_WAIT_SECONDS` over a job that has already stopped is a player held on a spinner
+  // for two minutes, so a failure is the source, untouched, with a header that says why.
+  if (context.packages.state(key)?.status === "failed")
+    return passThrough(context, target, "package_failed", lookupReason);
 
   const waited = await context.packages.waitForFirstSegment(
     key,
@@ -518,9 +534,11 @@ async function packageResponse(
 
   const media = new URL(url.toString());
   media.searchParams.set("m", "1");
-  // The track must agree with the film about the card: if this playlist has none in front of it,
-  // its rendition must not carry the card's segment either, or every cue would sit one card late.
-  const subtitleQuery = `f=${encodeURIComponent(track)}${view.card === 0 ? "&nc=1" : ""}`;
+  // The rendition is the film's timeline, with no card entry: the card is only ever the wait for the
+  // pre-roll (see `packages.ts`, `manifest`), so a playback that started on one is handed the film
+  // from its first frame a poll later -- a rendition carrying a card's segment would leave every cue
+  // one card late for the rest of the episode.
+  const subtitleQuery = `f=${encodeURIComponent(track)}`;
   const info = await context.packages.sourceInfo(key);
   const master = masterPlaylist({
     mediaUri: `${media.pathname}${media.search}`,

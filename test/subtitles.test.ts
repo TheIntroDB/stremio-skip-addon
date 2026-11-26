@@ -735,10 +735,19 @@ test("the rendition and its chunks are reachable through the router", async () =
   );
   assert.equal(list.status, 200, "the rendition playlist is routed, not a 404");
   assert.match(list.headers.get("content-type") ?? "", /mpegurl/);
-  assert.match(await list.text(), /^#EXTM3U/, "and it is a playlist");
+  const body = await list.text();
+  assert.match(body, /^#EXTM3U/, "and it is a playlist");
+  // No card entry, even on a deployment that draws cards: the card is only the wait for the
+  // pre-roll and is dropped the moment the film can play, so a rendition carrying one would put
+  // every cue a card late for the whole episode.
+  assert.ok(!body.includes("subs/card.vtt"), "the rendition is the film's timeline, cardless");
 
+  // Whatever it lists has to be reachable: the rendition's entries are the one promise a player
+  // relies on, and a track with nothing in it yet lists its placeholder.
+  const uri = /\n([^#\n][^\n]*)\n/.exec(`${body}\n`)?.[1] ?? "";
+  assert.ok(uri.startsWith("subs/"), `the rendition lists a chunk (${uri || "none"})`);
   const chunk = await handleRequest(
-    new Request(`https://worker.example/${encoded}/subs/card.vtt?f=key4`),
+    new Request(`https://worker.example/${encoded}/${uri}`),
     routerSettings,
     packages,
     engine,
