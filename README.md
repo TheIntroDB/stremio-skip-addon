@@ -21,68 +21,36 @@ This addon does **not add skip buttons to Stremio**, it removes the segments fro
 
 ## Run your own
 
-Requirements: **ffmpeg 7** on the PATH, **Node 22** or Docker, and an address Stremio can reach over HTTPS. Nothing has to be built and nothing has to be cloned: every release is published to npm and to the GitHub container registry.
+Requirements: **Docker** (or Node 22 plus **ffmpeg**), and an address Stremio can reach over HTTPS.
 
 > **Run it on your own network, not on a cloud platform.** Debrid sources (ElfHosted's Comet, and most others) block most cloud hosting platforms, your mileage may vary.
 
-### npx — the shortest path
+### Docker (recommended)
 
 ```bash
-npx @theintrodb/stremio-skip-addon
+curl github.com/TheIntroDB/stremio-skip-addon
+cd stremio-skip-addon
+cp .env.example .env      # optional: only for the settings you want to change
+docker compose up -d
 ```
 
-That is the release, fetched and run in one line; ffmpeg does the cutting, the addon is the rest. It listens on `:8787` — open `http://localhost:8787/`, paste your key there, and install from the link it gives you.
+That is `docker-compose.yml` in this repository: it builds the image, publishes `:8787`, and keeps the segment cache in a named volume. Nothing has to be filled in first — the API key can be pasted on the configuration page instead (see [API key](#api-key)). **Keep the cache mounted** — without the volume, packages live in the container's writable layer and are lost when it is recreated.
 
-### npm, installed
+> A prebuilt docker image is also available
 
-```bash
-npm install -g @theintrodb/stremio-skip-addon
-stremio-skip-addon
-```
-
-### Docker
-
-```bash
-docker run -d --name stremio-skip-addon \
-  -p 8787:8787 \
-  -v stremio-skip-addon-cache:/cache \
-  ghcr.io/theintrodb/stremio-skip-addon:latest
-```
-
-Or, from this repository, `docker compose -f docker-compose.image.yml up -d`. Either way the image brings its own ffmpeg.
-
-**Keep the cache mounted.** Without a volume, packages live in the container's writable layer and are lost whenever it is recreated; the addon already deletes them five minutes after the last request, so the volume stays small.
-
-### From source
+### Node, without Docker
 
 ```bash
 git clone https://github.com/TheIntroDB/stremio-skip-addon.git
 cd stremio-skip-addon
-npm ci && npm run build && node dist/server.js
+npm ci
+npm run build
+node dist/server.js
 ```
 
 No key is needed on the command line: open `http://localhost:8787/`, paste your key there, and install from the link it gives you. Setting `TIDB_API_KEY` in the environment still works if you would rather the service hold one for every install.
 
-### Updating
-
-Releases are cut from `main` and published to both channels, so updating is pulling the newest one:
-
-- `npx @theintrodb/stremio-skip-addon@latest` — `npx` resolves `latest` on every start.
-- `npm install -g @theintrodb/stremio-skip-addon@latest`
-- Docker: a container keeps the image it was created from, so restarting it is not updating it. Pull
-  the new one **and recreate the container**:
-
-  ```bash
-  # the `docker run` install: the named volume keeps the cache
-  docker pull ghcr.io/theintrodb/stremio-skip-addon:latest
-  docker stop stremio-skip-addon && docker rm stremio-skip-addon
-  # ...then the same `docker run` as before
-
-  # the compose install: pull and recreate in one step
-  docker compose -f docker-compose.image.yml up -d --pull always
-  ```
-
-**A deployment that is behind says so.** It asks npm for the newest release every few hours and reports it in two places: `curl -s localhost:8787/health | jq .update` and an _update available_ badge on the configuration page. Set `UPDATE_CHECK=off` to stop it asking entirely.
+It listens on `:8787`. Put it behind HTTPS before installing it in Stremio — Stremio fetches the manifest from the URL you give it, and a plain-HTTP address only works when the player is on the same machine.
 
 ---
 
@@ -106,10 +74,6 @@ To edit an existing install, open its URL in a browser — the page comes back w
 ## What this cannot do
 
 Worth reading before installing, because these are properties of the approach rather than bugs:
-
-- **Scrubbing is not possible.** The stream is built as you watch it: the playlist holds what has been packaged so far, and there is nothing ahead of that to seek into. The card is the film's pre-roll, so going back to the start shows the card again — not the film's first seconds.
-- **There is a wait before the film starts**, and the card is what covers it. Expect ten to twenty seconds for a 1080p episode on ordinary hardware; a 4K HEVC episode can take a couple of minutes, and the wait grows with resolution and shrinks with a faster CPU.
-- **[Stremio Enhanced Plugin](https://github.com/TheIntroDB/stremio-enhanced-plugin) is the recommended option** for general use: it adds skip buttons to the player instead of rewriting the stream, so scrubbing keeps working. This addon is for people who want the segments gone rather than skipped.
 
 - **HLS cuts land on segment boundaries** (2–10 s). A cut removes every segment that touches the window, so up to one segment of the footage next to it goes with it.
 - **File cuts land on keyframes.** A second or two of the intro can survive, and a second or two around it can go.

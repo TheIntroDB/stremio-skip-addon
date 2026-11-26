@@ -102,14 +102,6 @@ const CONFIG_PAGE_SCRIPT = `
   document.getElementById("origin").textContent = data.origin;
   document.getElementById("api").textContent = data.cuts.api;
   document.getElementById("version").textContent = "v" + data.version;
-  // Ahead of the published release? Say so, with the command that fixes it -- a self-hoster who
-  // installed this with npx or Docker has no reason to watch the repository.
-  if (data.update && data.update.behind && data.update.latest) {
-    var update = document.getElementById("update");
-    update.textContent = "update available: v" + data.update.latest;
-    update.href = data.update.url;
-    update.classList.remove("hidden");
-  }
 
   var cuts = data.cuts;
   // No deployment-wide default: the first option is what a new install gets, and every link
@@ -346,7 +338,7 @@ export function configPageHtml(view: ConfigPageView): string {
   </section>
 
   <footer class="text-center text-[13px] text-muted">
-    <p><span class="inline-block rounded-full border border-line px-2 py-0.5 text-xs text-muted" id="version"></span><a class="ml-1 hidden rounded-full border border-line px-2 py-0.5 text-xs" id="update" target="_blank" rel="noreferrer"></a> · <a href="${view.repo}">Source</a> · GPL-3.0-or-later · built on <a href="https://theintrodb.org">TheIntroDB</a></p>
+    <p><span class="inline-block rounded-full border border-line px-2 py-0.5 text-xs text-muted" id="version"></span> · <a href="${view.repo}">Source</a> · GPL-3.0-or-later · built on <a href="https://theintrodb.org">TheIntroDB</a></p>
   </footer>
 </main>
 <script id="config-data" type="application/json">${view.data}</script>

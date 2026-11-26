@@ -30,7 +30,6 @@ import { describeSettings, type Settings } from "./addon/env.js";
 import { corsPreflight, errorResponse, html, json, text } from "./addon/http.js";
 import { ADDON_VERSION, buildManifest } from "./addon/manifest.js";
 import { type AddonConfig, DEFAULT_CUT_MODE, type UpstreamStream } from "./addon/types.js";
-import { UpdateChecker } from "./addon/updates.js";
 import { playUrl } from "./addon/urls.js";
 import { diagnostics } from "./ops/diagnostics.js";
 import { cacheReport, formatBytes, purgeCache } from "./ops/drain.js";
@@ -69,15 +68,6 @@ const CONFIG_ROUTE_RE =
  */
 const MIN_PLAUSIBLE_CONFIG_LENGTH = 24;
 
-/**
- * Whether a newer release exists — asked in the background, answered from the last answer.
- *
- * The addon is installed as a package now, so updating is `npx @theintrodb/stremio-skip-addon@latest`
- * or pulling the Docker image; this is only how a deployment finds out that it is behind. The answer
- * rides on `/health` and the configuration page. `UPDATE_CHECK=off` keeps it from asking at all.
- */
-export const updates = new UpdateChecker(ADDON_VERSION, process.env.UPDATE_CHECK !== "off");
-
 export async function handleRequest(
   request: Request,
   settings: Settings,
@@ -114,8 +104,6 @@ export async function handleRequest(
       site: "https://theintrodb.org",
       api: `https://api.theintrodb.org/${INTRODB_API_VERSION}/media`,
       ...describeSettings(settings),
-      // A deployment that is behind says so here, so an operator who never opens the page can see it.
-      update: updates.get(),
       subtitles: engine.status(),
       lastLookupFailure: lastLookupFailure(),
       cutsStatus: packages.stats(),
@@ -381,7 +369,6 @@ function configPage(
       serverKeyConfigured: Boolean(settings.TIDB_API_KEY?.trim()),
       insecure: url.protocol === "http:" && local,
       cuts: packages.stats(),
-      update: updates.get(),
       editing: extra.editing ?? null,
       configError: extra.configError ?? null,
     }),

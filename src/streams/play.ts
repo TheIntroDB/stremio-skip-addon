@@ -767,6 +767,28 @@ async function readCapped(response: Response, maxBytes: number): Promise<string 
   return out + decoder.decode();
 }
 
+/** Read a prefix of a body and hang up, without downloading the whole thing. */
+async function readPrefix(response: Response, maxBytes: number): Promise<string> {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let total = 0;
+  let out = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      out += decoder.decode(value, { stream: true });
+      if (total >= maxBytes) break;
+    }
+  } catch {
+    // A truncated read still tells us what the first bytes were.
+  }
+  await reader.cancel().catch(() => undefined);
+  return out;
+}
+
 function forwardedHeaders(request: Request): Record<string, string> {
   const headers: Record<string, string> = {};
   const range = request.headers.get("range");

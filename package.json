@@ -1,6 +1,7 @@
 {
-  "name": "@theintrodb/stremio-skip-addon",
-  "version": "0.1.0",
+  "name": "stremio-skip-addon",
+  "version": "1.0.0",
+  "private": true,
   "description": "A self-hosted Stremio addon that removes intro, recap, credits and preview segments from your streams using TheIntroDB timings: it splices HLS playlists and remuxes progressive files.",
   "license": "GPL-3.0-or-later",
   "author": "TheIntroDB",
@@ -8,29 +9,9 @@
     "type": "git",
     "url": "https://github.com/TheIntroDB/stremio-skip-addon.git"
   },
-  "keywords": [
-    "stremio",
-    "stremio-addon",
-    "hls",
-    "ffmpeg",
-    "intro-skip",
-    "theintrodb"
-  ],
   "type": "module",
   "engines": {
     "node": ">=22"
-  },
-  "bin": {
-    "stremio-skip-addon": "dist/cli.js"
-  },
-  "files": [
-    "dist",
-    "assets",
-    "README.md",
-    "LICENSE"
-  ],
-  "publishConfig": {
-    "access": "public"
   },
   "scripts": {
     "build:css": "node --import tsx scripts/build-styles.ts",
@@ -43,8 +24,7 @@
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
     "check": "npm run lint && npm run typecheck && npm test",
-    "verify:package": "node --import tsx scripts/verify-package.ts",
-    "prepack": "npm run build"
+    "verify:package": "node --import tsx scripts/verify-package.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.6.9",

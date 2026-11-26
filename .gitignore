@@ -8,6 +8,3 @@ src/web/styles.generated.ts
 !.env.example
 *.log
 .DS_Store
-
-# The release artifact is npm's, not the repository s.
-*.tgz
