@@ -509,22 +509,33 @@ async function packageResponse(
   const track = context.subtitles!.trackFor(key);
   if (enabled)
     context.subtitles!.noteResolved(track ?? trackKey(key, audio), audio ? audio.index : null);
-  const wants = enabled && track !== null && url.searchParams.get("m") !== "1";
-  if (!wants || track === null) return mediaResponse(view, key, lookupReason);
-  context.subtitles!.served.masters += 1;
 
   const media = new URL(url.toString());
   media.searchParams.set("m", "1");
-  // The rendition has to carry the card's own segment, or every cue sits one card late: the card is
-  // the film's pre-roll now (see `packages.ts`, `manifest`), so the film starts at `view.cardMs` and
-  // the track has to say the same thing. Its length travels in the URI because it is a measured
-  // wait, not a deployment constant.
-  const subtitleQuery = `f=${encodeURIComponent(track)}&c=${(view.cardMs / 1000).toFixed(3)}`;
+  // The media playlist is what a player plays; the master is what tells it *where to start*.
+  if (url.searchParams.get("m") === "1") return mediaResponse(view, key, lookupReason);
+
+  // Every package is served as a multivariant playlist now, subtitles or not. An `EVENT` playlist is
+  // joined at its **live edge** -- three target durations before the end -- and a player only looks
+  // for `#EXT-X-START` where it expects one: hls.js takes it from the multivariant playlist. A package
+  // with no subtitle track used to have no master at all, so a viewer opened at the write head and the
+  // first minute after the cut went missing. The master says where to start, and it is the same answer
+  // on every poll.
   const info = await context.packages.sourceInfo(key);
+  const subtitleUri =
+    enabled && track !== null
+      ? // The rendition has to carry the card's own segment, or every cue sits one card late: the card
+        // is the film's pre-roll (see `packages.ts`, `manifest`), so the film starts at `view.cardMs`
+        // and the track has to say the same thing. Its length travels in the URI because it is a
+        // measured wait, not a deployment constant.
+        `subs.m3u8?f=${encodeURIComponent(track)}&c=${(view.cardMs / 1000).toFixed(3)}`
+      : null;
+  if (subtitleUri) context.subtitles!.served.masters += 1;
   const master = masterPlaylist({
     mediaUri: `${media.pathname}${media.search}`,
-    subtitleUri: `subs.m3u8?${subtitleQuery}`,
-    language: context.subtitles.languageOf(track) ?? context.settings.subtitlesLanguage ?? "en",
+    subtitleUri,
+    language:
+      (track && context.subtitles!.languageOf(track)) ?? context.settings.subtitlesLanguage ?? "en",
     name: "TheIntroDB",
     info,
   });
@@ -536,9 +547,16 @@ async function packageResponse(
       "cache-control": "no-cache",
       // The master answers the same question the playlist does, so an operator sees one vocabulary.
       "x-tidb-play": view.complete ? "package_vod" : "package_live",
+      // Which package this is, and how much of it there is: the master is the first thing an operator
+      // sees, so the numbers have to be here and not only on the media playlist.
+      "x-tidb-package": key,
+      "x-tidb-segments": String(view.segments),
+      ...(view.card > 0 ? { "x-tidb-card": String(view.card) } : {}),
+      "x-tidb-content-ms": String(view.durationMs),
+      "x-tidb-complete": view.complete ? "yes" : "no",
+      ...(lookupReason ? { "x-tidb-lookup": lookupReason } : {}),
       // What the segments hold, for the "the film plays but the picture is black" report.
       "x-tidb-codecs": info?.codecs || "unknown",
-      "x-tidb-complete": view.complete ? "yes" : "no",
       ...CORS_HEADERS,
     },
   });

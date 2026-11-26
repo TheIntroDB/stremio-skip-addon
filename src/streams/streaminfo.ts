@@ -326,8 +326,8 @@ function quoted(name: string, value: string): string {
 export interface MasterOptions {
   /** The film itself, as a media playlist -- this same URL with the media flag set. */
   mediaUri: string;
-  /** The subtitle rendition's playlist. */
-  subtitleUri: string;
+  /** The subtitle rendition's playlist, when there is a track being made. */
+  subtitleUri: string | null;
   /** The one language this track holds. */
   language: string;
   name: string;
@@ -354,29 +354,31 @@ export interface MasterOptions {
  * makes a subtitle appear on a desktop player.
  */
 export function masterPlaylist(options: MasterOptions): string {
-  return [
-    "#EXTM3U",
-    "#EXT-X-VERSION:7",
-    // While a package is still being made its playlist is an EVENT one, and a player treats an
-    // EVENT playlist as live: hls.js starts at `liveSyncPosition`, which -- because the playlist
-    // declares the whole episode from its first response and pads the rest -- is the *end* of it.
-    // A viewer who opened the file landed twenty minutes in and could not get back. This says
-    // where playback starts, and in the multivariant playlist it applies to the audio and
-    // subtitle controllers too, so their clocks match.
-    "#EXT-X-START:TIME-OFFSET=0",
-    [
-      "#EXT-X-MEDIA:TYPE=SUBTITLES",
-      quoted("GROUP-ID", "subs"),
-      quoted("NAME", options.name),
-      quoted("LANGUAGE", options.language),
-      "DEFAULT=YES",
-      "AUTOSELECT=YES",
-      quoted("URI", options.subtitleUri),
-    ].join(","),
-    `#EXT-X-STREAM-INF:${variantAttributes(options.info, true)}`,
+  // The multivariant playlist is where a player looks for `#EXT-X-START`, and it is the only place
+  // that works for every player: an `EVENT` playlist is joined at its live edge (three target
+  // durations before the end), so without this a viewer opens at the write head and the first part of
+  // the film -- everything just after the cut -- is skipped. It applies to the audio and subtitle
+  // renditions too, so their clocks match the video's.
+  const lines = ["#EXTM3U", "#EXT-X-VERSION:7", "#EXT-X-START:TIME-OFFSET=0"];
+  if (options.subtitleUri) {
+    lines.push(
+      [
+        "#EXT-X-MEDIA:TYPE=SUBTITLES",
+        quoted("GROUP-ID", "subs"),
+        quoted("NAME", options.name),
+        quoted("LANGUAGE", options.language),
+        "DEFAULT=YES",
+        "AUTOSELECT=YES",
+        quoted("URI", options.subtitleUri),
+      ].join(","),
+    );
+  }
+  lines.push(
+    `#EXT-X-STREAM-INF:${variantAttributes(options.info, options.subtitleUri !== null)}`,
     options.mediaUri,
     "",
-  ].join("\n");
+  );
+  return lines.join("\n");
 }
 
 /**
