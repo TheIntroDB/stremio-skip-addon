@@ -1060,7 +1060,11 @@ export class PackageEngine {
     const deadline = Date.now() + Math.max(0, timeoutMs);
     for (;;) {
       const view = await this.manifest(key);
-      if (view) return view;
+      // A playlist with none of the film in it is not the answer. Since the pre-roll gate the card is
+      // served until `PREROLL_SECONDS` of the cut film exists, and this is asked for the first thing a
+      // player may *play* -- returning the card here hands the caller the very playlist that says
+      // "not yet", and a caller that treats it as film would serve an empty episode.
+      if (view && view.segments > 0) return view;
       if (this.states.get(key)?.status === "failed") return null;
       if (Date.now() >= deadline) return null;
       // Nothing scheduled and nothing on disk: no point in waiting.
