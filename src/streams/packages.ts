@@ -112,6 +112,14 @@ export interface ManifestView {
   complete: boolean;
   /** Segments of the episode itself that the playlist lists. */
   segments: number;
+  /**
+   * Whether the playlist reaches any of the film.
+   *
+   * Not the same as `segments`: segments of the episode exist long before the playlist lists them,
+   * because the pre-roll gate holds them back until `PREROLL_SECONDS` of cut film is on disk. A caller
+   * that wants "the film, at last" wants this, not `segments`.
+   */
+  film: boolean;
   /** Pieces of the processing card in the playlist, before the episode. */
   card: number;
   /** Placeholder entries standing in for the not-yet-packaged remainder. */
@@ -670,6 +678,8 @@ export class PackageEngine {
     return this.playlistView(items, {
       complete,
       segments,
+      // The gate above is what decides: segments are packaged, but only listed once they are enough.
+      film: playable && segments > 0,
       card: shown.length,
       padding: padding.entries.length,
       expectedMs: await this.episodeMs(plan),
@@ -864,6 +874,7 @@ export class PackageEngine {
     facts: {
       complete: boolean;
       segments: number;
+      film: boolean;
       card: number;
       padding: number;
       expectedMs: number | null;
@@ -907,6 +918,7 @@ export class PackageEngine {
       body: `${[...head, ...lines, ...tail].join("\n")}\n`,
       complete: facts.complete,
       segments: facts.segments,
+      film: facts.film,
       card: facts.card,
       padding: facts.padding,
       expectedMs: facts.expectedMs,
@@ -1063,8 +1075,9 @@ export class PackageEngine {
       // A playlist with none of the film in it is not the answer. Since the pre-roll gate the card is
       // served until `PREROLL_SECONDS` of the cut film exists, and this is asked for the first thing a
       // player may *play* -- returning the card here hands the caller the very playlist that says
-      // "not yet", and a caller that treats it as film would serve an empty episode.
-      if (view && view.segments > 0) return view;
+      // "not yet", and a caller that treats it as film would serve an empty episode. `film` is the
+      // gate's own answer, so this cannot drift from it the way "segments > 0" did.
+      if (view?.film) return view;
       if (this.states.get(key)?.status === "failed") return null;
       if (Date.now() >= deadline) return null;
       // Nothing scheduled and nothing on disk: no point in waiting.

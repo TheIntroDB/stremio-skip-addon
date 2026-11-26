@@ -1229,7 +1229,9 @@ test("an HEVC package is playable while its first stretch is still being cut", a
   const deadline = Date.now() + 120_000;
   for (;;) {
     const view = await engine.manifest(key);
-    if (view && view.segments > 0) {
+    // `film`, not `segments`: the pre-roll gate lists the segments once ten seconds of the cut film
+    // exist, so a `segments > 0` poll catches the playlist while it is still only the card.
+    if (view?.film) {
       early = view;
       break;
     }
@@ -1239,6 +1241,7 @@ test("an HEVC package is playable while its first stretch is still being cut", a
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   assert.ok(early, "the package is playable");
+  assert.ok(early.film, "the playlist reaches the film");
   assert.equal(early.complete, false, "before the film is finished");
   assert.equal(engine.state(key)?.status, "generating", "while ffmpeg is still writing it");
   assert.ok(early.body.includes(".m4s"), "as fMP4, which is what a browser can demux HEVC from");
