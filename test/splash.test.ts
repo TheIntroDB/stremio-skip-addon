@@ -61,6 +61,24 @@ test("the count reads naturally, and counts what the card lists", () => {
   assert.ok(later.windows.endsWith("····"), "the ticker is what moves");
 });
 
+test("the finished card says what went and where the film starts", () => {
+  // The card is not thrown away once the film can play: it is replaced, in place, by one that says
+  // what happened. "Processing…" over an episode that was cut days ago is a lie, and the pre-roll
+  // the first viewing sat through is exactly where the film begins on the timeline.
+  const text = cardText({
+    segments: 0,
+    windows: [{ type: "intro", startMs: 230_665, endMs: 244_498 }],
+    pass: 1,
+    passes: 1,
+    state: "done",
+    waitMs: 10_000,
+  });
+  assert.equal(text.title, "Segments removed");
+  assert.equal(text.subtitle, "Video starts at 0:10");
+  assert.equal(text.count, "1 segment");
+  assert.equal(text.windows, "Intro 3:51-4:04", "no ticker: the work is over");
+});
+
 test("the pieces are drawn from text files, not from filter arguments", () => {
   // A colon cannot be passed through a filter graph at all, so the card's lines are files.
   const args = splashArgs("/tmp/x/splash00000.ts", 0, 10, "/tmp/x");

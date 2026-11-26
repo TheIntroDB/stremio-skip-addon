@@ -37,9 +37,9 @@ import type { Settings } from "../addon/env.js";
 import type { SkipWindow } from "../addon/types.js";
 import { delay, errorText, inputOptions, type KeptRange, keptRanges, run } from "./ffmpeg.js";
 import {
-  cardSeconds,
+  DONE_RE,
+  generateCardPiece,
   generatePadPiece,
-  generateSplashPiece,
   PAD_RE,
   PAD_SECONDS,
   SPLASH_PIECE_MS,
@@ -125,6 +125,13 @@ export interface ManifestView {
    * included. This is the number that says whether playback can start on the film.
    */
   bufferedMs: number;
+  /**
+   * The card in front of the film, in milliseconds: where the film starts on the timeline.
+   *
+   * Zero when this playlist has no card (an fMP4 package, or one that never waited), which is also
+   * what the subtitle rendition has to be told, or every cue sits one card late.
+   */
+  cardMs: number;
   durationMs: number;
 }
 
@@ -165,13 +172,22 @@ const PAD_ENTRY_MS = PAD_SECONDS * 1000;
  * and the position a player is already at is replaced by real segments under it.
  */
 const PAD_HORIZON_MS = 12_000;
-/** A padded playlist is still a playlist; this bounds a pathological file length. */
-const PAD_MAX_ENTRIES = 2000;
+/**
+ * The most card a playback is given, in two-second pieces.
+ *
+ * The card is the film's pre-roll, so a slow first view would otherwise bake a minute of "Processing…"
+ * into every later viewing of that episode. Past this the wait is covered by the card in the tail of
+ * the playlist -- which is the card too, while the film is being cut -- and the pre-roll stays a
+ * length somebody can sit through.
+ */
+const CARD_MAX_PIECES = 15;
 const PLAN = "plan.json";
 const DONE = "done";
 const PASS = "pass-";
-/** The playlist ffmpeg's HLS muxer writes for an fMP4 pass, which is also its segment record. */
+/** `perpass.m3u8` is the playlist an fMP4 pass writes, and also its segment record. */
 const PERPASS = "perpass.m3u8";
+/** The one piece that replaces the processing pieces once the film can play. */
+const DONE_NAME = "done00000.ts";
 /** How often a waiting play re-reads the CSVs while the first segment is written. */
 const POLL_MS = 250;
 /** How often a new piece of the processing card is drawn while a package is being made. */
@@ -220,6 +236,13 @@ export class PackageEngine {
    * has not started.
    */
   private readonly inFlight = new Map<string, number>();
+  /**
+   * The finished card being drawn for a key, so a burst of polls draws it once.
+   *
+   * It is a redraw of the pieces that are already there, at the same total length: replacing
+   * "Processing…" with what was actually removed, after the fact.
+   */
+  private readonly finishings = new Map<string, Promise<void>>();
   private readonly tasks: Array<() => void> = [];
   private active = 0;
   private available: boolean | null = null;
@@ -262,6 +285,7 @@ export class PackageEngine {
     this.cards.clear();
     this.running.clear();
     this.inFlight.clear();
+    this.finishings.clear();
     this.tasks.length = 0;
     return stopped;
   }
@@ -527,32 +551,32 @@ export class PackageEngine {
       return null;
     }
 
-    // The card covers the packaging. Once the film has been finished for longer than the card
-    // itself lasts, no playback can still be watching it -- so a card at the front is purely in
-    // the way, and a playback that starts now gets the film immediately, at position zero. The
-    // window is the card's own length: inside it, a player that started on the card is still on
-    // it, and removing it would move the head of a playlist that player is already reading.
+    // The card is the film's pre-roll, and it stays one. Its length is the wait the first playback
+    // actually had, so the film's position on the timeline is fixed from then on -- a viewer can
+    // seek back to zero and find it, and a resume lands where the film's own clock says it should.
+    // Once the film can play the pieces are replaced, in place, by one card of the same total length
+    // that says what happened instead of "Processing…".
     const segments = stretches.reduce((total, stretch) => total + stretch.segments.length, 0);
     const realMs = stretches.reduce(
       (total, stretch) => total + stretch.segments.reduce((sum, entry) => sum + entry.ms, 0),
       0,
     );
     const doneAt = segments > 0 ? await this.doneAt(key) : null;
+    const complete = doneAt !== null;
     const cardMs = card.reduce((total, entry) => total + entry.ms, 0);
-    // The buffer the film needs before it can be handed over. The card is the *wait* for it and
-    // nothing else, so the moment this much of the episode is on disk the card goes: a viewer
-    // still being shown "Processing…" over a film that is ready to play is the one thing it must
-    // never do. (Its own length and this buffer are the same number for exactly that reason -- see
-    // `cardSeconds`.)
-    const prerollMs = cardSeconds(this.settings) * 1000;
     // An fMP4 package has no card: the card is a TS piece, and mixing containers inside one
-    // playlist is exactly the kind of thing players disagree about. It is not needed either --
-    // the card covers the packaging, and fMP4 packaging is the same ffmpeg copy.
-    const stale = doneAt !== null && Date.now() - doneAt > cardMs + 5_000;
-    const shown =
-      stale || realMs >= prerollMs || stretches.some((stretch) => stretch.init !== null)
-        ? []
-        : card;
+    // playlist is exactly the kind of thing players disagree about.
+    const fmp4 = stretches.some((stretch) => stretch.init !== null);
+    let shown = fmp4 || card.length === 0 ? [] : card;
+    if (
+      shown.length > 0 &&
+      (complete || realMs >= Math.max(1, this.settings.prerollSeconds * 1000))
+    ) {
+      this.replaceCard(key, card, plan);
+      // Listed only once it exists: the processing pieces and the finished card are the same length,
+      // so swapping them moves nothing, and a card that is still being drawn must not be a 404.
+      if (await this.doneCardReady(key)) shown = [{ name: DONE_NAME, ms: cardMs }];
+    }
 
     const items: Array<{ uri: string; ms: number } | { map: string } | "disc"> = [];
     const add = (group: Array<{ name: string; ms: number }>, init: string | null = null): void => {
@@ -570,7 +594,6 @@ export class PackageEngine {
     add(shown);
     for (const stretch of stretches) add(stretch.segments, stretch.init);
 
-    const complete = doneAt !== null;
     // A short cushion of placeholder past the film while it is still being packaged -- never the
     // rest of the episode (see `PAD_HORIZON_MS`).
     const padding = complete
@@ -590,6 +613,7 @@ export class PackageEngine {
       padding: padding.entries.length,
       expectedMs: await this.episodeMs(plan),
       bufferedMs: realMs,
+      cardMs: shown.length > 0 ? cardMs : 0,
     });
   }
 
@@ -651,25 +675,39 @@ export class PackageEngine {
     const state = this.cards.get(key);
     if (!state) return;
     if ((await this.formatFor(key)).container === "mp4") return;
-    if (state.pieces > 0) return;
     if (state.frozen) return;
+    if (state.pieces >= CARD_MAX_PIECES) return;
     this.used.set(key, Date.now());
     this.sweepCards();
 
+    // One piece per poll, so the card grows with the wait: the prefix a player sees is exactly as
+    // long as it took for the film to be ready, which is what keeps its playhead where the film's
+    // own clock says it should be. A short, bounded piece rather than one since the wait is not
+    // known in advance -- and it is the drawing, not the copy, that has to stay out of the way.
     const plan = await this.readPlan(key);
-    const shown = plan?.windows?.length ? plan.windows : windows;
-    const passes = plan?.ranges.length ?? 1;
-    const stretches = plan ? await this.realStretches(plan, key) : [];
+    if (!plan) return;
+    const shown = plan.windows?.length ? plan.windows : windows;
+    const passes = plan.ranges.length || 1;
+    const stretches = await this.realStretches(plan, key);
     const written = stretches.reduce((total, stretch) => total + stretch.segments.length, 0);
-    const piece = await generateSplashPiece(this.settings, this.dirFor(key), state.pieces, {
-      segments: written,
-      windows: shown,
-      pass: Math.min(passes, stretches.length + 1),
-      passes,
-      subtitles,
-    });
+    const piece = await generateCardPiece(
+      this.settings,
+      this.dirFor(key),
+      {
+        name: `splash${String(state.pieces).padStart(5, "0")}.ts`,
+        offsetMs: state.pieces * SPLASH_PIECE_MS,
+        seconds: SPLASH_PIECE_MS / 1000,
+      },
+      {
+        segments: written,
+        windows: shown,
+        pass: Math.min(passes, stretches.length + 1),
+        passes,
+        subtitles,
+      },
+    );
     if (piece.ok) {
-      await this.appendSplashList(key, piece.name, cardSeconds(this.settings) * 1000);
+      await this.appendSplashList(key, piece.name, SPLASH_PIECE_MS);
       state.pieces += 1;
       state.lastAt = Date.now();
       this.cardError = null;
@@ -680,6 +718,53 @@ export class PackageEngine {
     state.frozen = true;
     this.cardError = piece.error;
     console.warn(`  warning        the processing card cannot be drawn: ${piece.error}`);
+  }
+
+  /**
+   * Replace the processing pieces with one card of the same length that says what went.
+   *
+   * Drawn in the background: the playlist this answer contains is still the processing pieces, which
+   * are the same total length, so nothing moves -- the next poll has the finished card, and a viewer
+   * who seeks back to zero (now or a week later) finds it. `waitMs` is the length of the pieces, and
+   * that is exactly the pre-roll the first playback sat through, so the card can say where the film
+   * begins.
+   */
+  private replaceCard(key: string, pieces: Array<{ ms: number }>, plan: Plan): void {
+    const state = this.cards.get(key);
+    if (state) state.frozen = true;
+    if (this.finishings.has(key)) return;
+    const totalMs = pieces.reduce((sum, piece) => sum + piece.ms, 0);
+    if (totalMs <= 0) return;
+    const task = generateCardPiece(
+      this.settings,
+      this.dirFor(key),
+      { name: DONE_NAME, offsetMs: 0, seconds: totalMs / 1000 },
+      {
+        segments: 0,
+        windows: plan.windows ?? [],
+        pass: 1,
+        passes: plan.ranges.length || 1,
+        state: "done",
+        waitMs: totalMs,
+      },
+    )
+      .then((piece) => {
+        if (piece.ok) return;
+        this.cardError = piece.error;
+        console.warn(`  warning        the finished card cannot be drawn: ${piece.error}`);
+      })
+      .catch(() => undefined)
+      .finally(() => this.finishings.delete(key));
+    this.finishings.set(key, task);
+  }
+
+  /** Whether this key's finished card is on disk yet (see `replaceCard`). */
+  private async doneCardReady(key: string): Promise<boolean> {
+    try {
+      return (await stat(path.join(this.dirFor(key), DONE_NAME))).size > 0;
+    } catch {
+      return false;
+    }
   }
 
   /** Stop the card for a key that is finished, and forget cards nobody is watching. */
@@ -700,6 +785,7 @@ export class PackageEngine {
       padding: number;
       expectedMs: number | null;
       bufferedMs: number;
+      cardMs: number;
     },
   ): ManifestView {
     const lines: string[] = [];
@@ -742,6 +828,7 @@ export class PackageEngine {
       padding: facts.padding,
       expectedMs: facts.expectedMs,
       bufferedMs: facts.bufferedMs,
+      cardMs: facts.cardMs,
       durationMs: Math.round(durationMs),
     };
   }
@@ -780,36 +867,46 @@ export class PackageEngine {
     const remaining = expected - realMs;
     if (remaining <= PAD_ENTRY_MS / 2) return { entries: [], init: null };
     const media = await this.paddingMedia(key);
-    if (media.names.length === 0) return { entries: [], init: null };
+    if (media.pieces.length === 0) return { entries: [], init: null };
     // A cushion past the write head, not the rest of the episode (see `PAD_HORIZON_MS`): what the
     // player reloads into has to be near where it is, and the end of the playlist is where a live
-    // player starts.
+    // player starts. The pieces are tiled at their own lengths, so a two-second card piece is
+    // declared as two seconds rather than stretched to the black piece's six.
     const span = Math.min(remaining, PAD_HORIZON_MS);
-    const count = Math.min(PAD_MAX_ENTRIES, Math.ceil(span / PAD_ENTRY_MS));
     const entries: Array<{ uri: string; ms: number }> = [];
-    for (let i = 0; i < count; i += 1) {
-      const ms = i === count - 1 ? span - PAD_ENTRY_MS * (count - 1) : PAD_ENTRY_MS;
-      if (ms <= 0) continue;
-      entries.push({
-        uri: `seg?f=${encodeURIComponent(key)}/${media.names[i % media.names.length]!}`,
-        ms,
-      });
+    let filled = 0;
+    for (let i = 0; filled < span - 1; i += 1) {
+      const piece = media.pieces[i % media.pieces.length]!;
+      const ms = Math.min(piece.ms, span - filled);
+      if (ms <= 0) break;
+      entries.push({ uri: `seg?f=${encodeURIComponent(key)}/${piece.name}`, ms });
+      filled += ms;
     }
     return { entries, init: media.init };
   }
 
   /**
-   * What the placeholder points at: a plain piece in the package's own container, and with its own
-   * video codec.
+   * What the placeholder points at: the card itself while the film is still being cut, and a plain
+   * black piece once it can play.
    *
-   * Never the processing card. A player that joins at the live edge lands in this tail, so a tail
-   * built from the card is a player watching "Processing…" while the film it asked for is seconds
-   * behind it -- which is exactly the report this exists to answer. A TS piece (or an AVC one) is
-   * just as wrong: inside an fMP4 HEVC playlist it is a demux error, so the player stops where the
-   * placeholder was supposed to keep it waiting.
+   * While a viewer is waiting, the tail is where a player that has run out of packaged film ends up
+   * -- so it says what is happening rather than showing them nothing. The *finished* card is never
+   * here: it says where the film starts, which is meaningless at the live edge of a growing
+   * playlist. Both are in the package's own container and codec, because a TS piece (or an AVC one)
+   * inside an fMP4 HEVC playlist is a demux error, so the player stops exactly where the placeholder
+   * was supposed to keep it waiting.
    */
-  private async paddingMedia(key: string): Promise<{ init: string | null; names: string[] }> {
+  private async paddingMedia(
+    key: string,
+  ): Promise<{ init: string | null; pieces: Array<{ name: string; ms: number }> }> {
     const format = await this.formatFor(key);
+    if (format.container === "ts") {
+      const card = await this.readSplashList(key);
+      const state = this.cards.get(key);
+      if (card.length > 0 && state && !state.frozen) {
+        return { init: null, pieces: card.slice(-3) };
+      }
+    }
     const info = await this.sourceInfo(key);
     const fallback = await generatePadPiece(
       this.settings,
@@ -817,7 +914,9 @@ export class PackageEngine {
       format.container,
       info?.video,
     );
-    return fallback ? { init: fallback.init, names: [fallback.name] } : { init: null, names: [] };
+    return fallback
+      ? { init: fallback.init, pieces: [{ name: fallback.name, ms: PAD_SECONDS * 1000 }] }
+      : { init: null, pieces: [] };
   }
 
   /** The pieces of the card drawn for this key, oldest first. */
@@ -889,9 +988,11 @@ export class PackageEngine {
   /**
    * How long the card is in this key's playlist, in milliseconds.
    *
-   * The card is the stem of the presentation -- the episode starts after it -- so this is the
-   * offset every subtitle generated for the cut video is shifted by. It is a constant for a
-   * given deployment precisely because the card is drawn once and its length is the pre-roll.
+   * The card is the stem of the presentation -- the episode starts after it -- and its length is the
+   * wait the first playback actually had: each piece is two seconds of the card, drawn while the
+   * film was being readied, so the sum is how long that took (rounded up to a piece). Fixed once the
+   * film can play, which is what makes the film's position on the timeline stable -- and it is the
+   * offset a subtitle rendition has to carry.
    */
   async cardMs(key: string): Promise<number> {
     const pieces = await this.readSplashList(key);
@@ -977,7 +1078,13 @@ export class PackageEngine {
   segmentPath(key: string, name: string): string | null {
     if (
       !KEY_RE.test(key) ||
-      !(SEGMENT_RE.test(name) || SPLASH_RE.test(name) || PAD_RE.test(name) || INIT_RE.test(name))
+      !(
+        SEGMENT_RE.test(name) ||
+        SPLASH_RE.test(name) ||
+        DONE_RE.test(name) ||
+        PAD_RE.test(name) ||
+        INIT_RE.test(name)
+      )
     ) {
       return null;
     }

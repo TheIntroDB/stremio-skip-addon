@@ -36,7 +36,6 @@ import {
 } from "./hls.js";
 import { knownCodecs } from "./known.js";
 import type { ManifestView, PackageEngine } from "./packages.js";
-import { cardSeconds } from "./splash.js";
 import { chooseAudio, chooseSourceTrack, masterPlaylist } from "./streaminfo.js";
 import { isPrivateHost } from "./upstream.js";
 
@@ -136,24 +135,12 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
   if (cutKey) {
     const card = await context.packages.advanceCard(cutKey);
     if (card) {
-      const audio = await offerTrack(
-        context,
-        target,
-        cutKey,
-        windows,
-        card.card > 0 ? cardSeconds(context.settings) * 1000 : 0,
-      );
+      const audio = await offerTrack(context, target, cutKey, windows, card.cardMs);
       return packageResponse(context, card, cutKey, lookup?.reason ?? "", audio);
     }
     const ready = await context.packages.manifest(cutKey);
     if (ready) {
-      const audio = await offerTrack(
-        context,
-        target,
-        cutKey,
-        windows,
-        ready.card > 0 ? cardSeconds(context.settings) * 1000 : 0,
-      );
+      const audio = await offerTrack(context, target, cutKey, windows, ready.cardMs);
       return packageResponse(context, ready, cutKey, lookup?.reason ?? "", audio);
     }
   }
@@ -429,13 +416,7 @@ async function packageOrProxy(
   const wantsSubtitles = context.subtitles.enabled(context.config);
   const ready = await context.packages.manifest(key);
   if (ready) {
-    const resolved = await offerTrack(
-      context,
-      target,
-      key,
-      windows,
-      ready.card > 0 ? cardSeconds(context.settings) * 1000 : 0,
-    );
+    const resolved = await offerTrack(context, target, key, windows, ready.cardMs);
     return packageResponse(context, ready, key, lookupReason, resolved);
   }
 
@@ -466,7 +447,7 @@ async function packageOrProxy(
     PREROLL_WAIT_MS,
   );
   if (preroll) {
-    const resolved = await offerTrack(context, target, key, windows, 0);
+    const resolved = await offerTrack(context, target, key, windows, preroll.cardMs);
     return packageResponse(context, preroll, key, lookupReason, resolved);
   }
   // Not enough of it yet, so show what is happening rather than holding the request: a player
@@ -534,11 +515,11 @@ async function packageResponse(
 
   const media = new URL(url.toString());
   media.searchParams.set("m", "1");
-  // The rendition is the film's timeline, with no card entry: the card is only ever the wait for the
-  // pre-roll (see `packages.ts`, `manifest`), so a playback that started on one is handed the film
-  // from its first frame a poll later -- a rendition carrying a card's segment would leave every cue
-  // one card late for the rest of the episode.
-  const subtitleQuery = `f=${encodeURIComponent(track)}`;
+  // The rendition has to carry the card's own segment, or every cue sits one card late: the card is
+  // the film's pre-roll now (see `packages.ts`, `manifest`), so the film starts at `view.cardMs` and
+  // the track has to say the same thing. Its length travels in the URI because it is a measured
+  // wait, not a deployment constant.
+  const subtitleQuery = `f=${encodeURIComponent(track)}&c=${(view.cardMs / 1000).toFixed(3)}`;
   const info = await context.packages.sourceInfo(key);
   const master = masterPlaylist({
     mediaUri: `${media.pathname}${media.search}`,

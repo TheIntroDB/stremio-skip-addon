@@ -79,17 +79,27 @@ discovered by the first person who plays a file.
 
 ### The processing card
 
-A file cut takes time to produce. `PREROLL_SECONDS` (default 10) is how much of the cut film has to
-be packaged before playback starts: a play request waits that long for the film (a couple of
-seconds at most), and the moment that much exists the player is handed the film from its first
-frame.
+A file cut takes time to produce, and the **processing card** is what a viewer watches while it
+happens. It is part of the film, not a screen in front of it: the card's own length is the pre-roll,
+the film starts at that offset, and it stays there for every later playback — so a seek back to zero
+finds the card, and a resume lands where the film's clock says it should.
 
-The **processing card** is only the wait, never a pre-roll. If the pre-roll is not there yet, the
-addon serves the card so the player does not sit on a blank screen — and, crucially, so it does not
-conclude the episode has ended, which is what a playlist holding a few seconds of video makes Stremio
-do. The card goes the moment the film can play: a viewer left on "Processing…" over an episode that
-is ready is the one thing it must not do. A job that has _stopped_ has no card either (see
-`manifest`), so a failure hands over the source untouched instead of a screen that never changes.
+The length is **measured, not configured**. A play request waits a couple of seconds for the film
+(`PREROLL_WAIT_MS`); if that much is not there, the card is served and one two-second piece of it is
+drawn per request, so the card grows exactly as long as the viewer actually waits. `PREROLL_SECONDS`
+(default 10) is what ends it: once that much of the _cut_ film is packaged the card is frozen at
+however many pieces it has, and the film is appended after them. Growing it later would move the film
+under a player that is already on it.
+
+Once the film can play, the pieces are replaced — in place, at the same total length — by one
+**finished card** (`done00000.ts`) that says what went and where the film begins ("Segments removed /
+Video starts at 0:12"), so a viewer who seeks back to the start a week later is not told that an
+episode cut days ago is still processing. The swap never changes the offset; it is drawn in the
+background and listed from the poll after it exists.
+
+The card is also a _subtitle_ offset: a rendition is fetched once per playback, so the master tells
+it the card's length (`subs.m3u8?f=<track>&c=<seconds>`) and the rendition opens with the matching
+card segment. Without that every cue sits one card late for the whole episode.
 
 While a package is still being written the playlist ends in a **placeholder**: a plain piece in the
 package's own container and codec, about twelve seconds of it (`PAD_HORIZON_MS`). That length is the
@@ -101,9 +111,12 @@ way out is to close the player. A short tail keeps the live edge inside the film
 and the placeholder is never the card for the same reason: a viewer who opens there is looking at
 the film's own seconds, not at "Processing…".
 
+A job that has _stopped_ has no card at all (see `manifest`), so a failure hands over the source
+untouched instead of a screen that never changes.
+
 An fMP4 (HEVC) package has no card: the card is a TS piece, and mixing containers inside one playlist
-is exactly what players disagree about. It waits for its first segment instead, which is now a
-segment's worth of work rather than a stretch's.
+is exactly what players disagree about. It waits for its first segment instead, which is a segment's
+worth of work rather than a stretch's.
 
 ### Margin
 

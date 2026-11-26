@@ -26,24 +26,29 @@ import { run } from "./ffmpeg.js";
 
 /** Every piece of the card is this long. */
 /**
- * How long the card is.
+ * The longest a single card piece is.
  *
- * Exactly the pre-roll buffer, and drawn as a single piece, which makes two things true that
- * matter: the player spends the same 10 seconds on the card however fast the source is (so the
- * episode always starts at the same point in the playlist), and the subtitle track generated for
- * the cut video can be shifted by that fixed amount and stay aligned. Pieces used to be two
- * seconds each and drawn for as long as the episode could not play, which made the episode's
- * start time depend on how the race went.
+ * The card is the film's pre-roll, and its length is however long the viewer actually waited, so it
+ * is drawn one piece at a time while the wait goes on and frozen the moment the film can play. Two
+ * seconds is one ffmpeg run, so the piece is where the wording ("Processing…", the ticker) is as
+ * current as it can be without the drawing becoming the thing that is being waited for.
+ */
+export const SPLASH_PIECE_MS = 2_000;
+/**
+ * How much of the film must be packaged before the card is finished.
+ *
+ * Only used to size a card that has to be drawn in one go (a deployment with `PREROLL_SECONDS` set
+ * but no piece drawn yet); a card that accumulated while a viewer waited is as long as the wait.
  */
 export function cardSeconds(settings: Settings): number {
   return Math.max(2, Math.round(settings.prerollSeconds)) || 2;
 }
-/** The stated length of a card piece when its real one cannot be read back. */
-export const SPLASH_PIECE_MS = 2_000;
 /** How long the plain black piece the padding falls back to is. */
 export const PAD_SECONDS = 6;
-/** `splash00000.ts`, kept beside the package's own segments. */
+/** `splash00000.ts` — one piece of the card while the film is being cut. */
 export const SPLASH_RE = /^splash\d{5}\.ts$/;
+/** `done00000.ts` — the card once the film can play: it says what was removed, not "Processing…". */
+export const DONE_RE = /^done\d{5}\.ts$/;
 /** `pad00000.ts`: a plain piece the padding falls back to when no card can be drawn. */
 export const PAD_RE = /^pad\d{5}\.(ts|m4s)$/;
 
@@ -78,6 +83,15 @@ export interface SplashCard {
   passes: number;
   /** Whether a subtitle track is being generated, so the card can say so. */
   subtitles?: boolean;
+  /**
+   * What the card is saying: the work in progress, or what it turned out to be.
+   *
+   * A card that is never replaced is one a viewer seeks back to a week later, and "Processing…"
+   * over an episode that was cut days ago is a lie. `done` says what went instead.
+   */
+  state?: "processing" | "done";
+  /** With `state: "done"`: how long the pre-roll was, i.e. where the film starts on the timeline. */
+  waitMs?: number;
 }
 
 const TYPE_LABEL: Record<string, string> = {
@@ -101,6 +115,11 @@ export function clock(ms: number): string {
  * What the card says.
  *
  * Separated from the drawing so the wording can be asserted without reading pixels.
+ *
+ * Two states, because the card is part of the video for good: while the film is being cut it says
+ * so, and once it can play it says what happened instead -- the segments that went, and where the
+ * film begins on the timeline. A viewer who seeks back to zero finds that, not "Processing…" over
+ * an episode that was finished days ago.
  */
 export function cardText(card: SplashCard): {
   title: string;
@@ -124,13 +143,18 @@ export function cardText(card: SplashCard): {
   // "0 segments" over a list of two read as a broken counter rather than as progress.
   const count = card.windows.length;
   const where = card.passes > 1 ? `   (${card.pass}/${card.passes})` : "";
+  const done = card.state === "done";
   return {
-    title: "Processing…",
-    subtitle: card.subtitles
-      ? "TheIntroDB is cutting the segments from your stream and generating subtitles"
-      : "TheIntroDB is currently cutting the segments from your stream",
+    title: done ? "Segments removed" : "Processing…",
+    subtitle: done
+      ? // The pre-roll the viewer sat through is the film's offset on the timeline, so this is
+        // the timecode a player's seek bar is pointing at when the film starts.
+        `Video starts at ${clock(card.waitMs ?? 0)}`
+      : card.subtitles
+        ? "TheIntroDB is cutting the segments from your stream and generating subtitles"
+        : "TheIntroDB is currently cutting the segments from your stream",
     count: `${count} ${count === 1 ? "segment" : "segments"}`,
-    windows: windows ? `${windows}${where}   ${dots}`.trimEnd() : dots,
+    windows: done ? windows : windows ? `${windows}${where}   ${dots}`.trimEnd() : dots,
     footer: "Go to theintrodb.org to submit or report incorrect segments",
   };
 }
@@ -224,18 +248,24 @@ export function splashArgs(
   ];
 }
 
-/** Draw one piece. Returns its name and size, or null when ffmpeg could not make it. */
+/** Draw one piece. Returns its name and size, or an error when ffmpeg could not make it. */
 export type SplashResult = { ok: true; name: string; bytes: number } | { ok: false; error: string };
 
-export async function generateSplashPiece(
+/**
+ * One card piece: `splash00002.ts` while the film is being cut, `done00000.ts` once it can play.
+ *
+ * A piece is a fixed slice of the timeline (`offsetMs` in, its own length long), which is what lets
+ * the card be built while a viewer waits: the pieces are continuous with each other, and the film
+ * is appended after them with a discontinuity. The finished card is one piece as long as all the
+ * processing pieces together, so replacing them never moves the film.
+ */
+export async function generateCardPiece(
   settings: Settings,
   dir: string,
-  index: number,
+  piece: { name: string; offsetMs: number; seconds: number },
   card: SplashCard,
 ): Promise<SplashResult> {
-  const seconds = cardSeconds(settings);
-  const name = `splash${String(index).padStart(5, "0")}.ts`;
-  const out = path.join(dir, name);
+  const out = path.join(dir, piece.name);
   const text = cardText(card);
   try {
     await mkdir(dir, { recursive: true });
@@ -249,7 +279,7 @@ export async function generateSplashPiece(
   }
   const result = await run(
     settings.ffmpegPath,
-    splashArgs(out, index * seconds, cardSeconds(settings), dir),
+    splashArgs(out, piece.offsetMs / 1000, piece.seconds, dir),
     60_000,
   );
   if (result.code !== 0) {
@@ -259,7 +289,7 @@ export async function generateSplashPiece(
   }
   try {
     const info = await stat(out);
-    return { ok: true, name, bytes: info.size };
+    return { ok: true, name: piece.name, bytes: info.size };
   } catch {
     return { ok: false, error: "ffmpeg wrote no piece" };
   }
