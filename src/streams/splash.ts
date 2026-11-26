@@ -16,7 +16,7 @@
  * offset lands exactly; a piece starts at 0.000, the next at 2.000, and so on).
  */
 
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -45,7 +45,7 @@ export const PAD_SECONDS = 6;
 /** `splash00000.ts`, kept beside the package's own segments. */
 export const SPLASH_RE = /^splash\d{5}\.ts$/;
 /** `pad00000.ts`: a plain piece the padding falls back to when no card can be drawn. */
-export const PAD_RE = /^pad\d{5}\.ts$/;
+export const PAD_RE = /^pad\d{5}\.(ts|m4s)$/;
 
 const WIDTH = 1280;
 const HEIGHT = 720;
@@ -266,65 +266,94 @@ export async function generateSplashPiece(
 }
 
 /**
- * A plain black two seconds with silence, for padding a playlist when no card can be drawn.
+ * A plain black piece with silence, for padding a playlist when no card can be drawn.
  *
  * The padding exists to make the playlist's declared length the episode's, so it must work
  * wherever the card does not: no font, no badge, nothing to read.
+ *
+ * It is written in the package's own container and with its own video codec, because a placeholder
+ * a player cannot demux is worse than the stall it stands in for: a TS (or AVC) segment inside an
+ * fMP4 HEVC playlist makes the player fail at the end of its buffer, where a placeholder should
+ * just keep it waiting.
  */
 export async function generatePadPiece(
   settings: Settings,
   dir: string,
-): Promise<{ name: string } | null> {
-  const name = "pad00000.ts";
+  container: "ts" | "mp4" = "ts",
+  codec?: string,
+): Promise<{ name: string; init: string | null } | null> {
+  const fmp4 = container === "mp4";
+  const name = fmp4 ? "pad00000.m4s" : "pad00000.ts";
+  const init = fmp4 ? "init-pad.mp4" : null;
   const out = path.join(dir, name);
   try {
-    if ((await stat(out)).size > 0) return { name };
+    if ((await stat(out)).size > 0) return { name, init };
   } catch {
     // Not made yet.
   }
+  // The picture is a black frame, so the encoder only has to produce one that decodes: the same
+  // codec as the film, at the same nominal rate, so a player hands the pieces to the decoder it
+  // already has running.
+  const video = ["-c:v", codec === "hevc" ? "libx265" : "libx264", "-preset", "ultrafast"];
+  if (codec === "hevc") video.push("-x265-params", "log-level=error", "-tag:v", "hvc1");
+  const shape = [
+    "-nostdin",
+    "-hide_banner",
+    "-v",
+    "error",
+    "-y",
+    "-f",
+    "lavfi",
+    "-i",
+    `color=c=${BACKDROP}:s=${WIDTH}x${HEIGHT}:r=${FPS}`,
+    "-f",
+    "lavfi",
+    "-i",
+    "anullsrc=r=48000:cl=stereo",
+    ...video,
+    "-pix_fmt",
+    "yuv420p",
+    "-c:a",
+    "aac",
+    "-b:a",
+    "48k",
+    "-t",
+    String(PAD_SECONDS),
+  ];
   const result = await run(
     settings.ffmpegPath,
-    [
-      "-nostdin",
-      "-hide_banner",
-      "-v",
-      "error",
-      "-y",
-      "-f",
-      "lavfi",
-      "-i",
-      `color=c=${BACKDROP}:s=${WIDTH}x${HEIGHT}:r=${FPS}`,
-      "-f",
-      "lavfi",
-      "-i",
-      "anullsrc=r=48000:cl=stereo",
-      "-c:v",
-      "libx264",
-      "-preset",
-      "ultrafast",
-      "-pix_fmt",
-      "yuv420p",
-      "-c:a",
-      "aac",
-      "-b:a",
-      "48k",
-      "-muxdelay",
-      "0",
-      "-muxpreload",
-      "0",
-      "-t",
-      String(PAD_SECONDS),
-      "-f",
-      "mpegts",
-      out,
-    ],
+    fmp4
+      ? [
+          ...shape,
+          // One segment, so the placeholder is one playlist entry and one initialisation section.
+          "-f",
+          "hls",
+          "-hls_time",
+          String(PAD_SECONDS),
+          "-hls_list_size",
+          "0",
+          "-hls_segment_type",
+          "fmp4",
+          "-hls_fmp4_init_filename",
+          init!,
+          "-hls_segment_filename",
+          path.join(dir, "pad%05d.m4s"),
+          // The playlist the muxer insists on writing; the package reads its own records, and the
+          // segment route refuses a name that is not one of ours.
+          path.join(dir, "pad.m3u8"),
+        ]
+      : [...shape, "-muxdelay", "0", "-muxpreload", "0", "-f", "mpegts", out],
     60_000,
   );
   if (result.code !== 0) return null;
   try {
-    return (await stat(out)).size > 0 ? { name } : null;
+    return (await stat(out)).size > 0 ? { name, init } : null;
   } catch {
     return null;
+  } finally {
+    // The muxer's own playlist is only there to be written; the package reads its records and the
+    // segment route refuses a name that is not one of ours, so it would just be litter.
+    if (fmp4) await rm(path.join(dir, "pad.m3u8"), { force: true });
   }
 }
 

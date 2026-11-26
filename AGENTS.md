@@ -63,6 +63,13 @@ Progressive files are cut by remuxing with ffmpeg (no re-encode), so a cut can o
   copy it again.
 - ffmpeg must be present. The Docker image has it; a bare install without it passes files through
   while HLS still works.
+- A stretch is written as MPEG-TS, except an HEVC source, which is written as fragmented MP4 (fMP4):
+  hls.js — every browser player — cannot demux HEVC out of MPEG-TS. Whatever the container, the
+  playlist gains a segment as soon as the segment is closed, so playback starts a segment into the
+  work rather than a stretch into it. An fMP4 pass has no `-segment_list`, so its record is the
+  playlist ffmpeg is still appending to (see `passRows` in `packages.ts`).
+- Everything a playlist lists is in the package's own container, including the placeholder at the end
+  of an unfinished one: a TS piece inside an fMP4 playlist is a demux error rather than a wait.
 
 Whether a file is opened at all is the **install's** choice, carried in its link (`cuts`): `mkv`
 packages a `.mkv`/`.mp4` source as HLS on demand, `hls` only splices playlists and copies nothing.
@@ -72,13 +79,21 @@ discovered by the first person who plays a file.
 
 ### The processing card
 
-A file cut takes time to produce. Until the first segment of the cut is ready, the addon serves a
-short placeholder stream — the **processing card** — so the player does not sit on a blank screen,
-and, crucially, so it does not conclude the episode has ended. Starting playback too early on a
-growing playlist is what makes Stremio mark an episode watched and jump to the next one.
+A file cut takes time to produce. `PREROLL_SECONDS` (default 10) is how much of the cut film has to
+be packaged before playback starts: a play request waits that long for the film (a couple of
+seconds at most), and the moment that much exists the player is handed the film from its first
+frame.
 
-`PREROLL_SECONDS` controls how much of the episode must be ready before playback starts on it
-(default 10).
+The **processing card** is only the wait, never a pre-roll. If the pre-roll is not there yet, the
+addon serves the card so the player does not sit on a blank screen — and, crucially, so it does not
+conclude the episode has ended, which is what a playlist holding a few seconds of video makes Stremio
+do. The card goes the moment the film can play: a viewer left on "Processing…" over an episode that
+is ready is the one thing it must not do. A job that has _stopped_ has no card either (see
+`manifest`), so a failure hands over the source untouched instead of a screen that never changes.
+
+An fMP4 (HEVC) package has no card: the card is a TS piece, and mixing containers inside one playlist
+is exactly what players disagree about. It waits for its first segment instead, which is now a
+segment's worth of work rather than a stretch's.
 
 ### Margin
 
@@ -124,8 +139,8 @@ defaults and comments. The full set:
 | `SUBTITLES_TTL_HOURS`     | `24`      | How long a generated track is kept (1–720).                                                                                                                                                                                                                                                                 |
 | `SUBTITLES_CHUNK_SECONDS` | `30`      | How much audio is transcribed in one go, and therefore how long each subtitle segment is. The clamp starts at the default (30, one recogniser window — `DEFAULT_SUBTITLES_CHUNK_SECONDS` in `src/addon/env.ts`) and ends at 900 as a typo guard, so it can never lift the default off its documented value. |
 | `PROXY`                   | `on`      | Relay every stream through this service. `off` only for a source the player can reach directly.                                                                                                                                                                                                             |
-| `PREROLL_SECONDS`         | `10`      | Seconds of the episode that must be ready before playback starts (0–60).                                                                                                                                                                                                                                    |
-| `SPLASH`                  | `on`      | Whether a cold playback shows the processing card (see [The processing card](#the-processing-card)) instead of being held until the first segment is written.                                                                                                                                               |
+| `PREROLL_SECONDS`         | `10`      | Seconds of the **cut** film that must be packaged before playback starts on it (0–60). Also the length of a processing-card piece.                                                                                                                                                                          |
+| `SPLASH`                  | `on`      | Whether a processing card may be drawn at all (see [The processing card](#the-processing-card)). Off means a play waits for the film itself, up to `CUT_WAIT_SECONDS`.                                                                                                                                      |
 | `CACHE_DIR`               | `./cache` | Where package segments are cached.                                                                                                                                                                                                                                                                          |
 | `CACHE_MAX_GB`            | `50`      | How much disk the cache may use before the oldest segment is evicted.                                                                                                                                                                                                                                       |
 | `CUT_WAIT_SECONDS`        | `120`     | How long a play request waits for the first segment of a file being packaged.                                                                                                                                                                                                                               |

@@ -32,6 +32,7 @@ const THROTTLE_MS = 40;
 let workDir: string;
 let samplePath: string;
 let longPath: string;
+let hevcPath: string;
 let server: Server;
 let base = "";
 
@@ -188,6 +189,45 @@ before(async () => {
   );
   assert.equal(long.code, 0, `could not generate the long sample: ${long.stderr}`);
 
+  // Ten seconds of HEVC, which is what a package has to be written as fMP4 for. Small, but big
+  // enough that the first stretch takes long enough to be seen while it is being cut.
+  hevcPath = path.join(workDir, "hevc.mkv");
+  const hevc = await run(
+    "ffmpeg",
+    [
+      "-nostdin",
+      "-hide_banner",
+      "-v",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      "testsrc=size=640x360:rate=10:duration=20",
+      "-f",
+      "lavfi",
+      "-i",
+      "sine=frequency=440:duration=20",
+      "-c:v",
+      "libx265",
+      "-preset",
+      "ultrafast",
+      "-crf",
+      "30",
+      "-g",
+      "10",
+      "-x265-params",
+      "log-level=error",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "64k",
+      "-y",
+      hevcPath,
+    ],
+    300_000,
+  );
+  assert.equal(hevc.code, 0, `could not generate the HEVC sample: ${hevc.stderr}`);
+
   // Serve it the way a CDN does: byte ranges, 206.
   server = createServer((request, response) => {
     void (async () => {
@@ -203,8 +243,9 @@ before(async () => {
         response.end(body);
         return;
       }
+      const hevcSource = request.url === "/hevc.mkv";
       const long = request.url === "/long.mkv";
-      const file = await readFile(long ? longPath : samplePath);
+      const file = await readFile(hevcSource ? hevcPath : long ? longPath : samplePath);
       const range = /^bytes=(\d*)-(\d*)$/.exec(request.headers.range ?? "");
       if (range) {
         const start = range[1] ? Number(range[1]) : 0;
@@ -215,12 +256,15 @@ before(async () => {
           "content-length": String(end - start + 1),
           "accept-ranges": "bytes",
         });
-        if (long) {
+        if (long || hevcSource) {
           // Dribbled out, so a whole-file read takes seconds: exactly the situation
-          // that used to leave a player watching a spinner.
-          for (let at = start; at <= end; at += THROTTLE_CHUNK) {
-            response.write(file.subarray(at, Math.min(at + THROTTLE_CHUNK, end + 1)));
-            await new Promise((resolve) => setTimeout(resolve, THROTTLE_MS));
+          // that used to leave a player watching a spinner. The HEVC one is slower still, so
+          // the first stretch is still being cut while a test is looking at it.
+          const chunk = hevcSource ? 2048 : THROTTLE_CHUNK;
+          const pause = hevcSource ? 50 : THROTTLE_MS;
+          for (let at = start; at <= end; at += chunk) {
+            response.write(file.subarray(at, Math.min(at + chunk, end + 1)));
+            await new Promise((resolve) => setTimeout(resolve, pause));
           }
           response.end();
           return;
@@ -657,105 +701,109 @@ test("the segments of a stretch share one timeline, so a player's clock does not
   }
 });
 
-test("a cold play gets the processing card, and hands over as soon as the episode can play", async () => {
+test("a cold play is given the card while the film is cut, and never after it can play", async () => {
   // Two things are being proven: a player is given something to look at at once instead of a
-  // spinner, and the card does not keep growing in front of the film -- waiting for the whole
-  // file is exactly what that looked like.
-  const window = { type: "intro" as const, startMs: 30_000, endMs: 36_000 };
+  // spinner, and the card is only ever the *wait* -- the moment the pre-roll is on disk it is gone
+  // and the film starts at position zero. A card that survives the wait is a viewer watching
+  // "Processing…" over an episode that is ready to play.
   const engine = new PackageEngine(
-    // A small buffer, so the card is drawn before this source has produced that much: with the
-    // card and the episode racing, a zero buffer would mean "no card" whenever the source won.
-    settings({ cacheDir: path.join(workDir, "cache-card"), splash: true, prerollSeconds: 2 }),
+    settings({ cacheDir: path.join(workDir, "cache-card"), splash: true }),
   );
   await engine.start();
-  const url = `${base}/long.mkv`;
-  const key = engine.keyFor(url, [window], "stream:card");
-  engine.schedule(url, [window], "stream:card", LONG_SECONDS * 1000);
+  const windows = [INTRO];
+  const key = engine.keyFor(samplePath, windows, "stream:card");
+  const dir = path.join(workDir, "cache-card", "hls", key);
+  await mkdir(dir, { recursive: true });
+  await writeFile(
+    path.join(dir, "plan.json"),
+    JSON.stringify({
+      key,
+      windows,
+      ranges: [
+        { startMs: 0, endMs: INTRO.startMs },
+        { startMs: INTRO.endMs, endMs: SAMPLE_SECONDS * 1000 },
+      ],
+      createdAt: Date.now(),
+    }),
+  );
+  await writeFile(
+    path.join(dir, "duration.json"),
+    JSON.stringify({
+      durationMs: SAMPLE_SECONDS * 1000,
+      bitrate: 1000,
+      width: 320,
+      height: 180,
+      codecs: "",
+    }),
+  );
 
+  // Nothing packaged yet, so the player gets the card rather than nothing.
   const started = Date.now();
-  // The handler passes the windows it is about to cut, because the plan is written by the
-  // job that has only just been queued.
-  const card = await engine.splashView(key, [window]);
+  const card = await engine.splashView(key, windows);
   assert.ok(card, "the card is served");
   assert.ok(Date.now() - started < 15_000, `and quickly (${Date.now() - started}ms)`);
-  assert.ok(card.card >= 1, "with at least one piece of the card in it");
+  assert.equal(card.card, 1, "one piece of it");
+  assert.equal(card.segments, 0, "and nothing of the episode, because there is none");
   assert.ok(card.body.includes("splash00000.ts"), "which the playlist lists");
-  // Whether the episode's first segment is already written by now is a race with ffmpeg, not
-  // something to assert; what matters is that the card comes first when it is there.
-  if (card.segments > 0) {
-    assert.ok(
-      card.body.indexOf("splash") < card.body.indexOf("seg0"),
-      "the card is the start of the film, not a screen after it",
-    );
-  }
 
-  // The card is real, playable video of a known length: a player has to be able to fetch it, and
-  // the episode's position in the playlist depends on how long it is.
+  // The card is real, playable video of a known length: a player has to be able to fetch it.
   const first = engine.segmentPath(key, "splash00000.ts");
   assert.ok(first, "a piece is servable by name");
   const pieceMs = await durationOf(first!);
-  assert.ok(pieceMs > 1200 && pieceMs < 3_000, `a piece runs ${pieceMs}ms`);
-  assert.equal(
-    await engine.cardMs(key),
-    2_000,
-    "and the card is exactly the buffer it was asked for",
-  );
+  assert.ok(pieceMs > 8_000, `a piece runs ${pieceMs}ms`);
+  assert.equal(await engine.cardMs(key), 10_000, "and the card is the buffer's length");
 
-  // Then the episode can play: the card stops, and what the player already holds is the card
-  // followed by the film.
-  await engine.waitForFirstSegment(key, 180_000);
+  // Then the pre-roll arrives: no card, and the film is the first thing in the playlist.
+  await writeFile(
+    path.join(dir, "pass-0.csv"),
+    "seg00000.ts,0.000000,5.000000\nseg00001.ts,5.000000,10.000000\n",
+  );
+  await writeFile(
+    path.join(dir, "pass-1.csv"),
+    "seg00002.ts,0.000000,5.000000\nseg00003.ts,5.000000,10.000000\nseg00004.ts,10.000000,17.000000\n",
+  );
   const view = await engine.manifest(key);
   assert.ok(view, "the playlist is served");
-  assert.ok(view.card >= 1, "with the card still in it");
-  assert.ok(view.segments >= 1, "and the episode after it");
-  assert.match(
-    view.body,
-    /splash0000\d\.ts[\s\S]*#EXT-X-DISCONTINUITY[\s\S]*seg0000\d\.ts/,
-    "card, a declared jump, then the episode",
-  );
+  assert.equal(view.card, 0, "the card is not in it any more");
+  assert.ok(!view.body.includes("splash"), "not one piece of it");
+  assert.ok(view.bufferedMs >= 10_000, `${view.bufferedMs}ms of the episode is on disk`);
+  const firstUri = view.body.split("\n").find((line) => !line.startsWith("#"));
+  assert.match(firstUri ?? "", /seg00000\.ts/, "and the film is the first thing in it");
 
-  // One piece, always: a card whose length changed as the packaging raced would move the
-  // episode under a player that was already watching it -- and under its subtitles.
-  await new Promise((resolve) => setTimeout(resolve, 1200));
+  // And it does not come back: a card is a wait, not a pre-roll.
   const later = await engine.advanceCard(key);
-  assert.equal(later?.card, 1, "and the card never grows");
-  assert.equal(later?.card, view.card, "so the episode's start in the playlist is a constant");
+  assert.equal(later?.card ?? 0, 0, "the card never returns");
 });
 
-test("the card is drawn once, as long as the buffer, even when nothing can play yet", async () => {
-  // A source that never produces a segment is the case where the old card kept being redrawn:
-  // the player watched "Processing…" move while the episode's start time moved with it.
-  const window = { type: "intro" as const, startMs: 30_000, endMs: 36_000 };
+test("a job that stopped does not leave the card up for ever", async () => {
+  // The failure this exists for: packaging that cannot work, a card drawn over it, and a player
+  // watching "Processing…" until it gives up. A job that has stopped has a null answer here, and
+  // the caller answers that by handing over the source untouched.
   const engine = new PackageEngine(
-    settings({ cacheDir: path.join(workDir, "cache-moving"), splash: true }),
+    settings({ cacheDir: path.join(workDir, "cache-stopped"), splash: true }),
   );
   await engine.start();
+  const windows = [INTRO];
   const url = "http://127.0.0.1:1/never.mkv";
-  const key = engine.keyFor(url, [window], "stream:moving");
-  engine.schedule(url, [window], "stream:moving");
+  const key = engine.keyFor(url, windows, "stream:stopped");
+  engine.schedule(url, windows, "stream:stopped");
 
-  const first = await engine.splashView(key, [window]);
-  assert.equal(first?.card, 1, "one piece");
-  assert.equal(first?.segments, 0, "and nothing of the episode, because there is none");
-  assert.ok(first?.body.includes("#EXT-X-PLAYLIST-TYPE:EVENT"), "a playlist that keeps growing");
-  assert.ok(!first?.body.includes("#EXT-X-ENDLIST"), "with no end while the work goes on");
-  assert.ok(
-    (await firstVideoPts(engine.segmentPath(key, "splash00000.ts")!)) >= 0,
-    "and it decodes",
-  );
+  const deadline = Date.now() + 60_000;
+  while (engine.state(key)?.status !== "failed") {
+    assert.ok(Date.now() < deadline, `the job stops (${engine.state(key)?.status})`);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
 
-  await new Promise((resolve) => setTimeout(resolve, 1200));
-  const second = await engine.advanceCard(key);
-  assert.equal(second?.card, 1, "still one piece, however long the work goes on");
-  assert.equal(await engine.cardMs(key), 10_000, "and it is the buffer's length");
-  assert.equal(await engine.splashView("deadbeefdeadbeef0000"), null, "no package, no card");
+  assert.equal(await engine.manifest(key), null, "there is no playlist to serve");
+  assert.equal(await engine.splashView(key, windows), null, "and no card is drawn over it");
+  assert.equal(await engine.advanceCard(key), null, "and a polling player is not kept on one");
 });
 
 test("the playlist declares the whole episode from its first response", async () => {
   // Stremio marks an episode watched and jumps to the next one when the playlist it was handed
   // reaches the end -- and a playlist holding only what has been packaged so far ends after a
-  // few seconds. The remainder is padded with the card, so the declared length is the episode's
-  // from the very first response, however little of it has actually been cut.
+  // few seconds. The remainder is padded, so the declared length is the episode's from the very
+  // first response, however little of it has actually been cut.
   const window = { type: "intro" as const, startMs: 30_000, endMs: 36_000 };
   const engine = new PackageEngine(
     settings({ cacheDir: path.join(workDir, "cache-full"), splash: true }),
@@ -767,27 +815,37 @@ test("the playlist declares the whole episode from its first response", async ()
   // The handler learns the length before it answers (see rememberDuration).
   const duration = await engine.rememberDuration(key, url);
   assert.ok(duration && Math.abs(duration - LONG_SECONDS * 1000) < 2_000, `probed ${duration}ms`);
-  engine.schedule(url, [window], "stream:full", duration);
+  const dir = path.join(workDir, "cache-full", "hls", key);
+  await writeFile(
+    path.join(dir, "plan.json"),
+    JSON.stringify({
+      key,
+      windows: [window],
+      ranges: keptRanges([window], duration),
+      createdAt: Date.now(),
+    }),
+  );
 
+  // The card comes first, so the declared length is the card plus the episode's own.
   const card = await engine.splashView(key, [window]);
-  assert.ok(card, "the card is served");
+  assert.ok(card, "a playlist is served straight away");
+  assert.equal(card.card, 1, "with the card in it, because nothing has been cut yet");
   assert.equal(
     card.expectedMs,
     LONG_SECONDS * 1000 - 6_000,
     "the episode's length less the window",
   );
   assert.ok(card.padding > 0, "with the remainder padded");
-  // The presentation is the card and then the episode, so its length is both together.
   const cardMs = await engine.cardMs(key);
-  assert.equal(cardMs, 10_000, "the card is the buffer's length, not a race");
+  assert.equal(cardMs, 10_000, "the card is the buffer's length");
   const declared = cardMs + card.expectedMs!;
   assert.ok(
     card.durationMs >= declared - 8_000 && card.durationMs <= declared + 8_000,
     `the declared length is the card plus the episode (${card.durationMs}ms against ${declared}ms)`,
   );
 
-  // The padding is real, fetchable media rather than a dangling URI: a player that outruns the
-  // packaging walks onto it.
+  // The placeholder is real, fetchable media rather than a dangling URI: a player that outruns
+  // the packaging walks onto it.
   const piece = /seg\?f=[^/]+\/((?:pad|splash)\d{5}\.ts)/.exec(card.body)?.[1];
   assert.ok(piece, "the padding names a piece");
   const path0 = engine.segmentPath(key, piece!);
@@ -795,38 +853,61 @@ test("the playlist declares the whole episode from its first response", async ()
   assert.ok((await durationOf(path0!)) > 1_000, "and which is real media");
 });
 
-test("the card covers the wait for the buffer, and is the buffer's length", async () => {
-  // Starting playback on a couple of seconds is what made the player treat the episode as
-  // finished. The card covers the wait, and it is as long as the buffer exactly, so a player
-  // (and a subtitle track) can count on where the film begins.
-  const window = { type: "intro" as const, startMs: 30_000, endMs: 36_000 };
+test("the film is handed over the moment the pre-roll is on disk", async () => {
+  // The rule that makes a playback start on the episode rather than on a card: once
+  // `PREROLL_SECONDS` of the *cut* film is packaged, the playlist starts with the film. Nine
+  // seconds of it is a card; ten is the episode.
   const engine = new PackageEngine(
     settings({ cacheDir: path.join(workDir, "cache-buffer"), splash: true, prerollSeconds: 10 }),
   );
   await engine.start();
-  const url = `${base}/long.mkv`;
-  const key = engine.keyFor(url, [window], "stream:buffer");
-  engine.schedule(url, [window], "stream:buffer", LONG_SECONDS * 1000);
+  const windows = [INTRO];
+  const key = engine.keyFor(samplePath, windows, "stream:buffer");
+  const dir = path.join(workDir, "cache-buffer", "hls", key);
+  await mkdir(dir, { recursive: true });
+  await writeFile(
+    path.join(dir, "plan.json"),
+    JSON.stringify({
+      key,
+      windows,
+      ranges: [
+        { startMs: 0, endMs: INTRO.startMs },
+        { startMs: INTRO.endMs, endMs: SAMPLE_SECONDS * 1000 },
+      ],
+      createdAt: Date.now(),
+    }),
+  );
+  await writeFile(
+    path.join(dir, "duration.json"),
+    JSON.stringify({
+      durationMs: SAMPLE_SECONDS * 1000,
+      bitrate: 1000,
+      width: 320,
+      height: 180,
+      codecs: "",
+    }),
+  );
 
-  const first = await engine.splashView(key, [window]);
-  assert.ok(first, "the card is served straight away");
-  assert.equal(first?.card, 1, "once");
-  assert.equal(await engine.cardMs(key), 10_000, "and it is ten seconds of card, not a race");
-  const pieceMs = await durationOf(engine.segmentPath(key, "splash00000.ts")!);
-  assert.ok(pieceMs > 8_000, `the card itself runs ${pieceMs}ms`);
+  const none = await engine.splashView(key, windows);
+  assert.equal(none?.card, 1, "nothing cut yet, so the card");
 
-  // The episode is packaged behind it, and the playlist says where the film starts: after the
-  // card, and it stays there.
-  const deadline = Date.now() + 180_000;
-  for (;;) {
-    const view = await engine.manifest(key);
-    if ((view?.segments ?? 0) >= 3) break;
-    assert.ok(Date.now() < deadline, "the episode's own segments arrive");
-    await new Promise((resolve) => setTimeout(resolve, 200));
-  }
-  const later = await engine.manifest(key);
-  assert.equal(later?.card, 1, "the card is still one piece");
-  assert.equal(await engine.cardMs(key), 10_000, "and still the same length");
+  await writeFile(
+    path.join(dir, "pass-0.csv"),
+    "seg00000.ts,0.000000,5.000000\nseg00001.ts,5.000000,9.000000\n",
+  );
+  const nine = (await engine.manifest(key))!;
+  assert.equal(nine.bufferedMs, 9_000, "nine seconds of the film");
+  assert.equal(nine.card, 1, "is not the pre-roll, so the card stays");
+
+  await writeFile(
+    path.join(dir, "pass-0.csv"),
+    "seg00000.ts,0.000000,5.000000\nseg00001.ts,5.000000,10.000000\n",
+  );
+  const ten = (await engine.manifest(key))!;
+  assert.equal(ten.bufferedMs, 10_000, "ten seconds of the film");
+  assert.equal(ten.card, 0, "is the pre-roll, so the card goes");
+  const head = ten.body.split("\n").find((line) => !line.startsWith("#"));
+  assert.match(head ?? "", /seg00000\.ts/, "and the episode is the head of the playlist");
 });
 
 test("an fMP4 package is described with its initialisation section", async () => {
@@ -905,6 +986,10 @@ test("the package keeps the audio the install asked for", () => {
   // A release with dubs marks one as its default, and ffmpeg's own selection keeps that one -- so
   // an install that asked for English used to be served the dub. The choice is the same one the
   // configuration page makes, applied to what the package carries.
+  //
+  // The selector is the stream's own index, not its place among the audio streams: `0:a:1` on a
+  // file whose single sound track is stream 1 asks for a second sound that does not exist, and
+  // ffmpeg refuses the whole output -- a package that is never made.
   const info = {
     durationMs: 60_000,
     bitrate: 1,
@@ -918,20 +1003,19 @@ test("the package keeps the audio the install asked for", () => {
   } as unknown as StreamInfo;
   assert.deepEqual(
     audioMap(info, "en"),
-    ["-map", "0:v:0", "-map", "0:a:2"],
+    ["-map", "0:v:0", "-map", "0:2"],
     "the English track, not the dub",
   );
-  assert.deepEqual(
-    audioMap(info, "es"),
-    ["-map", "0:v:0", "-map", "0:a:1"],
-    "or the one asked for",
-  );
+  assert.deepEqual(audioMap(info, "es"), ["-map", "0:v:0", "-map", "0:1"], "or the one asked for");
   assert.deepEqual(
     audioMap(info, "de"),
-    ["-map", "0:v:0", "-map", "0:a:2"],
-    "and English when it is absent",
+    ["-map", "0:v:0", "-map", "0:2"],
+    "and English when absent",
   );
   assert.deepEqual(audioMap(null, "en"), [], "without a probe ffmpeg still decides");
+  // A silent release: asking for an audio stream that is not there fails the same way.
+  const silent = { ...info, audio: [] } as unknown as StreamInfo;
+  assert.deepEqual(audioMap(silent, "en"), ["-map", "0:v:0"], "the picture, and nothing else");
 });
 
 test("a different audio preference is a different package", () => {
@@ -949,17 +1033,16 @@ test("a different audio preference is a different package", () => {
   );
 });
 
-test("the processing card goes away once the film has been ready for a while", async () => {
-  // The card exists to cover the packaging. A playback that starts long after the film was cut is
-  // given the film at position zero, because watching ten seconds of "preparing" for something that
-  // was prepared yesterday is the card getting in the way. The window is the card's own length: a
-  // player that started on it is still on it, and moving the head of a playlist underneath a player
-  // is the one thing this must not do.
-  const engine = new PackageEngine(settings({ splash: true }));
+test("a package that was made earlier has no card in front of it", async () => {
+  // The card exists to cover the packaging, so a finished package never needs one: a playback that
+  // starts on it is watching "Processing…" over an episode that was cut yesterday.
+  const engine = new PackageEngine(
+    settings({ cacheDir: path.join(workDir, "cache-cardless"), splash: true }),
+  );
   await engine.start();
   const windows = [INTRO];
   const key = engine.keyFor(samplePath, windows, "cardless-test");
-  const dir = path.join(workDir, "cache", "hls", key);
+  const dir = path.join(workDir, "cache-cardless", "hls", key);
   await mkdir(dir, { recursive: true });
 
   await writeFile(
@@ -997,25 +1080,104 @@ test("the processing card goes away once the film has been ready for a while", a
 
   assert.equal(await engine.isComplete(key), true, "the engine says the film is ready");
 
-  // Just finished: a playback may still be on the card, so it stays.
-  const fresh = (await engine.manifest(key))!;
-  assert.equal(fresh.card, 1, "the card is still listed while a player could be on it");
-  assert.match(fresh.body, /splash00000\.ts/, "and its piece with it");
+  const view = (await engine.manifest(key))!;
+  assert.equal(view.card, 0, "no card is listed");
+  assert.ok(!view.body.includes("splash"), "and no piece of it");
+  assert.equal(view.complete, true, "the film is still declared complete");
+  const head = view.body.split("\n").find((line) => !line.startsWith("#"));
+  assert.match(head ?? "", /seg00000\.ts/, "and the playlist starts at the head of the episode");
+});
 
-  // Finished long ago: nothing can still be watching it.
-  const old = new Date(Date.now() - 3_600_000);
-  await utimes(path.join(dir, "done"), old, old);
-  const settled = (await engine.manifest(key))!;
-  assert.equal(settled.card, 0, "a stale card is not listed at all");
-  assert.ok(!settled.body.includes("splash"), "no card piece remains");
-  assert.equal(settled.complete, true, "the film is still declared complete");
-
-  const entries = (body: string): string[] => body.match(/#EXTINF:[\d.]+,/g) ?? [];
-  assert.deepEqual(
-    entries(settled.body),
-    entries(fresh.body).slice(1),
-    "exactly the card's entry went",
+test("an HEVC package is playable while its first stretch is still being cut", async () => {
+  // The fMP4 HLS muxer has no `-segment_list`, so the segment record used to be written only once
+  // a pass had *exited*: an HEVC episode reported nothing until a whole stretch -- the intro's
+  // position, a minute or more of video -- had been copied, and the play request was held for
+  // exactly that long. The playlist the muxer appends to is readable while it runs.
+  const engine = new PackageEngine(
+    settings({ cacheDir: path.join(workDir, "cache-hevc"), splash: true }),
   );
-  const total = entries(settled.body).reduce((sum, entry) => sum + Number(entry.slice(8, -1)), 0);
-  assert.equal(Math.round(total), 27, "and what is left is the film that survives the intro");
+  await engine.start();
+  const window = { type: "intro" as const, startMs: 6_000, endMs: 8_000 };
+  const url = `${base}/hevc.mkv`;
+  const key = engine.keyFor(url, [window], "stream:hevc");
+  const duration = await engine.rememberDuration(key, url);
+  engine.schedule(url, [window], "stream:hevc", duration);
+
+  let early: Awaited<ReturnType<PackageEngine["manifest"]>> = null;
+  const deadline = Date.now() + 120_000;
+  for (;;) {
+    const view = await engine.manifest(key);
+    if (view && view.segments > 0) {
+      early = view;
+      break;
+    }
+    const state = engine.state(key);
+    assert.notEqual(state?.status, "failed", state?.error);
+    assert.ok(Date.now() < deadline, "a segment is reported while the stretch is being written");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.ok(early, "the package is playable");
+  assert.equal(early.complete, false, "before the film is finished");
+  assert.equal(engine.state(key)?.status, "generating", "while ffmpeg is still writing it");
+  assert.ok(early.body.includes(".m4s"), "as fMP4, which is what a browser can demux HEVC from");
+  assert.ok(early.body.includes("seg00000.m4s"), "starting at the first segment of the stretch");
+
+  await engine.waitForFirstSegment(key, 120_000);
+  engine.drain();
+});
+
+test("an fMP4 package's placeholder is fMP4 too", async () => {
+  // The placeholder is what a player falls back to when it outruns the packaging. A TS piece -- or
+  // an AVC one -- inside an fMP4 HEVC playlist is a demux error at the end of the buffer, which is
+  // a stream that stops instead of one that waits.
+  const engine = new PackageEngine(
+    settings({ cacheDir: path.join(workDir, "cache-fmp4pad"), splash: true }),
+  );
+  await engine.start();
+  const windows = [INTRO];
+  const key = engine.keyFor(samplePath, windows, "fmp4-pad");
+  const dir = path.join(workDir, "cache-fmp4pad", "hls", key);
+  await mkdir(dir, { recursive: true });
+  await writeFile(
+    path.join(dir, "plan.json"),
+    JSON.stringify({
+      key,
+      windows,
+      ranges: [
+        { startMs: 0, endMs: INTRO.startMs },
+        { startMs: INTRO.endMs, endMs: SAMPLE_SECONDS * 1000 },
+      ],
+      createdAt: Date.now(),
+    }),
+  );
+  await writeFile(
+    path.join(dir, "duration.json"),
+    JSON.stringify({
+      durationMs: SAMPLE_SECONDS * 1000,
+      bitrate: 5359114,
+      width: 3840,
+      height: 2160,
+      codecs: "hvc1.2.4.L153.B0,ec-3",
+      video: "hevc",
+    }),
+  );
+  await writeFile(
+    path.join(dir, "format.json"),
+    JSON.stringify({ container: "mp4", inits: ["init-0.mp4", "init-1.mp4"] }),
+  );
+  // One segment of the film: a playlist with nothing at all in it is not served (the caller waits
+  // for the first segment instead), and it is the placeholder behind what is there that matters.
+  await writeFile(path.join(dir, "pass-0.csv"), "seg00000.m4s,0.000000,3.000000\n");
+
+  const view = (await engine.manifest(key))!;
+  assert.equal(view.card, 0, "an fMP4 package has no card");
+  assert.ok(view.padding > 0, "and the remainder is still padded");
+  assert.match(
+    view.body,
+    /#EXT-X-MAP:URI="seg\?f=[^"]+init-pad\.mp4"/,
+    "the placeholder declares its own initialisation section",
+  );
+  assert.match(view.body, /pad00000\.m4s/, "and its segments are fMP4");
+  assert.ok(!view.body.includes("pad00000.ts"), "not a TS piece inside an fMP4 playlist");
+  assert.ok(engine.segmentPath(key, "pad00000.m4s"), "and the placeholder is servable");
 });

@@ -88,9 +88,16 @@ export interface PackageState {
 export function audioMap(info: StreamInfo | null, language: string): string[] {
   if (!info) return [];
   const chosen = chooseAudio(info.audio, language, "en");
-  // Video by index as well, so the selection is exactly one picture and one sound.
-  return chosen
-    ? ["-map", "0:v:0", "-map", `0:a:${chosen.index}`]
+  // Video by name and the sound by its *container* index: `0:a:N` counts audio streams, so a file
+  // with one audio track (index 1, after the picture) answered `0:a:1` -- the second sound, which
+  // does not exist -- and ffmpeg refused the whole output. The index the probe reports is the
+  // stream's own, which `-map 0:N` selects exactly.
+  if (chosen) return ["-map", "0:v:0", "-map", `0:${chosen.index}`];
+  // A probe that listed the audio and found none is a silent release: asking for `0:a:0` there is
+  // the same refusal, so the picture is all that is mapped. (No list at all means the probe is
+  // older than the list, where ffmpeg's own choice is still the right one.)
+  return Array.isArray(info.audio) && info.audio.length === 0
+    ? ["-map", "0:v:0"]
     : ["-map", "0:v:0", "-map", "0:a:0"];
 }
 
@@ -111,6 +118,13 @@ export interface ManifestView {
   padding: number;
   /** The length the playlist declares for the episode, when it is known. */
   expectedMs: number | null;
+  /**
+   * How much of the episode itself is packaged, in milliseconds.
+   *
+   * Distinct from `durationMs`, which is the whole presentation -- the card and the placeholder
+   * included. This is the number that says whether playback can start on the film.
+   */
+  bufferedMs: number;
   durationMs: number;
 }
 
@@ -140,6 +154,8 @@ const PAD_MAX_ENTRIES = 2000;
 const PLAN = "plan.json";
 const DONE = "done";
 const PASS = "pass-";
+/** The playlist ffmpeg's HLS muxer writes for an fMP4 pass, which is also its segment record. */
+const PERPASS = "perpass.m3u8";
 /** How often a waiting play re-reads the CSVs while the first segment is written. */
 const POLL_MS = 250;
 /** How often a new piece of the processing card is drawn while a package is being made. */
@@ -152,8 +168,8 @@ const KEY_RE = /^[0-9a-f]{8,40}$/;
 const RECENT_MS = 3 * 60 * 60_000;
 const FORMAT = "format.json";
 const SEGMENT_RE = /^seg\d{5}\.(ts|m4s)$/;
-/** The `#EXT-X-MAP` initialisation section of an fMP4 package. */
-const INIT_RE = /^init-\d+\.mp4$/;
+/** The `#EXT-X-MAP` initialisation section of an fMP4 package, or of its placeholder. */
+const INIT_RE = /^init-(?:\d+|pad)\.mp4$/;
 
 export class PackageEngine {
   private readonly states = new Map<string, PackageState>();
@@ -180,6 +196,14 @@ export class PackageEngine {
    */
   private lastCodecs = "";
   private readonly running = new Map<string, Promise<PackageState>>();
+  /**
+   * Which stretch each package's ffmpeg is writing right now, and so which one has no CSV yet.
+   *
+   * An fMP4 pass only has its segment record in the playlist ffmpeg is still appending to, so the
+   * reader has to know that the pass it is looking at is the one in flight rather than one that
+   * has not started.
+   */
+  private readonly inFlight = new Map<string, number>();
   private readonly tasks: Array<() => void> = [];
   private active = 0;
   private available: boolean | null = null;
@@ -221,6 +245,7 @@ export class PackageEngine {
     this.used.clear();
     this.cards.clear();
     this.running.clear();
+    this.inFlight.clear();
     this.tasks.length = 0;
     return stopped;
   }
@@ -418,14 +443,13 @@ export class PackageEngine {
     plan: Plan,
     key: string,
   ): Promise<Array<{ segments: Array<{ name: string; ms: number }>; init: string | null }>> {
-    const dir = this.dirFor(key);
     const format = await this.formatFor(key);
     const stretches: Array<{ segments: Array<{ name: string; ms: number }>; init: string | null }> =
       [];
     for (let i = 0; i < plan.ranges.length; i++) {
       const range = plan.ranges[i];
       if (!range) continue;
-      const rows = await this.readCsv(path.join(dir, `${PASS}${i}.csv`));
+      const rows = await this.passRows(key, i);
       const wanted = range.endMs - range.startMs;
       // ffmpeg stops at the keyframe after the requested end, so the last segment of a
       // stretch can hold a little of the dropped window. Whole segments that start past
@@ -439,6 +463,29 @@ export class PackageEngine {
       }
     }
     return stretches;
+  }
+
+  /**
+   * The segments of one stretch, as far as they have been written.
+   *
+   * A TS pass keeps its own `-segment_list`, so its segments are known the moment each one closes.
+   * An fMP4 pass cannot: the HLS muxer has no segment list, so its CSV used to be written from the
+   * playlist only once the pass had *exited* -- which meant an HEVC episode reported nothing at all
+   * until a whole stretch (the intro's position, a minute or more of video) had been copied, and a
+   * play request was held for exactly that long. The muxer appends an entry as it closes each
+   * segment, so that playlist is readable while the pass runs; what is not trusted while it runs is
+   * its last entry, because that one may still be being written -- a player handed a half-written
+   * segment has a stream that stops.
+   */
+  private async passRows(
+    key: string,
+    index: number,
+  ): Promise<Array<{ name: string; startMs: number; endMs: number }>> {
+    const written = await this.readCsv(path.join(this.dirFor(key), `${PASS}${index}.csv`));
+    if (written.length > 0) return written;
+    if (this.inFlight.get(key) !== index) return [];
+    const live = await this.rowsFromPlaylist(path.join(this.dirFor(key), PERPASS));
+    return live.length > 1 ? live.slice(0, -1) : [];
   }
 
   /**
@@ -457,6 +504,12 @@ export class PackageEngine {
     const stretches = await this.realStretches(plan, key);
     this.lastCodecs = (await this.sourceInfo(key))?.codecs ?? this.lastCodecs;
     if (card.length === 0 && stretches.length === 0) return null;
+    // A job that stopped will not write another segment, and a playlist that keeps offering the
+    // card over it is the "Processing…" screen that never ends. A null here makes the caller hand
+    // the player the source untouched, which is something to watch instead of nothing.
+    if (card.length > 0 && stretches.length === 0 && this.states.get(key)?.status === "failed") {
+      return null;
+    }
 
     // The card covers the packaging. Once the film has been finished for longer than the card
     // itself lasts, no playback can still be watching it -- so a card at the front is purely in
@@ -464,13 +517,26 @@ export class PackageEngine {
     // window is the card's own length: inside it, a player that started on the card is still on
     // it, and removing it would move the head of a playlist that player is already reading.
     const segments = stretches.reduce((total, stretch) => total + stretch.segments.length, 0);
+    const realMs = stretches.reduce(
+      (total, stretch) => total + stretch.segments.reduce((sum, entry) => sum + entry.ms, 0),
+      0,
+    );
     const doneAt = segments > 0 ? await this.doneAt(key) : null;
     const cardMs = card.reduce((total, entry) => total + entry.ms, 0);
+    // The buffer the film needs before it can be handed over. The card is the *wait* for it and
+    // nothing else, so the moment this much of the episode is on disk the card goes: a viewer
+    // still being shown "Processing…" over a film that is ready to play is the one thing it must
+    // never do. (Its own length and this buffer are the same number for exactly that reason -- see
+    // `cardSeconds`.)
+    const prerollMs = cardSeconds(this.settings) * 1000;
     // An fMP4 package has no card: the card is a TS piece, and mixing containers inside one
     // playlist is exactly the kind of thing players disagree about. It is not needed either --
     // the card covers the packaging, and fMP4 packaging is the same ffmpeg copy.
     const stale = doneAt !== null && Date.now() - doneAt > cardMs + 5_000;
-    const shown = stale || stretches.some((stretch) => stretch.init !== null) ? [] : card;
+    const shown =
+      stale || realMs >= prerollMs || stretches.some((stretch) => stretch.init !== null)
+        ? []
+        : card;
 
     const items: Array<{ uri: string; ms: number } | { map: string } | "disc"> = [];
     const add = (group: Array<{ name: string; ms: number }>, init: string | null = null): void => {
@@ -489,22 +555,24 @@ export class PackageEngine {
     for (const stretch of stretches) add(stretch.segments, stretch.init);
 
     const complete = doneAt !== null;
-    const realMs = stretches.reduce(
-      (total, stretch) => total + stretch.segments.reduce((sum, entry) => sum + entry.ms, 0),
-      0,
-    );
     // The placeholder keeps the declared length honest while the packaging is still running.
-    const padding = complete ? [] : await this.paddingEntries(plan, key, realMs);
-    for (const entry of padding) {
-      if (items.length > 0 && !items.includes("disc")) items.push("disc");
-      items.push(entry);
+    const padding = complete
+      ? { entries: [], init: null }
+      : await this.paddingEntries(plan, key, realMs);
+    if (padding.entries.length > 0) {
+      // The placeholder is its own stream (its own initialisation section, when it has one), so it
+      // starts at a discontinuity the way a stretch does.
+      if (items.length > 0) items.push("disc");
+      if (padding.init) items.push({ map: `seg?f=${encodeURIComponent(key)}/${padding.init}` });
+      for (const entry of padding.entries) items.push(entry);
     }
     return this.playlistView(items, {
       complete,
       segments,
       card: shown.length,
-      padding: padding.length,
+      padding: padding.entries.length,
       expectedMs: await this.episodeMs(plan),
+      bufferedMs: realMs,
     });
   }
 
@@ -522,6 +590,9 @@ export class PackageEngine {
     subtitles = false,
   ): Promise<ManifestView | null> {
     if (!this.settings.splash || this.cardOk === false) return null;
+    // A job that has already stopped will not fill the playlist behind the card: drawing one for
+    // it is the "Processing…" screen that never ends.
+    if (this.states.get(key)?.status === "failed") return null;
     // The plan is written by the job that just started, so it may not be on disk yet: the
     // caller passes the windows it is about to cut, and the plan only adds detail. Without
     // either, nothing is being packaged for this key and there is no card to show.
@@ -611,6 +682,7 @@ export class PackageEngine {
       card: number;
       padding: number;
       expectedMs: number | null;
+      bufferedMs: number;
     },
   ): ManifestView {
     const lines: string[] = [];
@@ -652,6 +724,7 @@ export class PackageEngine {
       card: facts.card,
       padding: facts.padding,
       expectedMs: facts.expectedMs,
+      bufferedMs: facts.bufferedMs,
       durationMs: Math.round(durationMs),
     };
   }
@@ -683,32 +756,50 @@ export class PackageEngine {
     plan: Plan,
     key: string,
     realMs: number,
-  ): Promise<Array<{ uri: string; ms: number }>> {
+  ): Promise<{ entries: Array<{ uri: string; ms: number }>; init: string | null }> {
     const expected = await this.episodeMs(plan);
-    if (expected === null) return [];
+    if (expected === null) return { entries: [], init: null };
     const remaining = expected - realMs;
-    if (remaining <= PAD_ENTRY_MS / 2) return [];
+    if (remaining <= PAD_ENTRY_MS / 2) return { entries: [], init: null };
     const media = await this.paddingMedia(key);
-    if (media.length === 0) return [];
+    if (media.names.length === 0) return { entries: [], init: null };
     const count = Math.min(PAD_MAX_ENTRIES, Math.ceil(remaining / PAD_ENTRY_MS));
     const entries: Array<{ uri: string; ms: number }> = [];
     for (let i = 0; i < count; i += 1) {
       const ms = i === count - 1 ? remaining - PAD_ENTRY_MS * (count - 1) : PAD_ENTRY_MS;
       if (ms <= 0) continue;
-      entries.push({ uri: `seg?f=${encodeURIComponent(key)}/${media[i % media.length]!}`, ms });
+      entries.push({
+        uri: `seg?f=${encodeURIComponent(key)}/${media.names[i % media.names.length]!}`,
+        ms,
+      });
     }
-    return entries;
+    return { entries, init: media.init };
   }
 
   /**
    * What the padding points at: the card's own pieces when it has drawn any, so a player that
    * outruns the packaging sees the card, otherwise one plain black piece.
+   *
+   * The piece is written in the package's own container, and with its own video codec: a TS
+   * segment, or an AVC one, sitting inside an fMP4 HEVC playlist is a demux error -- the player
+   * stops at the end of its buffer instead of waiting on a placeholder, which is worse than the
+   * place it was standing in for.
    */
-  private async paddingMedia(key: string): Promise<string[]> {
-    const card = await this.readSplashList(key);
-    if (card.length > 0) return card.slice(-8).map((entry) => entry.name);
-    const fallback = await generatePadPiece(this.settings, this.dirFor(key));
-    return fallback ? [fallback.name] : [];
+  private async paddingMedia(key: string): Promise<{ init: string | null; names: string[] }> {
+    const format = await this.formatFor(key);
+    // The card is a TS piece, so it can only stand in for a TS package.
+    if (format.container === "ts") {
+      const card = await this.readSplashList(key);
+      if (card.length > 0) return { init: null, names: card.slice(-8).map((entry) => entry.name) };
+    }
+    const info = await this.sourceInfo(key);
+    const fallback = await generatePadPiece(
+      this.settings,
+      this.dirFor(key),
+      format.container,
+      info?.video,
+    );
+    return fallback ? { init: fallback.init, names: [fallback.name] } : { init: null, names: [] };
   }
 
   /** The pieces of the card drawn for this key, oldest first. */
@@ -730,6 +821,32 @@ export class PackageEngine {
 
   private async appendSplashList(key: string, name: string, ms: number): Promise<void> {
     await appendFile(path.join(this.dirFor(key), SPLASH_LIST), `${name} ${ms}\n`);
+  }
+
+  /**
+   * Wait for `prerollMs` of the episode, up to `timeoutMs`.
+   *
+   * This is what makes a playback start on the film rather than on the card: the moment enough of
+   * it is on disk to play, the player is handed it from its first frame. The wait is bounded by the
+   * caller because the card is the fallback -- a source that cannot produce this much quickly is
+   * exactly the one the card exists for.
+   */
+  async waitForPreroll(
+    key: string,
+    prerollMs: number,
+    timeoutMs: number,
+  ): Promise<ManifestView | null> {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    for (;;) {
+      const view = await this.manifest(key);
+      // One segment of the film, at least: a card-only playlist is exactly what this is waiting to
+      // replace, however small the pre-roll is.
+      if (view && view.bufferedMs >= Math.max(1, prerollMs)) return view;
+      if (this.states.get(key)?.status === "failed") return null;
+      if (Date.now() >= deadline) return null;
+      if (!this.running.has(key) && !(await this.existing(key))) return null;
+      await delay(POLL_MS);
+    }
   }
 
   /**
@@ -960,23 +1077,45 @@ export class PackageEngine {
     }
   }
 
-  /** Write the segment list the fMP4 pass did not, from the playlist ffmpeg left behind. */
-  private async writeCsvFromPlaylist(playlist: string, csv: string): Promise<void> {
-    const text = await readFile(playlist, "utf8");
+  /**
+   * The segments a pass's HLS playlist lists, in milliseconds from the start of that stretch.
+   *
+   * Used for both jobs this playlist has: the record written once a pass has exited, and the live
+   * reading of a pass that is still running (see `passRows`).
+   */
+  private async rowsFromPlaylist(
+    file: string,
+  ): Promise<Array<{ name: string; startMs: number; endMs: number }>> {
+    let text: string;
+    try {
+      text = await readFile(file, "utf8");
+    } catch {
+      return [];
+    }
     const lines = text.split("\n").map((line) => line.trim());
-    const rows: string[] = [];
+    const rows: Array<{ name: string; startMs: number; endMs: number }> = [];
     let at = 0;
     for (let i = 0; i < lines.length; i++) {
       const span = /^#EXTINF:([0-9.]+),/.exec(lines[i] ?? "");
       if (!span) continue;
       const name = lines[i + 1];
-      if (!name || name.startsWith("#")) continue;
+      if (!name || name.startsWith("#") || !SEGMENT_RE.test(name)) continue;
       const seconds = Number(span[1]);
       if (!Number.isFinite(seconds)) continue;
-      rows.push(`${name},${at.toFixed(6)},${(at + seconds).toFixed(6)}`);
+      rows.push({ name, startMs: at * 1000, endMs: (at + seconds) * 1000 });
       at += seconds;
     }
-    if (rows.length > 0) await writeFile(csv, `${rows.join("\n")}\n`);
+    return rows;
+  }
+
+  /** Write the segment list the fMP4 pass did not, from the playlist ffmpeg left behind. */
+  private async writeCsvFromPlaylist(playlist: string, csv: string): Promise<void> {
+    const rows = await this.rowsFromPlaylist(playlist);
+    if (rows.length === 0) return;
+    const lines = rows.map(
+      (row) => `${row.name},${(row.startMs / 1000).toFixed(6)},${(row.endMs / 1000).toFixed(6)}`,
+    );
+    await writeFile(csv, `${lines.join("\n")}\n`);
   }
 
   private async readCsv(
@@ -1056,6 +1195,9 @@ export class PackageEngine {
       if (wanted < 500) continue;
       const csv = path.join(state.dir, `${PASS}${i}.csv`);
       const init = format.inits[i] ?? "";
+      // The reader needs to know which stretch is the one ffmpeg is writing: that is the one whose
+      // segments are only in the playlist so far (see `passRows`).
+      this.inFlight.set(state.key, i);
       const result = await run(
         this.settings.ffmpegPath,
         format.container === "mp4"
@@ -1153,10 +1295,9 @@ export class PackageEngine {
       // The fMP4 arm has no segment list of its own: the playlist ffmpeg wrote is the record, so
       // the same CSV is written from it and everything downstream reads one shape.
       if (format.container === "mp4" && result.code === 0) {
-        await this.writeCsvFromPlaylist(path.join(state.dir, "perpass.m3u8"), csv).catch(
-          () => undefined,
-        );
+        await this.writeCsvFromPlaylist(path.join(state.dir, PERPASS), csv).catch(() => undefined);
       }
+      this.inFlight.delete(state.key);
       const rows = await this.readCsv(csv);
       recorded += rows.length;
       state.segments = recorded;
