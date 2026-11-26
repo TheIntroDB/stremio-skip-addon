@@ -534,9 +534,11 @@ async function packageResponse(
 
   const media = new URL(url.toString());
   media.searchParams.set("m", "1");
-  // The track must agree with the film about the card: if this playlist has none in front of it,
-  // its rendition must not carry the card's segment either, or every cue would sit one card late.
-  const subtitleQuery = `f=${encodeURIComponent(track)}${view.card === 0 ? "&nc=1" : ""}`;
+  // The rendition is the film's timeline, with no card entry: the card is only ever the wait for the
+  // pre-roll (see `packages.ts`, `manifest`), so a playback that started on one is handed the film
+  // from its first frame a poll later -- a rendition carrying a card's segment would leave every cue
+  // one card late for the rest of the episode.
+  const subtitleQuery = `f=${encodeURIComponent(track)}`;
   const info = await context.packages.sourceInfo(key);
   const master = masterPlaylist({
     mediaUri: `${media.pathname}${media.search}`,
