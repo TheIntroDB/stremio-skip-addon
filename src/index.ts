@@ -346,10 +346,10 @@ function configPage(
     renderConfigPage({
       origin,
       siteUrl: INTRODB_SITE,
+      audioLanguage: settings.subtitlesAudioLanguage,
       serverKeyConfigured: Boolean(settings.TIDB_API_KEY && settings.TIDB_API_KEY.trim()),
       insecure: url.protocol === "http:" && local,
       cuts: packages.stats(),
-      audioLanguage: settings.subtitlesAudioLanguage,
       editing: extra.editing ?? null,
       configError: extra.configError ?? null,
     }),

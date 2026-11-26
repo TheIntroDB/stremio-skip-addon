@@ -34,6 +34,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     cacheMaxBytes: 0,
     proxy: true,
     subtitles: false,
+  subtitlesGenerate: false,
     subtitlesLanguage: "en",
     subtitlesChunkSeconds: 300,
   subtitlesTtlHours: 24,
@@ -86,6 +87,16 @@ test("the config page is served, and uses the forwarded host and scheme", async 
   // The install links are built from the request origin, so a reverse proxy or a
   // platform domain must be reflected rather than the local socket.
   assert.ok(html.includes('"origin":"https://addon.example.com"'), "origin taken from x-forwarded-*");
+
+  // The audio picker is part of what a link says, so it stays; the toggle that turned on speech
+  // recognition is gone, because this build does not recognise anything.
+  assert.ok(html.includes('id="audio-lang"'), "an install chooses which audio track it keeps");
+  assert.ok(!html.includes('id="subtitles"'), "and there is nothing to turn on: no recognition here");
+
+  // The page's own script has to parse: a broken one is a blank page, and no other test runs it.
+  const script = /<script>([\s\S]*?)<\/script>/.exec(html);
+  assert.ok(script, "the page carries a script");
+  assert.doesNotThrow(() => new Function(script[1]!), "and it parses");
 });
 
 test("a bare manifest is served with CORS", async () => {

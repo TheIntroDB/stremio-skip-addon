@@ -157,6 +157,11 @@ export class SubtitleEngine {
     text?: { index: number; language: string } | null,
   ): TrackStatus | null {
     if (!this.settings.subtitles) return null;
+    // Recognition is minutes of CPU per episode and is off unless a deployment asks for it (see
+    // `Settings.subtitlesGenerate`). A copy of the source's own track costs almost nothing and is
+    // what ships -- so a file with text subtitles still gets a rendition that lines up with the
+    // cuts, and a file without one simply has no track.
+    if (!text && !this.settings.subtitlesGenerate) return null;
     const key = trackKey(packageKey, audio, text);
     const existing = this.jobs.get(key);
     if (existing) {
@@ -301,6 +306,8 @@ export class SubtitleEngine {
     const jobs = [...this.jobs.values()];
     return {
       enabled: this.settings.subtitles,
+      // Whether this deployment recognises speech. Off means tracks come from the source only.
+      generate: this.settings.subtitlesGenerate,
       language: this.settings.subtitlesLanguage,
       models: this.transcriber.lastError === null,
       modelsError: this.transcriber.lastError,

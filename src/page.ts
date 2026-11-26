@@ -13,6 +13,8 @@ import { ADDON_VERSION } from "./manifest.js";
 import type { AddonConfig } from "./types.js";
 
 export interface PageOptions {
+  /** The deployment's default audio language, shown as the "Server default" entry. */
+  audioLanguage: string;
   origin: string;
   siteUrl: string;
   serverKeyConfigured: boolean;
@@ -21,7 +23,6 @@ export interface PageOptions {
   /** What /health reports about the cut cache and ffmpeg. */
   cuts: Record<string, unknown>;
   /** The deployment default for which audio track is recognised, shown on the selector. */
-  audioLanguage: string;
   /** The configuration of the install URL this page was opened with, if any. */
   editing?: AddonConfig | null;
   /** Why that URL could not be read, so a mangled link gets an explanation. */
@@ -33,13 +34,13 @@ const REPO = "https://github.com/TheIntroDB/stremio-skip-addon";
 export function renderConfigPage(options: PageOptions): string {
   const data = JSON.stringify({
     origin: options.origin,
+    audioLanguage: options.audioLanguage,
     siteUrl: options.siteUrl,
     serverKeyConfigured: options.serverKeyConfigured,
     version: ADDON_VERSION,
     repo: REPO,
     insecure: options.insecure,
     cuts: options.cuts,
-    audioLanguage: options.audioLanguage,
     config: options.editing ?? null,
     configError: options.configError ?? null,
   }).replace(/</g, "\\u003c");
@@ -198,15 +199,15 @@ export function renderConfigPage(options: PageOptions): string {
     </div>
 
     <div class="field">
-      <label class="check" style="max-width:560px"><input type="checkbox" id="subtitles"> Generate subtitles for the cut video</label>
-      <p class="hint">Cutting removes stretches, so a subtitle track recorded against the original timeline drifts behind the picture. With this on, the audio of the parts that are kept is transcribed on this server, and the track is re-timed to what is playing, so it lines up. It is delivered as the video's own subtitle rendition — the player lists it as a subtitle track called TheIntroDB, and it fills in as it is made, a chunk at a time. The speech models run here — nothing is sent anywhere — the first play of a title is what pays for it — a few minutes of CPU, once per title, measured at
-        5–12× faster than realtime on CPU — and the finished track is then cached for a day.</p>
+      <label for="audio-lang">Audio track</label>
+      <select id="audio-lang"></select>
+      <p class="hint">Which audio track of the file is kept and served. A release with dubs often marks one of them as its default track, and ffmpeg then keeps that one — so an English viewer gets the dub. The language chosen here is preferred; if the file has no track in it, English is used; if there is no English either, the file's own default track is. Files with one audio track are unaffected.</p>
     </div>
 
     <div class="field">
-      <label for="audio-lang">Audio track to transcribe</label>
-      <select id="audio-lang"></select>
-      <p class="hint">Which audio track of the file the subtitles are made from. A release with a dub often marks the dub as its default track, and the recogniser is trained on English — transcribing a dub as English produces an empty track. The language chosen here is preferred; if the file has no track in it, English is used; if there is no English either, the file's own default track is. Files with one audio track are unaffected.</p>
+      <label>Subtitles</label>
+      <p class="hint">Cutting removes stretches, so a subtitle track recorded against the original timeline would drift behind the picture. When the file already carries text subtitles (subrip, ASS, WebVTT — most releases do), they are <b>cut and re-timed to match</b> and offered to the player as its own track, called TheIntroDB. It costs one pass over the file and no CPU worth measuring, and it needs nothing from you.</p>
+      <p class="hint">Recognising speech to make a track where the file has none is <b>turned off</b> in this build: it is minutes of CPU per episode on the host, which is not worth the stall.</p>
     </div>
 
     <div class="field">
@@ -322,7 +323,6 @@ export function renderConfigPage(options: PageOptions): string {
     if (!isFinite(rawMargin)) rawMargin = 0;
     var margin = Math.max(0, Math.min(5, Math.round(rawMargin)));
     var config = { src: sources, types: types, cuts: document.getElementById("cuts").value, margin: margin };
-    if (document.getElementById("subtitles").checked) config.subtitles = true;
     var audioLang = document.getElementById("audio-lang").value;
     if (audioLang) config.audioLang = audioLang;
     if (key) config.key = key;
@@ -344,6 +344,27 @@ export function renderConfigPage(options: PageOptions): string {
   document.getElementById("copy").addEventListener("click", function () {
     var url = document.getElementById("manifest-url").textContent;
     if (navigator.clipboard) navigator.clipboard.writeText(url);
+  });
+
+  var AUDIO_LANGUAGES = [
+    ["en", "English"], ["es", "Spanish"], ["fr", "French"], ["de", "German"], ["it", "Italian"],
+    ["pt", "Portuguese"], ["nl", "Dutch"], ["pl", "Polish"], ["ru", "Russian"],
+    ["uk", "Ukrainian"], ["cs", "Czech"], ["el", "Greek"], ["hu", "Hungarian"],
+    ["ro", "Romanian"], ["sv", "Swedish"], ["da", "Danish"], ["no", "Norwegian"],
+    ["fi", "Finnish"], ["tr", "Turkish"], ["ar", "Arabic"], ["he", "Hebrew"],
+    ["hi", "Hindi"], ["ja", "Japanese"], ["ko", "Korean"], ["zh", "Chinese"],
+    ["th", "Thai"], ["vi", "Vietnamese"], ["id", "Indonesian"], ["ca", "Catalan"]
+  ];
+  var audioSelect = document.getElementById("audio-lang");
+  var defaultOption = document.createElement("option");
+  defaultOption.value = "";
+  defaultOption.textContent = "Server default" + (data.audioLanguage ? " (" + data.subtitlesAudioLanguage + ")" : "");
+  audioSelect.appendChild(defaultOption);
+  AUDIO_LANGUAGES.forEach(function (pair) {
+    var option = document.createElement("option");
+    option.value = pair[0];
+    option.textContent = pair[1];
+    audioSelect.appendChild(option);
   });
 
   document.getElementById("origin").textContent = data.origin;
@@ -369,27 +390,6 @@ export function renderConfigPage(options: PageOptions): string {
   // Which audio track to recognise. English first, because that is what the model is trained on;
   // the empty value means "whatever this deployment defaults to", so a link stays valid if the
   // deployment's default changes.
-  var AUDIO_LANGUAGES = [
-    ["en", "English — what the model is trained on"],
-    ["es", "Spanish"], ["fr", "French"], ["de", "German"], ["it", "Italian"],
-    ["pt", "Portuguese"], ["nl", "Dutch"], ["pl", "Polish"], ["ru", "Russian"],
-    ["uk", "Ukrainian"], ["cs", "Czech"], ["el", "Greek"], ["hu", "Hungarian"],
-    ["ro", "Romanian"], ["sv", "Swedish"], ["da", "Danish"], ["no", "Norwegian"],
-    ["fi", "Finnish"], ["tr", "Turkish"], ["ar", "Arabic"], ["he", "Hebrew"],
-    ["hi", "Hindi"], ["ja", "Japanese"], ["ko", "Korean"], ["zh", "Chinese"],
-    ["th", "Thai"], ["vi", "Vietnamese"], ["id", "Indonesian"], ["ca", "Catalan"]
-  ];
-  var audioSelect = document.getElementById("audio-lang");
-  var defaultOption = document.createElement("option");
-  defaultOption.value = "";
-  defaultOption.textContent = "Server default" + (data.audioLanguage ? " (" + data.subtitlesAudioLanguage + ")" : "");
-  audioSelect.appendChild(defaultOption);
-  AUDIO_LANGUAGES.forEach(function (pair) {
-    var option = document.createElement("option");
-    option.value = pair[0];
-    option.textContent = pair[1];
-    audioSelect.appendChild(option);
-  });
   document.getElementById("cuts-mode").textContent =
     cuts.available === false
       ? "cannot be cut here — ffmpeg is not available, so files play exactly as they came"
@@ -451,7 +451,6 @@ export function renderConfigPage(options: PageOptions): string {
     if (config.cuts) document.getElementById("cuts").value = config.cuts;
     if (typeof config.margin === "number") document.getElementById("margin").value = String(config.margin);
     if (config.audioLang) document.getElementById("audio-lang").value = config.audioLang;
-    document.getElementById("subtitles").checked = config.subtitles === true;
 
     notice("You are editing an install. Change what you need and install again — the new link replaces the old one, and the old one keeps working. Source URLs are shown without their /manifest.json, which the addon fetches for you. Keep this page's address private: it is the configuration, and it carries the API key if you put one in it.");
     generate();

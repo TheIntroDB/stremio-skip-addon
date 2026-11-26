@@ -298,6 +298,7 @@ function testSettings(overrides: Partial<Settings> = {}): Settings {
     // The production default: the sources people use are debrid files, so everything is relayed.
     proxy: relaying,
 subtitles: false,
+subtitlesGenerate: true,
 subtitlesLanguage: "en",
 subtitlesChunkSeconds: 300,
 subtitlesTtlHours: 24,
@@ -1069,7 +1070,7 @@ test("a package that is ready is served as a seekable playlist", async () => {
     { type: "intro" as const, startMs: 228665, endMs: 246498 },
     { type: "credits" as const, startMs: 3432884, endMs: null },
   ];
-  const key = engine.keyFor(`${base}/hls/movie.mp4`, windows, null);
+  const key = engine.keyFor(`${base}/hls/movie.mp4`, windows, null, "en");
   const dir = path.join(cacheDir, "hls", key);
   await mkdir(dir, { recursive: true });
   await writeFile(
@@ -1145,7 +1146,7 @@ test("a package that is already cut still offers its subtitle track", async () =
     { type: "intro" as const, startMs: 228665, endMs: 246498 },
     { type: "credits" as const, startMs: 3432884, endMs: null },
   ];
-  const key = engine.keyFor(`${base}/hls/movie.mp4`, windows, null);
+  const key = engine.keyFor(`${base}/hls/movie.mp4`, windows, null, "en");
   const dir = path.join(cacheDir, "hls", key);
   await mkdir(dir, { recursive: true });
   await writeFile(

@@ -41,6 +41,7 @@ const settings: Settings = {
   skipMarginSeconds: 3,
   proxy: true,
 subtitles: false,
+  subtitlesGenerate: false,
 subtitlesLanguage: "en",
 subtitlesChunkSeconds: 300,
 subtitlesTtlHours: 24,

@@ -95,8 +95,13 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
   // Packaging is what `cutting` means here: a file with no playlist of its own. Splicing an
   // HLS playlist is a text rewrite and happens in both modes, without a cache key.
   const cutting = cutMode === "mkv" && context.packages.enabled;
+  // The audio the install asked for: it decides which stream the package keeps, so it is part of
+  // the package's identity as well (see `PackageEngine.keyFor`).
+  const audioLanguage = context.config.audioLang || context.settings.subtitlesAudioLanguage || "";
   const cutKey =
-    windows.length > 0 && cutting ? context.packages.keyFor(target, windows, streamKey) : null;
+    windows.length > 0 && cutting
+      ? context.packages.keyFor(target, windows, streamKey, audioLanguage)
+      : null;
 
   // A package that already exists is served before anything else is decided: this is
   // what makes a debrid `.mkv` skip its intro on every playback after the first, and
@@ -352,7 +357,8 @@ async function packageOrProxy(
   reason: string,
   lookupReason: string,
 ): Promise<Response> {
-  const key = context.packages.keyFor(target, windows, streamKey);
+  const audioLanguage = context.config.audioLang || context.settings.subtitlesAudioLanguage || "";
+  const key = context.packages.keyFor(target, windows, streamKey, audioLanguage);
   // The audio track is part of the track's identity (see `trackKeyOf`), so it is resolved before
   // anything answers. On a key seen for the first time the probe below is what lists the tracks,
   // so it is resolved again after that.
@@ -379,7 +385,7 @@ async function packageOrProxy(
   // The probe that learnt the length also listed the audio tracks, which is only available now on
   // a key seen for the first time.
   if (!audio) audio = await audioFor(context, key);
-  context.packages.schedule(target, windows, streamKey, durationMs);
+  context.packages.schedule(target, windows, streamKey, durationMs, audioLanguage);
   // The card is the pre-roll the deployment configured, and the film starts after it, so that is
   // the offset a track is timed from. (With the card off, the film starts at zero.) The same
   // choice as a warm play makes: the source's own subtitles if it has any, recognition otherwise.
@@ -411,7 +417,7 @@ async function audioFor(
   key: string,
 ): Promise<{ index: number; language: string } | null> {
   const info = await context.packages.sourceInfo(key);
-  const preferred = context.config.audioLang || context.settings.subtitlesAudioLanguage;
+  const preferred = context.config.audioLang || context.settings.subtitlesAudioLanguage || "";
   const chosen = chooseAudio(info?.audio, preferred, "en");
   return chosen ? { index: chosen.index, language: chosen.language } : null;
 }

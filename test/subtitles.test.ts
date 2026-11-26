@@ -63,6 +63,7 @@ async function fixture(): Promise<{ cacheDir: string; audio: string; settings: S
       cacheDir: dir,
       ffmpegPath: "ffmpeg",
       subtitles: true,
+      subtitlesGenerate: true,
       subtitlesLanguage: "en",
       subtitlesTtlHours: 24,
       subtitlesChunkSeconds: 30,
@@ -218,6 +219,7 @@ async function twoAudioFixture(): Promise<{ file: string; cacheDir: string; sett
       ffmpegPath: "ffmpeg",
       ffprobePath: "ffprobe",
       subtitles: true,
+      subtitlesGenerate: true,
       subtitlesLanguage: "en",
       subtitlesTtlHours: 24,
       subtitlesIdleSeconds: 0,
@@ -311,6 +313,29 @@ test("a source's own text subtitles are found, and image ones are not", () => {
     "and any of them is better than none",
   );
   assert.equal(chooseSourceTrack(undefined, "en"), null, "nothing to choose from");
+});
+
+test("generation is off unless the deployment asks for it", async () => {
+  // Recognition is minutes of CPU per episode, so the shipped service does not do it at all: a
+  // file with no text track gets no track, and nothing is planned, loaded or spawned. What ships
+  // is the source's own subtitles, which cost a demux and some arithmetic and are not gated.
+  const { settings } = await fixture();
+  const quiet = new SubtitleEngine({ ...settings, subtitlesGenerate: false }, stubTranscriber());
+  const plan = { durationMs: 60_000, windows: [], cardMs: 0 };
+
+  assert.equal(
+    quiet.ensure("pkg", "http://source/film.mkv", plan, true, { index: 1, language: "en" }),
+    null,
+    "no track is planned for a file that has no text subtitles",
+  );
+  assert.equal(quiet.trackFor("pkg"), null, "and nothing is offered to a player");
+  assert.equal(quiet.status().generate, false, "which /health says");
+
+  // The file's own track is still taken: that is the whole point of shipping this.
+  assert.ok(
+    quiet.ensure("pkg", "http://source/film.mkv", plan, true, undefined, { index: 2, language: "en" }),
+    "a text track is planned even with generation off",
+  );
 });
 
 test("a source's subtitles are cut and shifted onto the film", async () => {

@@ -52,7 +52,7 @@ import {
   run,
   type KeptRange,
 } from "./ffmpeg.js";
-import { parseProbe, type StreamInfo } from "./streaminfo.js";
+import { chooseAudio, parseProbe, type StreamInfo } from "./streaminfo.js";
 import type { SkipWindow } from "./types.js";
 
 export type PackageStatus = "queued" | "generating" | "ready" | "failed";
@@ -81,6 +81,26 @@ export interface PackageState {
  * written as fragmented MP4, which those players pass through to a platform that can decode it.
  * Everything else stays TS, which is what every player already reads.
  */
+/**
+ * Which audio stream to keep, as ffmpeg stream selectors.
+ *
+ * A release with dubs marks one of them as its default track, and ffmpeg's own selection then
+ * keeps that one -- so an install that asked for English gets the dub. This is the same choice the
+ * install makes on the configuration page (`config.audioLang`), applied to what the package
+ * carries rather than only to what used to be transcribed.
+ *
+ * No probe means no answer: the arguments are then omitted and ffmpeg decides, which is what
+ * happened before this existed.
+ */
+export function audioMap(info: StreamInfo | null, language: string): string[] {
+  if (!info) return [];
+  const chosen = chooseAudio(info.audio, language, "en");
+  // Video by index as well, so the selection is exactly one picture and one sound.
+  return chosen
+    ? ["-map", "0:v:0", "-map", `0:a:${chosen.index}`]
+    : ["-map", "0:v:0", "-map", "0:a:0"];
+}
+
 export interface PackageFormat {
   container: "ts" | "mp4";
   /** The `#EXT-X-MAP` file of each pass, empty for TS. */
@@ -304,6 +324,7 @@ export class PackageEngine {
     sourceUrl: string,
     windows: readonly SkipWindow[],
     streamIdentity?: string | null,
+    audioLanguage?: string,
   ): string {
     let identity = sourceUrl;
     if (streamIdentity) {
@@ -320,7 +341,12 @@ export class PackageEngine {
     const shape = windows
       .map((window) => `${window.type}:${window.startMs}:${window.endMs ?? "end"}`)
       .join(",");
-    return createHash("sha1").update(`${identity}|${shape}`).digest("hex").slice(0, 20);
+    // The audio the package keeps is part of what the package is: an install that asked for English
+    // must not be handed the package made for one that asked for Spanish. A deployment with no
+    // preference keeps the keys it had.
+    const preference = (audioLanguage ?? "").trim().toLowerCase();
+    const audio = preference ? `|a:${preference}` : "";
+    return createHash("sha1").update(`${identity}|${shape}${audio}`).digest("hex").slice(0, 20);
   }
 
   /** Queue generation unless it is already queued, running or done. */
@@ -329,8 +355,9 @@ export class PackageEngine {
     windows: readonly SkipWindow[],
     streamIdentity?: string | null,
     durationMs?: number | null,
+    audioLanguage?: string,
   ): PackageState {
-    const key = this.keyFor(sourceUrl, windows, streamIdentity);
+    const key = this.keyFor(sourceUrl, windows, streamIdentity, audioLanguage);
     const existing = this.states.get(key);
     if (existing && existing.status !== "failed") return existing;
 
@@ -343,7 +370,7 @@ export class PackageEngine {
       bytes: 0,
     };
     this.states.set(key, state);
-    const task = this.enqueue(() => this.perform(state, sourceUrl, windows, durationMs ?? null));
+    const task = this.enqueue(() => this.perform(state, sourceUrl, windows, durationMs ?? null, audioLanguage));
     this.running.set(key, task);
     void task.finally(() => this.running.delete(key));
     return state;
@@ -997,6 +1024,7 @@ export class PackageEngine {
     sourceUrl: string,
     windows: readonly SkipWindow[],
     durationMs: number | null,
+    audioLanguage?: string,
   ): Promise<PackageState> {
     const ranges = keptRanges(windows, durationMs);
     state.status = "generating";
@@ -1033,6 +1061,7 @@ export class PackageEngine {
               "-ss", seconds(range.startMs),
               "-i", sourceUrl,
               "-t", seconds(wanted),
+              ...audioMap(await this.sourceInfo(state.key), audioLanguage ?? ""),
               // Only the picture and the sound. A source with an embedded WebVTT track is common,
               // and copying it makes the HLS muxer refuse the whole output ("Exactly one WebVTT
               // stream is needed"), which is a package that never gets made at all.
@@ -1056,6 +1085,7 @@ export class PackageEngine {
           "-ss", seconds(range.startMs),
           "-i", sourceUrl,
           "-t", seconds(wanted),
+          ...audioMap(await this.sourceInfo(state.key), audioLanguage ?? ""),
           // See above: the segments carry the picture and the sound, nothing else.
           "-sn", "-dn",
           "-c", "copy",

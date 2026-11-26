@@ -19,7 +19,8 @@ import { after, before, test } from "node:test";
 
 import type { Settings } from "../src/env.js";
 import { hasRoomFor, keptRanges, run } from "../src/ffmpeg.js";
-import { PackageEngine } from "../src/packages.js";
+import { PackageEngine, audioMap } from "../src/packages.js";
+import type { StreamInfo } from "../src/streaminfo.js";
 
 const SAMPLE_SECONDS = 30;
 const LONG_SECONDS = 180;
@@ -43,6 +44,7 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     cacheMaxBytes: 10 * 1024 ** 3,
     proxy: true,
     subtitles: false,
+  subtitlesGenerate: false,
     subtitlesLanguage: "en",
     subtitlesChunkSeconds: 300,
   subtitlesTtlHours: 24,
@@ -782,6 +784,42 @@ test("an fMP4 package is described with its initialisation section", async () =>
   // And the initialisation section is servable, typed as what it is.
   const init = engine.segmentPath(key, "init-0.mp4");
   assert.ok(init, "the init section is a name the segment route accepts");
+});
+
+test("the package keeps the audio the install asked for", () => {
+  // A release with dubs marks one as its default, and ffmpeg's own selection keeps that one -- so
+  // an install that asked for English used to be served the dub. The choice is the same one the
+  // configuration page makes, applied to what the package carries.
+  const info = {
+    durationMs: 60_000,
+    bitrate: 1,
+    width: 1920,
+    height: 1080,
+    codecs: "",
+    audio: [
+      { index: 1, language: "es", isDefault: true },
+      { index: 2, language: "en", isDefault: false },
+    ],
+  } as unknown as StreamInfo;
+  assert.deepEqual(audioMap(info, "en"), ["-map", "0:v:0", "-map", "0:a:2"], "the English track, not the dub");
+  assert.deepEqual(audioMap(info, "es"), ["-map", "0:v:0", "-map", "0:a:1"], "or the one asked for");
+  assert.deepEqual(audioMap(info, "de"), ["-map", "0:v:0", "-map", "0:a:2"], "and English when it is absent");
+  assert.deepEqual(audioMap(null, "en"), [], "without a probe ffmpeg still decides");
+});
+
+test("a different audio preference is a different package", () => {
+  const engine = new PackageEngine(settings({}));
+  const url = `${base}/playback/abc`;
+  assert.notEqual(
+    engine.keyFor(url, [INTRO], "stream:tt1", "en"),
+    engine.keyFor(url, [INTRO], "stream:tt1", "es"),
+    "one package per audio track, or a viewer gets the wrong one",
+  );
+  assert.equal(
+    engine.keyFor(url, [INTRO], "stream:tt1"),
+    engine.keyFor(url, [INTRO], "stream:tt1", ""),
+    "a deployment with no preference keeps the keys it had",
+  );
 });
 
 test("the processing card goes away once the film has been ready for a while", async () => {

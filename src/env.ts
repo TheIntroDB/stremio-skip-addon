@@ -51,6 +51,17 @@ export interface Settings extends Env {
    */
   splash: boolean;
   /**
+   * Whether this deployment recognises speech to make subtitles for the cut video.
+   *
+   * Off by default, and off in the shipped service: recognition is minutes of CPU per episode,
+   * which on a small host is a battery of other problems (a playback that waits, pages that
+   * stall, a host that thrashes). The source's own text subtitles are still used -- those are a
+   * demux pass and a little arithmetic (see `subtitles.ts`) -- so a release that has them still
+   * gets a track that lines up with the cuts. `SUBTITLES_GENERATE=on` turns recognition back on
+   * for a host that can afford it.
+   */
+  subtitlesGenerate: boolean;
+  /**
    * Whether the player fetches everything from here.
    *
    * On by default: a debrid link is minted for the address that asked for it, so the stream
@@ -59,11 +70,11 @@ export interface Settings extends Env {
    */
   proxy: boolean;
   /**
-   * Whether this deployment offers generated subtitles at all.
+   * Whether this deployment offers subtitle tracks at all.
    *
-   * An install turns them on for itself; this is the switch for a host that wants none of it --
-   * with it off the speech models are never loaded, which is where the memory and the 368 MiB of
-   * weights would go.
+   * A track is cut to the picture, so what this gates is the rendition: with it off the player is
+   * never offered one. The source's own text subtitles are what is served from it now -- see
+   * `subtitlesGenerate` for the recognition that this switch used to imply.
    */
   subtitles: boolean;
   /** The language to recognise and refine. Alignment falls back to the recogniser's own timings. */
@@ -164,6 +175,8 @@ export function loadSettings(): Settings {
     proxy: !/^(off|false|0|no)$/i.test((process.env.PROXY ?? "").trim()),
     prerollSeconds: Math.min(60, Math.max(0, Math.round(numberFrom("PREROLL_SECONDS", 10)))),
     splash: !/^(off|false|0|no)$/i.test((process.env.SPLASH ?? "").trim()),
+    // Opt-in, unlike `splash`: this is the expensive one.
+    subtitlesGenerate: /^(on|true|1|yes)$/i.test((process.env.SUBTITLES_GENERATE ?? "").trim()),
     skipMarginSeconds: Math.min(
       MAX_MARGIN_SECONDS,
       Math.max(0, Math.round(numberFrom("SKIP_MARGIN_SECONDS", DEFAULT_MARGIN_SECONDS))),
