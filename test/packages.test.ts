@@ -799,23 +799,48 @@ test("a job that stopped does not leave the card up for ever", async () => {
   assert.equal(await engine.advanceCard(key), null, "and a polling player is not kept on one");
 });
 
-test("the playlist declares the whole episode from its first response", async () => {
-  // Stremio marks an episode watched and jumps to the next one when the playlist it was handed
-  // reaches the end -- and a playlist holding only what has been packaged so far ends after a
-  // few seconds. The remainder is padded, so the declared length is the episode's from the very
-  // first response, however little of it has actually been cut.
+/**
+ * Where a live player starts: an `#EXT-X-PLAYLIST-TYPE:EVENT` playlist is joined three target
+ * durations before its end (`liveSyncDurationCount` in hls.js, the same rule in AVFoundation).
+ */
+function liveStart(body: string): { uri: string; atMs: number; fromEndMs: number } {
+  const target = Number(/#EXT-X-TARGETDURATION:(\d+)/.exec(body)?.[1] ?? 6) * 1000;
+  const lines = body.split("\n");
+  const entries: Array<{ uri: string; ms: number }> = [];
+  for (let i = 0; i < lines.length; i++) {
+    const span = /^#EXTINF:([0-9.]+),/.exec(lines[i] ?? "");
+    if (!span) continue;
+    entries.push({ uri: lines[i + 1] ?? "", ms: Math.round(Number(span[1]) * 1000) });
+    i += 1;
+  }
+  const total = entries.reduce((sum, entry) => sum + entry.ms, 0);
+  const want = Math.max(0, total - 3 * target);
+  let at = 0;
+  for (const entry of entries) {
+    if (at + entry.ms > want) return { uri: entry.uri, atMs: at, fromEndMs: total - at };
+    at += entry.ms;
+  }
+  return { uri: entries[entries.length - 1]?.uri ?? "", atMs: at, fromEndMs: 0 };
+}
+
+test("the placeholder is a cushion at the write head, not the rest of the episode", async () => {
+  // An EVENT playlist is joined at its live edge -- three target durations before the end -- so a
+  // tail that declares the *whole episode* puts the place a player opens at inside the placeholder
+  // for the entire packaging, and the moment the film finishes that position is the very end of the
+  // episode: the only way out is to close the player. (Measured on a 20-minute episode: 45
+  // placeholder entries at the end of 284, and that is where Stremio opened.)
   const window = { type: "intro" as const, startMs: 30_000, endMs: 36_000 };
   const engine = new PackageEngine(
-    settings({ cacheDir: path.join(workDir, "cache-full"), splash: true }),
+    settings({ cacheDir: path.join(workDir, "cache-tail"), splash: true }),
   );
   await engine.start();
   const url = `${base}/long.mkv`;
-  const key = engine.keyFor(url, [window], "stream:full");
+  const key = engine.keyFor(url, [window], "stream:tail");
 
   // The handler learns the length before it answers (see rememberDuration).
   const duration = await engine.rememberDuration(key, url);
   assert.ok(duration && Math.abs(duration - LONG_SECONDS * 1000) < 2_000, `probed ${duration}ms`);
-  const dir = path.join(workDir, "cache-full", "hls", key);
+  const dir = path.join(workDir, "cache-tail", "hls", key);
   await writeFile(
     path.join(dir, "plan.json"),
     JSON.stringify({
@@ -826,31 +851,39 @@ test("the playlist declares the whole episode from its first response", async ()
     }),
   );
 
-  // The card comes first, so the declared length is the card plus the episode's own.
+  // Nothing packaged: the card, and a cushion behind it -- never the rest of a three-minute episode.
   const card = await engine.splashView(key, [window]);
   assert.ok(card, "a playlist is served straight away");
   assert.equal(card.card, 1, "with the card in it, because nothing has been cut yet");
-  assert.equal(
-    card.expectedMs,
-    LONG_SECONDS * 1000 - 6_000,
-    "the episode's length less the window",
-  );
-  assert.ok(card.padding > 0, "with the remainder padded");
+  assert.equal(card.expectedMs, LONG_SECONDS * 1000 - 6_000, "the episode's own length");
+  assert.ok(card.padding > 0, "with a cushion of placeholder");
   const cardMs = await engine.cardMs(key);
-  assert.equal(cardMs, 10_000, "the card is the buffer's length");
-  const declared = cardMs + card.expectedMs!;
-  assert.ok(
-    card.durationMs >= declared - 8_000 && card.durationMs <= declared + 8_000,
-    `the declared length is the card plus the episode (${card.durationMs}ms against ${declared}ms)`,
-  );
+  const tail = card.durationMs - cardMs - card.bufferedMs;
+  assert.ok(tail <= 12_500, `the cushion is ${tail}ms past the film, not the episode's remainder`);
+  // The placeholder is real, fetchable media, and it is not the card: a player that joins here is
+  // looking at the film's own seconds, so it must not be shown "Processing…" over them.
+  const piece = /seg\?f=[^/]+\/(pad\d{5}\.ts)/.exec(card.body)?.[1];
+  assert.ok(piece, `the cushion names its own piece (${card.body.slice(0, 200)})`);
+  const piecePath = engine.segmentPath(key, piece!);
+  assert.ok(piecePath, "which the service will serve");
+  assert.ok((await durationOf(piecePath!)) > 1_000, "and which is real media");
 
-  // The placeholder is real, fetchable media rather than a dangling URI: a player that outruns
-  // the packaging walks onto it.
-  const piece = /seg\?f=[^/]+\/((?:pad|splash)\d{5}\.ts)/.exec(card.body)?.[1];
-  assert.ok(piece, "the padding names a piece");
-  const path0 = engine.segmentPath(key, piece!);
-  assert.ok(path0, "which the service will serve");
-  assert.ok((await durationOf(path0!)) > 1_000, "and which is real media");
+  // Twenty-eight seconds of the film on disk: the live edge is inside it, not in the tail.
+  const rows: string[] = [];
+  for (let i = 0; i < 7; i += 1) {
+    const name = `seg${String(i).padStart(5, "0")}.ts`;
+    rows.push(`${name},${(i * 4).toFixed(3)},${((i + 1) * 4).toFixed(3)}`);
+  }
+  await writeFile(path.join(dir, "pass-0.csv"), `${rows.join("\n")}\n`);
+  const view = (await engine.manifest(key))!;
+  assert.equal(view.card, 0, "the film is enough to play, so the card is gone");
+  assert.equal(view.bufferedMs, 28_000, "twenty-eight seconds of the film");
+  const live = liveStart(view.body);
+  assert.match(live.uri, /seg0000\d\.ts/, `a live player starts in the film (${live.uri})`);
+  assert.ok(
+    live.atMs >= view.bufferedMs - 12_000,
+    `and near the write head (${live.atMs}ms of ${view.bufferedMs}ms)`,
+  );
 });
 
 test("the film is handed over the moment the pre-roll is on disk", async () => {

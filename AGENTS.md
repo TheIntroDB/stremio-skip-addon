@@ -91,6 +91,16 @@ do. The card goes the moment the film can play: a viewer left on "Processing…"
 is ready is the one thing it must not do. A job that has _stopped_ has no card either (see
 `manifest`), so a failure hands over the source untouched instead of a screen that never changes.
 
+While a package is still being written the playlist ends in a **placeholder**: a plain piece in the
+package's own container and codec, about twelve seconds of it (`PAD_HORIZON_MS`). That length is the
+whole point. An `#EXT-X-PLAYLIST-TYPE:EVENT` playlist is joined at its **live edge** — three target
+durations before the end, in hls.js (`liveSyncDurationCount`) and in AVFoundation — so a tail that
+declares the _rest of the episode_ puts the place a player opens at inside the placeholder for the
+entire packaging; and when the film finishes, that position is the end of the episode and the only
+way out is to close the player. A short tail keeps the live edge inside the film that already exists,
+and the placeholder is never the card for the same reason: a viewer who opens there is looking at
+the film's own seconds, not at "Processing…".
+
 An fMP4 (HEVC) package has no card: the card is a TS piece, and mixing containers inside one playlist
 is exactly what players disagree about. It waits for its first segment instead, which is now a
 segment's worth of work rather than a stretch's.
