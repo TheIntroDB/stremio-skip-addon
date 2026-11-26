@@ -12,9 +12,8 @@
  * the view model it is given.
  */
 
-import { ADDON_VERSION } from "../addon/manifest.js";
 import type { AddonConfig } from "../addon/types.js";
-import { VERSION_URL } from "../addon/version.js";
+import { ADDON_VERSION, VERSION_URL } from "../addon/version.js";
 import { configPageHtml } from "./config-page-html.js";
 
 export interface PageOptions {

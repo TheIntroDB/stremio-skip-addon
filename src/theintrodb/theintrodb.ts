@@ -27,7 +27,7 @@
 import { getHttpCache, type HttpCache } from "../addon/cache.js";
 import { parseStremioId } from "../addon/config.js";
 import { INTRODB_API_VERSION } from "../addon/constants.js";
-import { ADDON_VERSION, REPO_URL } from "../addon/manifest.js";
+import { REPO_URL } from "../addon/manifest.js";
 import type {
   Env,
   IntroDbMediaResponse,
@@ -35,6 +35,7 @@ import type {
   SegmentType,
   SkipWindow,
 } from "../addon/types.js";
+import { ADDON_VERSION } from "../addon/version.js";
 
 /** Read-path cache lifetimes. Community timings move on the order of days. */
 const TTL_FOUND_SECONDS = 6 * 60 * 60;

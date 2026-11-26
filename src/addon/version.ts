@@ -12,7 +12,36 @@
  * The notice appears in two places, both of which are a person wondering whether their copy is current:
  * the configuration page (fetched by the *browser*, see `config-page-html.ts`) and the processing card
  * (`cardText`), which says it while the viewer is already watching.
+ *
+ * It is also where the version itself lives: `package.json` is the only place a version is written,
+ * and everything that reports one asks here.
  */
+
+import { readFileSync } from "node:fs";
+
+/**
+ * The one version: `package.json`'s.
+ *
+ * Read from the file rather than repeated in code, because a constant is a second number to forget:
+ * the manifest, `/health`, the user-agent, the page's footer and the out-of-date comparison all ask
+ * for this one, so they cannot disagree with the package that was actually built. `package.json` is
+ * two levels up from this file in both the source tree and `dist/`, and npm and the Docker image both
+ * ship it next to `dist/`, so that path is the same everywhere.
+ */
+export const ADDON_VERSION: string = readPackageVersion();
+
+function readPackageVersion(): string {
+  try {
+    const file = readFileSync(new URL("../../package.json", import.meta.url), "utf8");
+    const parsed = JSON.parse(file) as { version?: unknown };
+    const version = typeof parsed.version === "string" ? parsed.version.trim() : "";
+    // A package with no version is mispackaged, but a service that will not start over a string is
+    // worse than one that says it does not know which version it is.
+    return version || "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
 
 /** The version a fresh deployment would get. Override with `UPDATE_VERSION_URL` for a fork. */
 export const VERSION_URL =
