@@ -1233,7 +1233,25 @@ test("a package that is ready is served as a seekable playlist", async () => {
   assert.equal(response.headers.get("x-tidb-segments"), "3");
   assert.equal(response.headers.get("x-tidb-content-ms"), "26000");
 
-  const body = await response.text();
+  const master = await response.text();
+  // Every package is offered as a multivariant playlist, so the player is told where to start: an
+  // EVENT playlist is joined at its live edge, and only the master's `#EXT-X-START` moves it.
+  assert.ok(master.includes("#EXT-X-START:TIME-OFFSET=0"), "the master says where playback starts");
+  assert.ok(!master.includes("#EXT-X-MEDIA"), "no rendition when there is no track");
+  const mediaUri = master
+    .split("\n")
+    .filter((line) => line && !line.startsWith("#"))
+    .pop();
+  assert.match(
+    mediaUri ?? "",
+    /\?.*m=1/,
+    "one variant, which is this same URL asking for the media",
+  );
+
+  const media = await call(mediaUri!, settings, undefined, engine);
+  assert.equal(media.status, 200, "the variant is served too");
+  assert.equal(media.headers.get("x-tidb-play"), "package_vod");
+  const body = await media.text();
   assert.ok(body.includes("#EXT-X-PLAYLIST-TYPE:VOD"));
   assert.ok(body.includes("#EXT-X-ENDLIST"), "a finished package is a plain VOD playlist");
   assert.equal(

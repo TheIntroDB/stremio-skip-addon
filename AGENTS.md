@@ -114,6 +114,12 @@ the film's own seconds, not at "Processing…".
 A job that has _stopped_ has no card at all (see `manifest`), so a failure hands over the source
 untouched instead of a screen that never changes.
 
+**Every package is served as a multivariant playlist**, subtitles or not. The master is the only place
+a player looks for `#EXT-X-START`, and it is what stops a live-edge join: without it a package with no
+subtitle track had no master at all, so an `EVENT` playlist was joined three target durations before
+its end and the first part of the film — everything just after the cut — was skipped. The variant is
+the same URL with `m=1`.
+
 An fMP4 (HEVC) package has no card: the card is a TS piece, and mixing containers inside one playlist
 is exactly what players disagree about. It waits for its first segment instead, which is a segment's
 worth of work rather than a stretch's.
