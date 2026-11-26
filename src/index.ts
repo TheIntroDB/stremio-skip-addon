@@ -181,12 +181,12 @@ export async function handleRequest(
     // is read again and again while a track is being made (hence never cached); the chunks are
     // written once and never change.
     if (route === "subs.m3u8") {
-      // A rendition is the *film's* timeline: the processing card is only the wait for the pre-roll
-      // and is dropped the moment the film can play (see `packages.ts`, `manifest`), so a card's
-      // segment here would put every cue one card late. A track with nothing in it yet is answered
-      // with a zero-length placeholder by `handleSubtitlePlaylist`, which is what makes a player
-      // register it at all.
-      return handleSubtitlePlaylist({ settings, subtitles: engine, request }, 0);
+      // The rendition carries the card the video puts in front of the film, so its segment list has
+      // to start with the same one: the length arrives in the URI (`c=`, seconds) because it is a
+      // measured pre-roll, not a deployment constant (see `packages.ts`, `cardMs`).
+      const seconds = Number(new URL(request.url).searchParams.get("c") ?? "0");
+      const cardMs = Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds * 1000) : 0;
+      return handleSubtitlePlaylist({ settings, subtitles: engine, request }, cardMs);
     }
     // A chunk is addressed by its own name in the path (`subs/0.vtt`) rather than by a query
     // parameter: ffmpeg's HLS demuxer refuses a subtitle segment whose URI has no extension at

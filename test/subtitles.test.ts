@@ -737,10 +737,22 @@ test("the rendition and its chunks are reachable through the router", async () =
   assert.match(list.headers.get("content-type") ?? "", /mpegurl/);
   const body = await list.text();
   assert.match(body, /^#EXTM3U/, "and it is a playlist");
-  // No card entry, even on a deployment that draws cards: the card is only the wait for the
-  // pre-roll and is dropped the moment the film can play, so a rendition carrying one would put
-  // every cue a card late for the whole episode.
-  assert.ok(!body.includes("subs/card.vtt"), "the rendition is the film's timeline, cardless");
+
+  // And the length the video's own playlist declared travels in the URI: a rendition asked for a
+  // playback with a two-second card has to open with a two-second card segment, or every cue in it
+  // sits one card late.
+  const withCard = await handleRequest(
+    new Request(`https://worker.example/${encoded}/subs.m3u8?f=key4&c=2.000`),
+    routerSettings,
+    packages,
+    engine,
+  );
+  assert.equal(withCard.status, 200, "the card-carrying rendition is routed too");
+  assert.match(
+    await withCard.text(),
+    /#EXTINF:2\.000,\nsubs\/card\.vtt/,
+    "and it opens on the card",
+  );
 
   // Whatever it lists has to be reachable: the rendition's entries are the one promise a player
   // relies on, and a track with nothing in it yet lists its placeholder.

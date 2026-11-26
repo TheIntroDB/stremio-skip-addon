@@ -701,11 +701,11 @@ test("the segments of a stretch share one timeline, so a player's clock does not
   }
 });
 
-test("a cold play is given the card while the film is cut, and never after it can play", async () => {
-  // Two things are being proven: a player is given something to look at at once instead of a
-  // spinner, and the card is only ever the *wait* -- the moment the pre-roll is on disk it is gone
-  // and the film starts at position zero. A card that survives the wait is a viewer watching
-  // "Processing…" over an episode that is ready to play.
+test("the card is the wait, and the film starts after it at the same offset for good", async () => {
+  // A player is given something to look at at once instead of a spinner, and the card it watches is
+  // exactly as long as the wait it had: the film is appended after those pieces, at that offset, and
+  // never moves again. Once the film can play the pieces are replaced by one card of the same length
+  // that says what went -- so seeking back to zero shows that, not "Processing…".
   const engine = new PackageEngine(
     settings({ cacheDir: path.join(workDir, "cache-card"), splash: true }),
   );
@@ -744,16 +744,16 @@ test("a cold play is given the card while the film is cut, and never after it ca
   assert.ok(Date.now() - started < 15_000, `and quickly (${Date.now() - started}ms)`);
   assert.equal(card.card, 1, "one piece of it");
   assert.equal(card.segments, 0, "and nothing of the episode, because there is none");
+  assert.equal(card.cardMs, 2_000, "two seconds of card, which is one piece");
   assert.ok(card.body.includes("splash00000.ts"), "which the playlist lists");
 
   // The card is real, playable video of a known length: a player has to be able to fetch it.
   const first = engine.segmentPath(key, "splash00000.ts");
   assert.ok(first, "a piece is servable by name");
   const pieceMs = await durationOf(first!);
-  assert.ok(pieceMs > 8_000, `a piece runs ${pieceMs}ms`);
-  assert.equal(await engine.cardMs(key), 10_000, "and the card is the buffer's length");
+  assert.ok(pieceMs > 1_200 && pieceMs < 3_000, `a piece runs ${pieceMs}ms`);
 
-  // Then the pre-roll arrives: no card, and the film is the first thing in the playlist.
+  // Then the pre-roll arrives: the film is appended after the card, and the offset stays.
   await writeFile(
     path.join(dir, "pass-0.csv"),
     "seg00000.ts,0.000000,5.000000\nseg00001.ts,5.000000,10.000000\n",
@@ -764,15 +764,28 @@ test("a cold play is given the card while the film is cut, and never after it ca
   );
   const view = await engine.manifest(key);
   assert.ok(view, "the playlist is served");
-  assert.equal(view.card, 0, "the card is not in it any more");
-  assert.ok(!view.body.includes("splash"), "not one piece of it");
+  assert.equal(view.card, 1, "the card is still in front of the film");
+  assert.equal(view.cardMs, 2_000, "at the length it was when the wait ended");
   assert.ok(view.bufferedMs >= 10_000, `${view.bufferedMs}ms of the episode is on disk`);
-  const firstUri = view.body.split("\n").find((line) => !line.startsWith("#"));
-  assert.match(firstUri ?? "", /seg00000\.ts/, "and the film is the first thing in it");
+  const uris = view.body.split("\n").filter((line) => line && !line.startsWith("#"));
+  assert.match(uris[0] ?? "", /splash00000\.ts/, "a card piece comes first");
+  assert.match(uris[1] ?? "", /seg00000\.ts/, "then the film, from its first frame");
 
-  // And it does not come back: a card is a wait, not a pre-roll.
-  const later = await engine.advanceCard(key);
-  assert.equal(later?.card ?? 0, 0, "the card never returns");
+  // And the card is replaced, in place, by one piece of the same length that says what went: the
+  // film does not move by a millisecond when it is.
+  let settled = await engine.manifest(key);
+  const deadline = Date.now() + 30_000;
+  while (!settled?.body.includes("done00000.ts")) {
+    assert.ok(Date.now() < deadline, "the finished card is drawn");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    settled = await engine.manifest(key);
+  }
+  assert.equal(settled.card, 1, "still one entry of card");
+  assert.equal(settled.cardMs, 2_000, "of exactly the same length");
+  assert.equal(await engine.cardMs(key), 2_000, "so the film's offset is unchanged");
+  const after = settled.body.split("\n").filter((line) => line && !line.startsWith("#"));
+  assert.match(after[0] ?? "", /done00000\.ts/, "and the card says what happened");
+  assert.match(after[1] ?? "", /seg00000\.ts/, "while the film still starts at the same entry");
 });
 
 test("a job that stopped does not leave the card up for ever", async () => {
@@ -860,10 +873,11 @@ test("the placeholder is a cushion at the write head, not the rest of the episod
   const cardMs = await engine.cardMs(key);
   const tail = card.durationMs - cardMs - card.bufferedMs;
   assert.ok(tail <= 12_500, `the cushion is ${tail}ms past the film, not the episode's remainder`);
-  // The placeholder is real, fetchable media, and it is not the card: a player that joins here is
-  // looking at the film's own seconds, so it must not be shown "Processing…" over them.
-  const piece = /seg\?f=[^/]+\/(pad\d{5}\.ts)/.exec(card.body)?.[1];
+  // The placeholder is real, fetchable media, and while the film is still being cut it is the card
+  // itself: a player that outruns the packaging is looking at what is happening, not at nothing.
+  const piece = /seg\?f=[^/]+\/((?:splash|pad)\d{5}\.ts)/.exec(card.body)?.[1];
   assert.ok(piece, `the cushion names its own piece (${card.body.slice(0, 200)})`);
+  assert.match(piece!, /^splash/, "which is the card, while the card is what is happening");
   const piecePath = engine.segmentPath(key, piece!);
   assert.ok(piecePath, "which the service will serve");
   assert.ok((await durationOf(piecePath!)) > 1_000, "and which is real media");
@@ -876,7 +890,7 @@ test("the placeholder is a cushion at the write head, not the rest of the episod
   }
   await writeFile(path.join(dir, "pass-0.csv"), `${rows.join("\n")}\n`);
   const view = (await engine.manifest(key))!;
-  assert.equal(view.card, 0, "the film is enough to play, so the card is gone");
+  assert.equal(view.card, 1, "the card is the film's pre-roll, so it stays");
   assert.equal(view.bufferedMs, 28_000, "twenty-eight seconds of the film");
   const live = liveStart(view.body);
   assert.match(live.uri, /seg0000\d\.ts/, `a live player starts in the film (${live.uri})`);
@@ -884,12 +898,21 @@ test("the placeholder is a cushion at the write head, not the rest of the episod
     live.atMs >= view.bufferedMs - 12_000,
     `and near the write head (${live.atMs}ms of ${view.bufferedMs}ms)`,
   );
+  // Frozen, so the cushion is the plain black piece: the card has nothing left to say and the film
+  // is behind it.
+  const tailUris = view.body.split("\n").filter((line) => line && !line.startsWith("#"));
+  assert.match(
+    tailUris[tailUris.length - 1] ?? "",
+    /pad00000\.ts/,
+    "the cushion is the black piece once the film can play",
+  );
 });
 
-test("the film is handed over the moment the pre-roll is on disk", async () => {
-  // The rule that makes a playback start on the episode rather than on a card: once
-  // `PREROLL_SECONDS` of the *cut* film is packaged, the playlist starts with the film. Nine
-  // seconds of it is a card; ten is the episode.
+test("the card grows a piece per poll and is frozen by the pre-roll", async () => {
+  // The card's length is the wait the viewer actually had, so it is built while they wait: one
+  // piece per request, two seconds each. The pre-roll is what stops it -- from that moment the film
+  // can play, and the offset it will be appended at is the one the viewer has already been sitting
+  // through. Growing the card after that would move the film under a player that is on it.
   const engine = new PackageEngine(
     settings({ cacheDir: path.join(workDir, "cache-buffer"), splash: true, prerollSeconds: 10 }),
   );
@@ -921,26 +944,42 @@ test("the film is handed over the moment the pre-roll is on disk", async () => {
     }),
   );
 
-  const none = await engine.splashView(key, windows);
-  assert.equal(none?.card, 1, "nothing cut yet, so the card");
+  const first = await engine.splashView(key, windows);
+  assert.equal(first?.card, 1, "nothing cut yet, so the first piece");
+  assert.equal(first?.cardMs, 2_000, "two seconds of it");
+  const second = await engine.advanceCard(key);
+  assert.equal(second?.card, 2, "a poll later, the next piece");
+  assert.equal(second?.cardMs, 4_000, "and the card is four seconds");
 
+  // Nine seconds of the film is not the pre-roll, so the card may still grow.
   await writeFile(
     path.join(dir, "pass-0.csv"),
     "seg00000.ts,0.000000,5.000000\nseg00001.ts,5.000000,9.000000\n",
   );
   const nine = (await engine.manifest(key))!;
   assert.equal(nine.bufferedMs, 9_000, "nine seconds of the film");
-  assert.equal(nine.card, 1, "is not the pre-roll, so the card stays");
+  const third = await engine.advanceCard(key);
+  assert.equal(third?.card, 3, "is not the pre-roll, so the card grows");
+  assert.equal(third?.cardMs, 6_000, "to six seconds");
 
+  // Ten seconds is: the card stops growing, and the film is appended after it.
   await writeFile(
     path.join(dir, "pass-0.csv"),
     "seg00000.ts,0.000000,5.000000\nseg00001.ts,5.000000,10.000000\n",
   );
   const ten = (await engine.manifest(key))!;
   assert.equal(ten.bufferedMs, 10_000, "ten seconds of the film");
-  assert.equal(ten.card, 0, "is the pre-roll, so the card goes");
-  const head = ten.body.split("\n").find((line) => !line.startsWith("#"));
-  assert.match(head ?? "", /seg00000\.ts/, "and the episode is the head of the playlist");
+  assert.equal(ten.cardMs, 6_000, "the card keeps the length the wait gave it");
+  const settled = await engine.advanceCard(key);
+  assert.equal(settled?.cardMs, 6_000, "and no poll adds another piece");
+  const uris = (settled?.body ?? "").split("\n").filter((line) => line && !line.startsWith("#"));
+  const firstFilm = uris.findIndex((uri) => /seg0000\d\.ts/.test(uri));
+  assert.equal(
+    firstFilm,
+    3,
+    `the film starts right after the three card pieces (${uris.join(" ")})`,
+  );
+  assert.match(uris[firstFilm] ?? "", /seg00000\.ts/, "from its first frame");
 });
 
 test("an fMP4 package is described with its initialisation section", async () => {
@@ -1113,12 +1152,23 @@ test("a package that was made earlier has no card in front of it", async () => {
 
   assert.equal(await engine.isComplete(key), true, "the engine says the film is ready");
 
-  const view = (await engine.manifest(key))!;
-  assert.equal(view.card, 0, "no card is listed");
-  assert.ok(!view.body.includes("splash"), "and no piece of it");
+  // The card is part of the film now, so it is still there -- with the finished piece in it, which
+  // says what was removed rather than "Processing…" over an episode that was cut days ago.
+  let view = (await engine.manifest(key))!;
+  assert.equal(view.card, 1, "the card is still in front of the film");
+  assert.equal(view.cardMs, 10_000, "and it is the length the wait gave it");
+  const deadline = Date.now() + 30_000;
+  while (!view.body.includes("done00000.ts")) {
+    assert.ok(Date.now() < deadline, "the finished card is drawn");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    view = (await engine.manifest(key))!;
+  }
+  assert.ok(!view.body.includes("splash00000.ts"), "the processing piece is not what is served");
+  assert.equal(view.cardMs, 10_000, "the replacement is the same length, so nothing moved");
   assert.equal(view.complete, true, "the film is still declared complete");
-  const head = view.body.split("\n").find((line) => !line.startsWith("#"));
-  assert.match(head ?? "", /seg00000\.ts/, "and the playlist starts at the head of the episode");
+  const uris = view.body.split("\n").filter((line) => line && !line.startsWith("#"));
+  assert.match(uris[0] ?? "", /done00000\.ts/, "and the playlist opens on it");
+  assert.match(uris[1] ?? "", /seg00000\.ts/, "with the film at its first frame behind it");
 });
 
 test("an HEVC package is playable while its first stretch is still being cut", async () => {
