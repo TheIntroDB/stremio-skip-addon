@@ -92,6 +92,13 @@ export interface SplashCard {
   state?: "processing" | "done";
   /** With `state: "done"`: how long the pre-roll was, i.e. where the film starts on the timeline. */
   waitMs?: number;
+  /**
+   * A line under the windows, when there is something the viewer can act on.
+   *
+   * Right now that is one thing: this deployment is older than the release, and the person watching is
+   * the person who would update it.
+   */
+  notice?: string | null;
 }
 
 const TYPE_LABEL: Record<string, string> = {
@@ -126,6 +133,7 @@ export function cardText(card: SplashCard): {
   subtitle: string;
   count: string;
   windows: string;
+  notice: string;
   footer: string;
 } {
   const windows = card.windows
@@ -153,6 +161,8 @@ export function cardText(card: SplashCard): {
         : "TheIntroDB is currently cutting the segments from your stream",
     count: `${count} ${count === 1 ? "segment" : "segments"}`,
     windows,
+    // Nothing at all when the deployment is current: an empty line would be a gap in the card.
+    notice: card.notice?.trim() ?? "",
     footer: "Go to theintrodb.org to submit or report incorrect segments",
   };
 }
@@ -170,16 +180,21 @@ export const CARD_FILES = {
   subtitle: "card.subtitle.txt",
   count: "card.count.txt",
   windows: "card.windows.txt",
+  notice: "card.notice.txt",
   footer: "card.footer.txt",
 } as const;
 
 /** The ffmpeg arguments that draw one piece of the card. */
+/** Amber: the one line on the card that is about this deployment rather than the episode. */
+const NOTICE = "0xF5B60A";
+
 export function splashArgs(
   out: string,
   offsetSeconds: number,
   seconds: number,
   dir: string,
   audio = "aac",
+  notice: string | null = null,
 ): string[] {
   const draw = (file: string, font: string, size: number, color: string, y: number): string =>
     `drawtext=fontfile=${font}:textfile=${path.join(dir, file)}:fontsize=${size}:fontcolor=${color}:x=(w-text_w)/2:y=${y}`;
@@ -191,7 +206,10 @@ export function splashArgs(
     `[v1]${draw(CARD_FILES.subtitle, FONT_REGULAR, 28, "white", 452)}[v2]`,
     `[v2]${draw(CARD_FILES.count, FONT_REGULAR, 26, GREY, 524)}[v3]`,
     `[v3]${draw(CARD_FILES.windows, FONT_REGULAR, 26, GREY, 566)}[v4]`,
-    `[v4]${draw(CARD_FILES.footer, FONT_REGULAR, 22, GREY, 628)}[out]`,
+    // The notice sits between the windows and the footer, in the accent rather than the grey of the
+    // rest: it is the one line on the card the viewer can act on.
+    ...(notice ? [`[v4]${draw(CARD_FILES.notice, FONT_REGULAR, 24, NOTICE, 592)}[v4b]`] : []),
+    `[${notice ? "v4b" : "v4"}]${draw(CARD_FILES.footer, FONT_REGULAR, 22, GREY, 640)}[out]`,
   ].join(";");
 
   return [
@@ -273,13 +291,14 @@ export async function generateCardPiece(
     await writeFile(path.join(dir, CARD_FILES.subtitle), `${text.subtitle}\n`);
     await writeFile(path.join(dir, CARD_FILES.count), `${text.count}\n`);
     await writeFile(path.join(dir, CARD_FILES.windows), `${text.windows}\n`);
+    if (text.notice) await writeFile(path.join(dir, CARD_FILES.notice), `${text.notice}\n`);
     await writeFile(path.join(dir, CARD_FILES.footer), `${text.footer}\n`);
   } catch (error) {
     return { ok: false, error: `cannot write the card's text: ${String(error)}` };
   }
   const result = await run(
     settings.ffmpegPath,
-    splashArgs(out, piece.offsetMs / 1000, piece.seconds, dir, piece.audio),
+    splashArgs(out, piece.offsetMs / 1000, piece.seconds, dir, piece.audio, text.notice || null),
     60_000,
   );
   if (result.code !== 0) {

@@ -14,6 +14,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import { Readable } from "node:stream";
 import { loadSettings, type Settings } from "./addon/env.js";
 import { ADDON_VERSION } from "./addon/manifest.js";
+import { UpstreamVersion } from "./addon/version.js";
 import { handleRequest } from "./index.js";
 import { recordFailure } from "./ops/diagnostics.js";
 import { PackageEngine } from "./streams/packages.js";
@@ -94,6 +95,12 @@ export async function main(): Promise<void> {
   // A package nobody has asked for in five minutes is deleted, and so is its subtitle track: this is
   // one viewer's addon, not a cache for a crowd.
   packages.onIdle = (key) => void subtitles.forget(key);
+  // Is this deployment older than the release? Asked once at boot and refreshed hourly, in the
+  // background; the processing card carries the answer while a viewer waits.
+  const upstream = new UpstreamVersion(ADDON_VERSION);
+  packages.notice = () => upstream.notice;
+  upstream.refreshInBackground();
+  setInterval(() => upstream.refreshInBackground(), 60 * 60_000).unref();
   // A TTL is only real if something sweeps: expired tracks at boot, and then hourly while the
   // process lives. Unref'd, so it never keeps the process up on its own.
   void subtitles.sweep();

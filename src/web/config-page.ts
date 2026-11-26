@@ -14,6 +14,7 @@
 
 import { ADDON_VERSION } from "../addon/manifest.js";
 import type { AddonConfig } from "../addon/types.js";
+import { VERSION_URL } from "../addon/version.js";
 import { configPageHtml } from "./config-page-html.js";
 
 export interface PageOptions {
@@ -41,6 +42,8 @@ export function renderConfigPage(options: PageOptions): string {
     siteUrl: options.siteUrl,
     serverKeyConfigured: options.serverKeyConfigured,
     version: ADDON_VERSION,
+    // Where the browser asks what a fresh deployment gets: the repository's own `package.json`.
+    updateUrl: VERSION_URL,
     repo: REPO,
     insecure: options.insecure,
     cuts: options.cuts,
