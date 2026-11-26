@@ -1,6 +1,6 @@
 {
   "name": "stremio-skip-addon",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "A self-hosted Stremio addon that removes intro, recap, credits and preview segments from your streams using TheIntroDB timings: it splices HLS playlists and remuxes progressive files.",
   "license": "GPL-3.0-or-later",
