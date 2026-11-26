@@ -41,8 +41,23 @@ export interface SourceTrack {
 
 /** The subtitle codecs that are text, and therefore convertible without recognising anything. */
 const TEXT_SUBTITLES = new Set([
-  "subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text", "sami", "subviewer",
-  "subviewer1", "microdvd", "jacosub", "realtext", "stl", "mpl2", "pjs", "vplayer",
+  "subrip",
+  "srt",
+  "ass",
+  "ssa",
+  "webvtt",
+  "mov_text",
+  "text",
+  "sami",
+  "subviewer",
+  "subviewer1",
+  "microdvd",
+  "jacosub",
+  "realtext",
+  "stl",
+  "mpl2",
+  "pjs",
+  "vplayer",
 ]);
 
 export interface StreamInfo {
@@ -83,12 +98,48 @@ interface ProbeStream {
  * as the same language. Anything not listed is compared as-is, lowercased.
  */
 const ISO_639: Record<string, string> = {
-  eng: "en", spa: "es", fra: "fr", fre: "fr", deu: "de", ger: "de", por: "pt", ita: "it",
-  jpn: "ja", kor: "ko", zho: "zh", chi: "zh", rus: "ru", hin: "hi", ara: "ar", pol: "pl",
-  nld: "nl", dut: "nl", tur: "tr", swe: "sv", dan: "da", nor: "no", nob: "no", fin: "fi",
-  ces: "cs", cze: "cs", ell: "el", gre: "el", heb: "he", hun: "hu", ind: "id", ron: "ro",
-  rum: "ro", slk: "sk", slo: "sk", ukr: "uk", vie: "vi", tha: "th", cat: "ca",
-  mul: "", und: "", mis: "",
+  eng: "en",
+  spa: "es",
+  fra: "fr",
+  fre: "fr",
+  deu: "de",
+  ger: "de",
+  por: "pt",
+  ita: "it",
+  jpn: "ja",
+  kor: "ko",
+  zho: "zh",
+  chi: "zh",
+  rus: "ru",
+  hin: "hi",
+  ara: "ar",
+  pol: "pl",
+  nld: "nl",
+  dut: "nl",
+  tur: "tr",
+  swe: "sv",
+  dan: "da",
+  nor: "no",
+  nob: "no",
+  fin: "fi",
+  ces: "cs",
+  cze: "cs",
+  ell: "el",
+  gre: "el",
+  heb: "he",
+  hun: "hu",
+  ind: "id",
+  ron: "ro",
+  rum: "ro",
+  slk: "sk",
+  slo: "sk",
+  ukr: "uk",
+  vie: "vi",
+  tha: "th",
+  cat: "ca",
+  mul: "",
+  und: "",
+  mis: "",
 };
 
 /** A container language tag as the two-letter code the settings use. Empty when unknown. */
@@ -166,7 +217,10 @@ export function parseProbe(text: string): StreamInfo | null {
   } catch {
     return null;
   }
-  const report = raw as { format?: { duration?: unknown; bit_rate?: unknown }; streams?: ProbeStream[] };
+  const report = raw as {
+    format?: { duration?: unknown; bit_rate?: unknown };
+    streams?: ProbeStream[];
+  };
   const seconds = Number(report.format?.duration);
   if (!Number.isFinite(seconds) || seconds <= 0) return null;
   const streams = Array.isArray(report.streams) ? report.streams : [];

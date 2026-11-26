@@ -28,11 +28,10 @@
 import { mkdtemp, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-
-import { buildCues, toVtt } from "../src/cues.js";
-import type { Settings } from "../src/env.js";
-import { run } from "../src/ffmpeg.js";
-import { Transcriber } from "../src/transcribe.js";
+import type { Settings } from "../src/addon/env.js";
+import { run } from "../src/streams/ffmpeg.js";
+import { buildCues, toVtt } from "../src/subtitles/cues.js";
+import { Transcriber } from "../src/subtitles/transcribe.js";
 
 const file = process.argv[2];
 if (!file) {
@@ -58,7 +57,23 @@ console.log(`models loaded in ${((Date.now() - loadedAt) / 1000).toFixed(1)}s`);
 const wav = path.join(cacheDir, "chunk.wav");
 const extracted = await run(
   settings.ffmpegPath,
-  ["-nostdin", "-hide_banner", "-v", "error", "-y", "-i", file, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav],
+  [
+    "-nostdin",
+    "-hide_banner",
+    "-v",
+    "error",
+    "-y",
+    "-i",
+    file,
+    "-vn",
+    "-ac",
+    "1",
+    "-ar",
+    "16000",
+    "-c:a",
+    "pcm_s16le",
+    wav,
+  ],
   300_000,
 );
 if (extracted.code !== 0) {
@@ -90,7 +105,9 @@ console.log(
       engineRealtimeFactor: Number(transcript.realtimeFactor.toFixed(2)),
       words: words.length,
       cues: cues.length,
-      firstCues: cues.slice(0, 3).map((cue) => `${cue.start.toFixed(1)}-${cue.end.toFixed(1)} ${cue.text}`),
+      firstCues: cues
+        .slice(0, 3)
+        .map((cue) => `${cue.start.toFixed(1)}-${cue.end.toFixed(1)} ${cue.text}`),
     },
     null,
     2,

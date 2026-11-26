@@ -12,7 +12,7 @@
 
 import { createHash } from "node:crypto";
 
-import type { AddonConfig, Env, UpstreamStream } from "./types.js";
+import type { AddonConfig, UpstreamStream } from "../addon/types.js";
 
 export interface SourceResult {
   base: string;
@@ -33,7 +33,6 @@ const REQUEST_TIMEOUT_MS = 8000;
 export const MAX_STREAMS = 40;
 
 export async function fetchStreams(
-  env: Env,
   config: AddonConfig,
   type: string,
   id: string,
@@ -54,7 +53,7 @@ export async function fetchStreams(
           fetchImpl,
           `${base}/stream/${encodeURIComponent(type)}/${encodedId}.json`,
         );
-        if (retry && retry.ok) response = retry;
+        if (retry?.ok) response = retry;
       }
     }
 
@@ -86,10 +85,7 @@ export async function fetchStreams(
   return { streams: [], sources };
 }
 
-async function fetchResource(
-  fetchImpl: typeof fetch,
-  url: string,
-): Promise<Response | null> {
+async function fetchResource(fetchImpl: typeof fetch, url: string): Promise<Response | null> {
   try {
     return await fetchImpl(url, {
       headers: { accept: "application/json" },
@@ -139,11 +135,7 @@ export function sourceLabel(base: string): string {
  * source addon, the release labels and any torrent identity are stable, so those are
  * what a cut is keyed on.
  */
-export function streamIdentity(
-  stream: UpstreamStream,
-  sourceBase: string,
-  target: string,
-): string {
+export function streamIdentity(stream: UpstreamStream, sourceBase: string, target: string): string {
   let host = sourceBase;
   try {
     host = new URL(target).host;
@@ -307,9 +299,4 @@ export function isPrivateHost(host: string): boolean {
     return false;
   }
   return /(^|\.)internal$/.test(host) || /(^|\.)home\.arpa$/.test(host);
-}
-
-function errorName(error: unknown): string {
-  if (error instanceof Error) return error.name === "TimeoutError" ? "timeout" : error.name;
-  return "unknown";
 }

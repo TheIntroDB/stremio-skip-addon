@@ -54,10 +54,26 @@ export function parseCutMode(value: unknown): CutMode | null {
   const raw = value.trim().toLowerCase();
   // `blocking`/`on` both used to mean "cut mkvs" (the old modes differed only in whether the
   // first play waited); `off` never touched a file, which is what `hls` is.
-  if (raw === "mkv" || raw === "blocking" || raw === "on" || raw === "wait" || raw === "always" ||
-      raw === "background" || raw === "true" || raw === "1") return "mkv";
-  if (raw === "hls" || raw === "playlists" || raw === "off" || raw === "false" || raw === "0" ||
-      raw === "never") return "hls";
+  if (
+    raw === "mkv" ||
+    raw === "blocking" ||
+    raw === "on" ||
+    raw === "wait" ||
+    raw === "always" ||
+    raw === "background" ||
+    raw === "true" ||
+    raw === "1"
+  )
+    return "mkv";
+  if (
+    raw === "hls" ||
+    raw === "playlists" ||
+    raw === "off" ||
+    raw === "false" ||
+    raw === "0" ||
+    raw === "never"
+  )
+    return "hls";
   return null;
 }
 

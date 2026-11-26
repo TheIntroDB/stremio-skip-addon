@@ -22,7 +22,7 @@ It is deliberately narrow:
   says.
 
 The four segment kinds TheIntroDB serves, and the only ones this addon cuts: `intro`, `recap`,
-`credits`, `preview` (see `SEGMENT_TYPES` in `src/types.ts`).
+`credits`, `preview` (see `SEGMENT_TYPES` in `src/addon/types.ts`).
 
 ## How it works
 
@@ -84,10 +84,10 @@ growing playlist is what makes Stremio mark an episode watched and jump to the n
 
 `SKIP_MARGIN_SECONDS` (default 2) is the number of seconds left alone at each end of every skip
 window: the skip starts this many seconds after the reported start and ends this many seconds before
-the reported end. TheIntroDB's timings describe *a* release of a title rather than necessarily the one
+the reported end. TheIntroDB's timings describe _a_ release of a title rather than necessarily the one
 being watched, so the first and last seconds of an intro are where dialogue can go missing. `0` cuts
 exactly what is reported. The config page offers 0–5 seconds per install; the environment variable
-accepts 0–30 (`MAX_MARGIN_SECONDS` in `src/types.ts`).
+accepts 0–30 (`MAX_MARGIN_SECONDS` in `src/addon/types.ts`).
 
 ### Disk
 
@@ -114,31 +114,31 @@ arbitrary custom auth headers.)
 The service reads its configuration from environment variables. See `.env.example` for the exact
 defaults and comments. The full set:
 
-| Variable | Default | Notes |
-|---|---|---|
-| `TIDB_API_KEY` | *(none)* | **Optional.** One TheIntroDB API key for the whole deployment. Leave it empty and a key comes from the configuration page instead, riding in that install's link. Without a key in either place, stream requests answer `403 missing_api_key`. |
-| `PORT` | `8787` | Port to listen on. |
-| `SKIP_MARGIN_SECONDS` | `2` | Seconds left alone at each end of every window. Env accepts 0–30; the config page offers 0–5. |
-| `SUBTITLES` | `on` | Whether to generate subtitles (see [Subtitles](#subtitles)). `off` never loads them. |
-| `SUBTITLES_LANGUAGE` | `en` | Language to recognize and refine. Align only refines some languages; others keep raw timings. |
-| `SUBTITLES_TTL_HOURS` | `24` | How long a generated track is kept (1–720). |
-| `SUBTITLES_CHUNK_SECONDS` | `30` | How much audio is transcribed in one go, and therefore how long each subtitle segment is. The clamp starts at the default (30, one recogniser window — `DEFAULT_SUBTITLES_CHUNK_SECONDS` in `src/env.ts`) and ends at 900 as a typo guard, so it can never lift the default off its documented value. |
-| `PROXY` | `on` | Relay every stream through this service. `off` only for a source the player can reach directly. |
-| `PREROLL_SECONDS` | `10` | Seconds of the episode that must be ready before playback starts (0–60). |
-| `SPLASH` | `on` | Whether a cold playback shows the processing card (see [The processing card](#the-processing-card)) instead of being held until the first segment is written. |
-| `CACHE_DIR` | `./cache` | Where package segments are cached. |
-| `CACHE_MAX_GB` | `50` | How much disk the cache may use before the oldest segment is evicted. |
-| `CUT_WAIT_SECONDS` | `120` | How long a play request waits for the first segment of a file being packaged. |
-| `CUT_CONCURRENCY` | `2` | Concurrent ffmpeg processes. |
-| `PRECUT_SOURCES` | `2` | When a title's stream list is fetched, start packaging this many of its sources in the background so the first playback lands on a ready playlist. `0` disables it. |
-| `FFMPEG_PATH` | `ffmpeg` | Override if ffmpeg is not on PATH. |
-| `FFPROBE_PATH` | `ffprobe` | Override if ffprobe is not on PATH. |
-| `ALLOW_PRIVATE_HOSTS` | *(unset)* | **Development only.** Allow fetching a source addon on a private/loopback address. Leave unset in production. |
+| Variable                  | Default   | Notes                                                                                                                                                                                                                                                                                                       |
+| ------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TIDB_API_KEY`            | _(none)_  | **Optional.** One TheIntroDB API key for the whole deployment. Leave it empty and a key comes from the configuration page instead, riding in that install's link. Without a key in either place, stream requests answer `403 missing_api_key`.                                                              |
+| `PORT`                    | `8787`    | Port to listen on.                                                                                                                                                                                                                                                                                          |
+| `SKIP_MARGIN_SECONDS`     | `2`       | Seconds left alone at each end of every window. Env accepts 0–30; the config page offers 0–5.                                                                                                                                                                                                               |
+| `SUBTITLES`               | `on`      | Whether to generate subtitles (see [Subtitles](#subtitles)). `off` never loads them.                                                                                                                                                                                                                        |
+| `SUBTITLES_LANGUAGE`      | `en`      | Language to recognize and refine. Align only refines some languages; others keep raw timings.                                                                                                                                                                                                               |
+| `SUBTITLES_TTL_HOURS`     | `24`      | How long a generated track is kept (1–720).                                                                                                                                                                                                                                                                 |
+| `SUBTITLES_CHUNK_SECONDS` | `30`      | How much audio is transcribed in one go, and therefore how long each subtitle segment is. The clamp starts at the default (30, one recogniser window — `DEFAULT_SUBTITLES_CHUNK_SECONDS` in `src/addon/env.ts`) and ends at 900 as a typo guard, so it can never lift the default off its documented value. |
+| `PROXY`                   | `on`      | Relay every stream through this service. `off` only for a source the player can reach directly.                                                                                                                                                                                                             |
+| `PREROLL_SECONDS`         | `10`      | Seconds of the episode that must be ready before playback starts (0–60).                                                                                                                                                                                                                                    |
+| `SPLASH`                  | `on`      | Whether a cold playback shows the processing card (see [The processing card](#the-processing-card)) instead of being held until the first segment is written.                                                                                                                                               |
+| `CACHE_DIR`               | `./cache` | Where package segments are cached.                                                                                                                                                                                                                                                                          |
+| `CACHE_MAX_GB`            | `50`      | How much disk the cache may use before the oldest segment is evicted.                                                                                                                                                                                                                                       |
+| `CUT_WAIT_SECONDS`        | `120`     | How long a play request waits for the first segment of a file being packaged.                                                                                                                                                                                                                               |
+| `CUT_CONCURRENCY`         | `2`       | Concurrent ffmpeg processes.                                                                                                                                                                                                                                                                                |
+| `PRECUT_SOURCES`          | `2`       | When a title's stream list is fetched, start packaging this many of its sources in the background so the first playback lands on a ready playlist. `0` disables it.                                                                                                                                         |
+| `FFMPEG_PATH`             | `ffmpeg`  | Override if ffmpeg is not on PATH.                                                                                                                                                                                                                                                                          |
+| `FFPROBE_PATH`            | `ffprobe` | Override if ffprobe is not on PATH.                                                                                                                                                                                                                                                                         |
+| `ALLOW_PRIVATE_HOSTS`     | _(unset)_ | **Development only.** Allow fetching a source addon on a private/loopback address. Leave unset in production.                                                                                                                                                                                               |
 
 ### The install URL
 
 Per-install settings are carried in the Stremio addon URL itself, as a base64url-encoded JSON object
-(`AddonConfig` in `src/types.ts`): `src` (source URL(s)), `types` (segment kinds), `key` (optional per-config API key), `cuts` (per-install cutting mode), `margin` (per-install margin), `name` (addon name), and `subtitles` (per-install subtitle request). The deployment's environment is the default for everything except `cuts` — whether a file is packaged is the install's own choice, and a link that says nothing gets `DEFAULT_CUT_MODE` (`mkv`, in `src/types.ts`). There is no `CUTS` environment variable; legacy link values (`blocking`, `on`, `off`, …) are still decoded by `parseCutMode` so old installs keep working. **The install URL is effectively a credential** — it can carry an API key — so keep it private.
+(`AddonConfig` in `src/addon/types.ts`): `src` (source URL(s)), `types` (segment kinds), `key` (optional per-config API key), `cuts` (per-install cutting mode), `margin` (per-install margin), `name` (addon name), and `subtitles` (per-install subtitle request). The deployment's environment is the default for everything except `cuts` — whether a file is packaged is the install's own choice, and a link that says nothing gets `DEFAULT_CUT_MODE` (`mkv`, in `src/addon/types.ts`). There is no `CUTS` environment variable; legacy link values (`blocking`, `on`, `off`, …) are still decoded by `parseCutMode` so old installs keep working. **The install URL is effectively a credential** — it can carry an API key — so keep it private.
 
 ## Subtitles
 
@@ -154,13 +154,32 @@ it was made from is deleted as it goes, so a day costs a few megabytes. Tracks a
 
 ```bash
 npm ci
+npm run build:css   # Tailwind -> src/web/styles.generated.ts (the scripts below run it too)
+npm run lint        # biome check .
+npm run format      # biome format --write .
 npm run typecheck   # tsc --noEmit
 npm test            # node --import tsx --test test/*.test.ts
-npm run build       # tsc -p tsconfig.build.json
-npm run check       # typecheck + test together
+npm run build       # build:css + tsc -p tsconfig.build.json
+npm run check       # lint + typecheck + test together
 ```
 
-`npm run dev` runs the server in watch mode (`tsx watch src/server.ts`).
+`npm run dev` runs the server in watch mode (`tsx watch src/server.ts`). It compiles the stylesheet
+once at startup; after changing a utility class in `src/web/*-html.ts`, run `npm run build:css` (or
+restart `dev`) so the page picks it up.
+
+### Styles and lint
+
+The pages are marked up with Tailwind utilities. `src/web/app.css` is the entry: it imports
+Tailwind, points the scanner at `src/web/*.ts` and defines the theme (`bg`, `panel`, `line`, `fg`,
+`muted`, `accent`, `warn`, `danger`). `scripts/build-styles.ts` compiles it into
+`src/web/styles.generated.ts`, which the page modules inline. The generated file is gitignored:
+`typecheck`, `test`, `build` and `dev` all regenerate it first, so a fresh checkout never needs a
+separate step.
+
+Biome (`biome.json`) is the formatter and linter; `npm run lint` checks, `npm run lint:fix` applies
+safe fixes, and CI runs `biome ci .`. `style/noNonNullAssertion` is off on purpose: the codebase
+uses `!` after explicit bounds checks, and the rule's fix would trade those for runtime guards that
+cannot fail.
 
 ### Tests
 
@@ -169,26 +188,53 @@ no test runner config to maintain — just add `test/<name>.test.ts` and it is p
 
 ### Source layout
 
-All source is in `src/`. One file per concern:
+All source is in `src/`, grouped by concern. One file per concern:
 
-- `server.ts` — the HTTP server and route wiring.
-- `index.ts` — entry point.
-- `env.ts` — loads and validates environment variables (`loadSettings`).
-- `types.ts` — shared types (`CutMode`, `SegmentType`, `AddonConfig`, `SkipWindow`, `IntroDbMediaResponse`, …) and the parsers (`parseCutMode`, `parseMarginSeconds`).
-- `config.ts` — the install URL (decode/encode the `AddonConfig`).
-- `page.ts` — the configuration page (the HTML form that builds the install link).
-- `upstream.ts` — asks the source addon for streams; tries configured URLs in order.
-- `streaminfo.ts` — extracts `imdb_id`/`season`/`episode` from a stream.
-- `introdb.ts` — talks to TheIntroDB's API to fetch timings.
-- `hls.ts` — splices HLS playlists.
-- `files.ts` / `ffmpeg.ts` — remux progressive files with ffmpeg.
-- `packages.ts` — packages and caches cut output.
-- `cache.ts` — the segment cache and eviction.
-- `play.ts` — playback orchestration (processing card, preroll).
-- `splash.ts` — the placeholder stream served before the cut is ready.
-- `subtitles.ts` / `transcribe.ts` — subtitle generation and transcription.
-- `cues.ts` / `stretches.ts` / `format.ts` / `constants.ts` — segment-window and formatting helpers.
-- `http.ts` / `urls.ts` / `manifest.ts` / `diagnostics.ts` — HTTP plumbing, URL building, manifest, health.
+```
+src/
+  server.ts        the HTTP server and route wiring (Node entry point)
+  index.ts         the request router (entry point)
+  addon/           Stremio protocol, install configuration and shared plumbing
+    config.ts      the install URL (decode/encode the AddonConfig)
+    constants.ts   fixed endpoints and limits
+    env.ts         loads and validates environment variables (loadSettings)
+    http.ts        response helpers and CORS
+    manifest.ts    the addon manifest
+    types.ts       shared types (CutMode, SegmentType, AddonConfig, SkipWindow, …) and parsers
+    urls.ts        URL shapes handed back to the client
+    cache.ts       the in-process cache for lookups and playlist verdicts
+  streams/         source streams, cutting and playback
+    upstream.ts    asks the source addon for streams; tries configured URLs in order
+    streaminfo.ts  extracts imdb_id/season/episode from a stream, and probes its codecs
+    hls.ts         splices HLS playlists
+    play.ts        playback orchestration (processing card, preroll)
+    splash.ts      the placeholder stream served before the cut is ready
+    files.ts       serves a cut file with byte ranges
+    ffmpeg.ts      shared ffmpeg plumbing (run, copy decisions, disk checks)
+    packages.ts    packages and caches cut output
+    known.ts       remembers what a release turned out to be between playbacks
+    format.ts      time formatting for stream labels and debug headers
+  subtitles/       generated subtitle tracks
+    subtitles.ts   subtitle generation and the rendition playlist
+    transcribe.ts  the speech models, behind one small interface
+    transcribe-worker.ts  the models in a child process
+    cues.ts        recognised words into cues, on the cut video's clock
+    stretches.ts   what has to be transcribed, and where each piece lands
+  theintrodb/
+    theintrodb.ts  talks to TheIntroDB's API to fetch timings
+  web/             the pages served to a browser
+    app.css               the Tailwind entry and theme (compiled, not served directly)
+    styles.generated.ts   generated by scripts/build-styles.ts; gitignored
+    config-page.ts        the configuration page's view model and render entry
+    config-page-html.ts   its markup and browser-side form
+    debug-page.ts         the /debug page's tables and JSON
+    debug-page-html.ts    its markup and drain script
+    not-found-page.ts     the 404 page
+    escape-html.ts        HTML escaping shared by the pages
+  ops/             runtime observability and control
+    diagnostics.ts the last failure, for the log and /health
+    drain.ts       what /drain deletes
+```
 
 ### Verify a package
 
@@ -210,4 +256,5 @@ curl -s http://localhost:8787/health
   `// Copyright (C) <year> TheIntroDB`. The license is `GPL-3.0-or-later`, and the "or later" grant is
   deliberate.
 - Commit messages use Conventional Commits (`feat:`, `fix:`, `docs:`, `refactor:`, …).
+- Run `npx biome check --write .` before committing; do not commit `src/web/styles.generated.ts`.
 - The README stays short and human-facing. When a detail grows, put it here in AGENTS.md.

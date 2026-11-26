@@ -14,7 +14,7 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { Readable } from "node:stream";
 
-import { CORS_HEADERS } from "./http.js";
+import { CORS_HEADERS } from "../addon/http.js";
 
 export function contentTypeFor(container: string | undefined): string {
   switch (container) {
@@ -24,7 +24,6 @@ export function contentTypeFor(container: string | undefined): string {
       return "video/mp2t";
     case "m4s":
       return "video/iso.segment";
-    case "mkv":
     default:
       return "video/x-matroska";
   }

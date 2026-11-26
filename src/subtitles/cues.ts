@@ -115,7 +115,8 @@ export function shiftCues(cues: readonly Cue[], chunk: Chunk): Cue[] {
   const out: Cue[] = [];
   for (const cue of cues) {
     // Clamp to the audio that was transcribed, then move the whole chunk onto the presentation.
-    const start = chunk.editedStartSeconds + Math.min(Math.max(0, cue.start), chunk.durationSeconds);
+    const start =
+      chunk.editedStartSeconds + Math.min(Math.max(0, cue.start), chunk.durationSeconds);
     const end =
       chunk.editedStartSeconds +
       Math.min(Math.max(0, Math.max(cue.end, cue.start)), chunk.durationSeconds);
@@ -132,8 +133,10 @@ export function vttClock(seconds: number): string {
   const minutes = Math.floor((total % 3_600_000) / 60_000);
   const secs = Math.floor((total % 60_000) / 1000);
   const millis = total % 1000;
-  return [hours, minutes, secs].map((part) => String(part).padStart(2, "0")).join(":") +
-    `.${String(millis).padStart(3, "0")}`;
+  return (
+    [hours, minutes, secs].map((part) => String(part).padStart(2, "0")).join(":") +
+    `.${String(millis).padStart(3, "0")}`
+  );
 }
 
 /** A WebVTT file. `header` is written as a NOTE, which players ignore. */

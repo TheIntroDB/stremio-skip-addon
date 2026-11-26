@@ -20,16 +20,15 @@
  *   instead of starting a 45-minute episode again.
  */
 
-import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-
-import { buildCues, shiftCues, toVtt, type Cue } from "./cues.js";
-import type { Settings } from "./env.js";
-import { run } from "./ffmpeg.js";
-import { CORS_HEADERS } from "./http.js";
-import { planStretches, type ChunkJob, type StretchJob } from "./stretches.js";
+import type { Settings } from "../addon/env.js";
+import { CORS_HEADERS } from "../addon/http.js";
+import type { SkipWindow } from "../addon/types.js";
+import { run } from "../streams/ffmpeg.js";
+import { buildCues, type Cue, toVtt } from "./cues.js";
+import { type ChunkJob, planStretches, type StretchJob } from "./stretches.js";
 import type { SpeechModels } from "./transcribe.js";
-import type { SkipWindow } from "./types.js";
 
 /** What a title needs transcribed, in the terms the packager already knows it. */
 export interface TrackPlan {
@@ -178,7 +177,12 @@ export class SubtitleEngine {
       key,
       target,
       plan,
-      stretches: planStretches(plan.durationMs, plan.windows, plan.cardMs, this.settings.subtitlesChunkSeconds),
+      stretches: planStretches(
+        plan.durationMs,
+        plan.windows,
+        plan.cardMs,
+        this.settings.subtitlesChunkSeconds,
+      ),
       chunks: 0,
       done: 0,
       cues: 0,
@@ -376,7 +380,7 @@ export class SubtitleEngine {
       const job = this.jobs.get(key);
       if (job) {
         if (!job.ready || job.lastAt > cutoff) continue;
-          this.jobs.delete(key);
+        this.jobs.delete(key);
       }
       const dir = path.join(root, name);
       try {
@@ -497,12 +501,19 @@ export class SubtitleEngine {
       const result = await run(
         this.settings.ffmpegPath,
         [
-          "-nostdin", "-hide_banner", "-v", "error", "-y",
-          "-i", job.target,
+          "-nostdin",
+          "-hide_banner",
+          "-v",
+          "error",
+          "-y",
+          "-i",
+          job.target,
           // The stream index rather than "the first subtitle": a release whose first track is a
           // forced one would otherwise give a track with almost nothing in it.
-          "-map", `0:${text.index}`,
-          "-f", "webvtt",
+          "-map",
+          `0:${text.index}`,
+          "-f",
+          "webvtt",
           file,
         ],
         900_000,
@@ -576,20 +587,34 @@ export class SubtitleEngine {
         const extracted = await run(
           this.settings.ffmpegPath,
           [
-            "-nostdin", "-hide_banner", "-v", "error", "-y",
+            "-nostdin",
+            "-hide_banner",
+            "-v",
+            "error",
+            "-y",
             // A fast seek before the input reads only from the nearest keyframe onward, so the
             // deleted stretches are skipped rather than downloaded and discarded.
-            "-ss", (chunk.sourceStartMs / 1000).toFixed(3),
-            "-t", seconds.toFixed(3),
-            "-i", job.target,
+            "-ss",
+            (chunk.sourceStartMs / 1000).toFixed(3),
+            "-t",
+            seconds.toFixed(3),
+            "-i",
+            job.target,
             ...mapping,
-            "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-c:a",
+            "pcm_s16le",
             wav,
           ],
           300_000,
           this.controller.signal,
         );
-        if (extracted.code !== 0) throw new Error(extracted.stderr.trim().slice(-200) || `ffmpeg exited ${extracted.code}`);
+        if (extracted.code !== 0)
+          throw new Error(extracted.stderr.trim().slice(-200) || `ffmpeg exited ${extracted.code}`);
         const transcript = await this.transcriber.transcribe(wav, language);
         if (transcript.realtimeFactor > 0) job.realtimeFactor = transcript.realtimeFactor;
         const words = this.transcriber.refine
@@ -602,7 +627,9 @@ export class SubtitleEngine {
         if (attempt === 0) continue; // the source may have been mid-rotation, or briefly unavailable
         // Say which side failed: the audio could not be fetched (the source, a range request, a
         // rotated link), or the model could not read what was fetched (its weights, permissions).
-        const audio = await stat(wav).then((info) => info.size).catch(() => 0);
+        const audio = await stat(wav)
+          .then((info) => info.size)
+          .catch(() => 0);
         job.error = `chunk at ${(chunk.sourceStartMs / 1000).toFixed(0)}s: ${describe(error)} (${audio} bytes of audio)`;
         job.lastError = job.error;
         console.warn(`  warning        subtitles: ${describe(error)}`);
@@ -694,7 +721,8 @@ export class SubtitleEngine {
   /** A chunk of the track, as a player fetches it. */
   async chunkFile(key: string, index: string): Promise<string | null> {
     const job = this.jobs.get(key);
-    const name = index === "card" ? "chunk-card" : /^\d+$/.test(index) ? this.chunkName(Number(index)) : "";
+    const name =
+      index === "card" ? "chunk-card" : /^\d+$/.test(index) ? this.chunkName(Number(index)) : "";
     if (name === "" || (!job && index !== "card")) return null;
     const file = path.join(this.dirFor(key), `${name}.vtt`);
     return (await this.written(file)) ? file : null;
@@ -727,7 +755,10 @@ export interface TrackRequest {
  * Never cached: it is read again and again while a track is being made, and a cached answer is a
  * player that never sees the chunks that arrived after it first asked.
  */
-export async function handleSubtitlePlaylist(context: TrackRequest, cardMs: number): Promise<Response> {
+export async function handleSubtitlePlaylist(
+  context: TrackRequest,
+  cardMs: number,
+): Promise<Response> {
   const url = new URL(context.request.url);
   const key = url.searchParams.get("f") ?? "";
   const playlist = context.subtitles ? await context.subtitles.playlist(key, cardMs) : null;
@@ -821,7 +852,7 @@ export function parseVtt(text: string): Cue[] {
     if (arrow === -1) continue;
     const [left, right] = lines[arrow]!.split("-->");
     const start = clock((left ?? "").trim());
-    const end = clock(((right ?? "").trim().split(/\s+/)[0] ?? ""));
+    const end = clock((right ?? "").trim().split(/\s+/)[0] ?? "");
     if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
     const body = lines
       .slice(arrow + 1)

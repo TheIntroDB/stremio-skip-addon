@@ -16,11 +16,11 @@
  */
 
 import {
+  type AddonConfig,
   DEFAULT_SEGMENT_TYPES,
-  SEGMENT_TYPES,
   parseCutMode,
   parseMarginSeconds,
-  type AddonConfig,
+  SEGMENT_TYPES,
   type SegmentType,
 } from "./types.js";
 
@@ -164,7 +164,10 @@ function normalizeTypes(value: unknown): SegmentType[] {
 }
 
 function sanitizeName(name: string): string {
-  return name.replace(/[<>&"]/g, "").slice(0, MAX_NAME_LENGTH).trim();
+  return name
+    .replace(/[<>&"]/g, "")
+    .slice(0, MAX_NAME_LENGTH)
+    .trim();
 }
 
 function toBase64Url(text: string): string {

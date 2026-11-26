@@ -12,14 +12,13 @@
 
 import { createServer, type IncomingMessage } from "node:http";
 import { Readable } from "node:stream";
-
-import { PackageEngine } from "./packages.js";
-import { recordFailure } from "./diagnostics.js";
-import { SubtitleEngine } from "./subtitles.js";
-import { ProcessTranscriber } from "./transcribe.js";
-import { loadSettings, type Settings } from "./env.js";
+import { loadSettings, type Settings } from "./addon/env.js";
+import { ADDON_VERSION } from "./addon/manifest.js";
 import { handleRequest } from "./index.js";
-import { ADDON_VERSION } from "./manifest.js";
+import { recordFailure } from "./ops/diagnostics.js";
+import { PackageEngine } from "./streams/packages.js";
+import { SubtitleEngine } from "./subtitles/subtitles.js";
+import { ProcessTranscriber } from "./subtitles/transcribe.js";
 
 export function requestUrl(request: IncomingMessage): string {
   const host = request.headers["x-forwarded-host"] ?? request.headers.host ?? "localhost";
@@ -86,7 +85,11 @@ export async function main(): Promise<void> {
   const packages = new PackageEngine(settings);
   // One transcriber and one engine for the process: the speech models are loaded once and kept,
   // and the tracks they produce outlive any single request.
-  const subtitles = new SubtitleEngine(settings, new ProcessTranscriber(settings), () => packages.lastActivity);
+  const subtitles = new SubtitleEngine(
+    settings,
+    new ProcessTranscriber(),
+    () => packages.lastActivity,
+  );
   const packageStatus = await packages.start();
   // A TTL is only real if something sweeps: expired tracks at boot, and then hourly while the
   // process lives. Unref'd, so it never keeps the process up on its own.

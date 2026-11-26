@@ -11,7 +11,7 @@ import {
   rewriteMasterPlaylist,
   spliceMediaPlaylist,
   type UriRewriters,
-} from "../src/hls.js";
+} from "../src/streams/hls.js";
 
 const identity: UriRewriters = {
   playlistUri: (uri) => uri,
@@ -75,7 +75,11 @@ test("a window drops every segment it overlaps, and marks the jump", () => {
   const parsed = parseMediaPlaylist(playlist(10))!;
   const windows = [{ type: "intro" as const, startMs: 22800, endMs: 25000 }];
 
-  const result = spliceMediaPlaylist(playlist(10, 6), { baseUrl: base, windows, rewriters: identity })!;
+  const result = spliceMediaPlaylist(playlist(10, 6), {
+    baseUrl: base,
+    windows,
+    rewriters: identity,
+  })!;
 
   // Segments 3 (18-24s) and 4 (24-30s) overlap [22.8, 25.0).
   assert.equal(result.droppedSegments, 2);
@@ -188,7 +192,7 @@ test("an init segment carried by a dropped segment is re-emitted after the jump"
     "#EXTM3U",
     "#EXTINF:6.000,",
     "seg0.ts",
-    "#EXT-X-MAP:URI=\"init2.mp4\"",
+    '#EXT-X-MAP:URI="init2.mp4"',
     "#EXTINF:6.000,",
     "seg1.ts",
     "#EXTINF:6.000,",
@@ -233,7 +237,7 @@ test("byte ranges keep pointing at the same bytes when a segment is dropped", ()
     "#EXTM3U",
     "#EXT-X-VERSION:7",
     "#EXT-X-TARGETDURATION:4",
-    "#EXT-X-MAP:URI=\"init.mp4\"",
+    '#EXT-X-MAP:URI="init.mp4"',
     "#EXTINF:4.000,",
     "#EXT-X-BYTERANGE:1000@0",
     "file.mp4",
@@ -269,7 +273,7 @@ test("URI attributes of keys and maps are resolved against the playlist URL", ()
   const source = [
     "#EXTM3U",
     '#EXT-X-KEY:METHOD=AES-128,URI="key.bin",IV=0x1',
-    "#EXT-X-MAP:URI=\"init.mp4\"",
+    '#EXT-X-MAP:URI="init.mp4"',
     "#EXTINF:6.000,",
     "seg0.ts",
     "",
@@ -289,7 +293,7 @@ test("a master playlist sends its variants and renditions back through the addon
     "#EXTM3U",
     "#EXT-X-VERSION:6",
     '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="aud",NAME="English",URI="audio/eng.m3u8"',
-    "#EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720,AUDIO=\"aud\"",
+    '#EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720,AUDIO="aud"',
     "720p/video.m3u8",
     '#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=100000,URI="720p/iframe.m3u8"',
     '#EXT-X-SESSION-KEY:METHOD=AES-128,URI="key.bin"',
@@ -312,9 +316,15 @@ test("a master playlist sends its variants and renditions back through the addon
       `URI="https://worker.example/play?u=${encodeURIComponent("https://cdn.example/show/720p/iframe.m3u8")}"`,
     ),
   );
-  assert.ok(result.includes(`https://worker.example/play?u=${encodeURIComponent("https://cdn.example/show/720p/video.m3u8")}`));
+  assert.ok(
+    result.includes(
+      `https://worker.example/play?u=${encodeURIComponent("https://cdn.example/show/720p/video.m3u8")}`,
+    ),
+  );
   // A session key is a media resource, not a playlist: absolutised, not routed.
-  assert.ok(result.includes('#EXT-X-SESSION-KEY:METHOD=AES-128,URI="https://cdn.example/show/key.bin"'));
+  assert.ok(
+    result.includes('#EXT-X-SESSION-KEY:METHOD=AES-128,URI="https://cdn.example/show/key.bin"'),
+  );
 });
 
 test("absolute URIs are left alone", () => {

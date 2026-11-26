@@ -24,17 +24,17 @@
  *   runs into the intro is one cut rather than two.
  */
 
-import { getHttpCache, type HttpCache } from "./cache.js";
-import { parseStremioId } from "./config.js";
-import { INTRODB_API_BASE, INTRODB_API_VERSION } from "./constants.js";
-import { ADDON_VERSION, REPO_URL } from "./manifest.js";
+import { getHttpCache, type HttpCache } from "../addon/cache.js";
+import { parseStremioId } from "../addon/config.js";
+import { INTRODB_API_VERSION } from "../addon/constants.js";
+import { ADDON_VERSION, REPO_URL } from "../addon/manifest.js";
 import type {
   Env,
   IntroDbMediaResponse,
   IntroDbSegment,
   SegmentType,
   SkipWindow,
-} from "./types.js";
+} from "../addon/types.js";
 
 /** Read-path cache lifetimes. Community timings move on the order of days. */
 const TTL_FOUND_SECONDS = 6 * 60 * 60;
@@ -247,10 +247,7 @@ function normalizeBound(value: unknown): number | null {
  *
  * The install's own choice wins over the deployment's, and both default to a few seconds.
  */
-function marginOf(
-  env: { skipMarginSeconds?: number },
-  config: { margin?: number },
-): number {
+function marginOf(env: { skipMarginSeconds?: number }, config: { margin?: number }): number {
   const chosen = typeof config.margin === "number" ? config.margin : env.skipMarginSeconds;
   if (typeof chosen !== "number" || !Number.isFinite(chosen)) return 0;
   return Math.max(0, chosen);
@@ -305,7 +302,7 @@ export function buildApiUrl(parsed: {
   season: number | null;
   episode: number | null;
 }): string {
-  const url = new URL(`${INTRODB_API_BASE}/${INTRODB_API_VERSION}/media`);
+  const url = new URL(`https://api.theintrodb.org/${INTRODB_API_VERSION}/media`);
   url.searchParams.set("imdb_id", parsed.imdbId);
   if (parsed.season !== null && parsed.episode !== null) {
     url.searchParams.set("season", String(parsed.season));

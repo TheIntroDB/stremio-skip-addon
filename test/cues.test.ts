@@ -6,15 +6,15 @@
  *
  * These are the parts that decide whether a generated track lines up with the cut video, so they
  * are tested on their own: a recogniser is unreliable in ways this code has to absorb (see
- * `src/cues.ts`), and the shift onto the presentation's clock is where a subtitle that looks
+ * `src/subtitles/cues.ts`), and the shift onto the presentation's clock is where a subtitle that looks
  * "misaligned" would actually come from.
  */
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { buildCues, shiftCues, toVtt, vttClock } from "../src/cues.js";
-import { planStretches, presentationMs, type ChunkJob } from "../src/stretches.js";
+import { buildCues, shiftCues, toVtt, vttClock } from "../src/subtitles/cues.js";
+import { type ChunkJob, planStretches, presentationMs } from "../src/subtitles/stretches.js";
 
 test("a word the recogniser placed before its audio is pulled to zero", () => {
   // Align genuinely nudges the first word of a chunk a few milliseconds before the first sample
@@ -52,9 +52,15 @@ test("a word with no usable span is repaired, not returned as an invalid cue", (
     { text: "again", start: Number.NaN, end: 20 },
   ]);
   for (const cue of cues) assert.ok(cue.end > cue.start, `${JSON.stringify(cue.text)} has a span`);
-  assert.ok(cues.some((cue) => cue.text === "there"), "the span-less word is still shown");
+  assert.ok(
+    cues.some((cue) => cue.text === "there"),
+    "the span-less word is still shown",
+  );
   assert.ok(!cues.some((cue) => cue.text.includes("…")), "punctuation alone is not a line");
-  assert.ok(!cues.some((cue) => cue.text.includes("again")), "and a word with no time at all cannot be placed");
+  assert.ok(
+    !cues.some((cue) => cue.text.includes("again")),
+    "and a word with no time at all cannot be placed",
+  );
 });
 
 test("a cue reaches the minimum, but never into the next one", () => {
@@ -120,7 +126,10 @@ test("the file it writes is WebVTT a player will parse", () => {
     assert.ok(start! < end!, `${start} is before ${end}`);
     assert.match(start!, /^\d{2}:\d{2}:\d{2}\.\d{3}$/, "and is a WebVTT timestamp, hours included");
   }
-  assert.ok(vtt.includes("01:02:05.500 --> 01:02:06.250"), "an hour-long video still reads correctly");
+  assert.ok(
+    vtt.includes("01:02:05.500 --> 01:02:06.250"),
+    "an hour-long video still reads correctly",
+  );
 });
 
 test("the clock never goes backwards past zero", () => {
@@ -152,13 +161,20 @@ test("the plan is the source less the windows, each piece where a player will se
     ],
     "and its own chunks follow each other",
   );
-  assert.equal(presentationMs(1_000_000, windows, 10_000), 950_000, "1000 - 60 seconds of window, + 10 of card");
+  assert.equal(
+    presentationMs(1_000_000, windows, 10_000),
+    950_000,
+    "1000 - 60 seconds of window, + 10 of card",
+  );
 });
 
 test("a source of unknown length is not planned at all", () => {
   // Without the source's length the last window is open-ended, so every offset after it would be
   // a guess -- and a guessed offset is a misaligned subtitle.
-  assert.deepEqual(planStretches(null, [{ type: "intro", startMs: 1_000, endMs: 2_000 }], 10_000), []);
+  assert.deepEqual(
+    planStretches(null, [{ type: "intro", startMs: 1_000, endMs: 2_000 }], 10_000),
+    [],
+  );
   assert.deepEqual(planStretches(0, [], 10_000), []);
   assert.equal(presentationMs(null, [], 10_000), null);
 });

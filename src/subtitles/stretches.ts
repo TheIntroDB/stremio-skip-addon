@@ -10,8 +10,8 @@
  * and it is computed here rather than while transcribing so it can be tested without a model.
  */
 
-import { keptRanges } from "./ffmpeg.js";
-import type { SkipWindow } from "./types.js";
+import type { SkipWindow } from "../addon/types.js";
+import { keptRanges } from "../streams/ffmpeg.js";
 
 /** How much audio is transcribed in one go. */
 export const CHUNK_SECONDS = 300;
@@ -74,7 +74,11 @@ export function planStretches(
 }
 
 /** The presentation's length: the card, then every kept stretch. */
-export function presentationMs(durationMs: number | null, windows: readonly SkipWindow[], cardMs: number): number | null {
+export function presentationMs(
+  durationMs: number | null,
+  windows: readonly SkipWindow[],
+  cardMs: number,
+): number | null {
   const stretches = planStretches(durationMs, windows, cardMs);
   if (stretches.length === 0) return null;
   const last = stretches[stretches.length - 1]!;

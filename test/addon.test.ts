@@ -10,23 +10,22 @@
 
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import path from "node:path";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { after, before, beforeEach, test } from "node:test";
 
-import { resetMemoryCache } from "../src/cache.js";
-import { encodeConfig } from "../src/config.js";
-import { INTRODB_API_BASE } from "../src/constants.js";
-import { PackageEngine } from "../src/packages.js";
-import { SubtitleEngine } from "../src/subtitles.js";
-import type { Transcriber } from "../src/transcribe.js";
-import type { Settings } from "../src/env.js";
+import { resetMemoryCache } from "../src/addon/cache.js";
+import { encodeConfig } from "../src/addon/config.js";
+import type { Settings } from "../src/addon/env.js";
+import type { SegmentType } from "../src/addon/types.js";
 import { handleRequest } from "../src/index.js";
-import { knownCodecs } from "../src/known.js";
-import { streamIdentity } from "../src/upstream.js";
-import type { SegmentType } from "../src/types.js";
+import { knownCodecs } from "../src/streams/known.js";
+import { PackageEngine } from "../src/streams/packages.js";
+import { streamIdentity } from "../src/streams/upstream.js";
+import { SubtitleEngine } from "../src/subtitles/subtitles.js";
+import type { Transcriber } from "../src/subtitles/transcribe.js";
 
 let server: Server;
 let base = "";
@@ -125,7 +124,10 @@ function send(
   body: string,
   contentType: string,
 ): void {
-  response.writeHead(status, { "content-type": contentType, "content-length": Buffer.byteLength(body) });
+  response.writeHead(status, {
+    "content-type": contentType,
+    "content-length": Buffer.byteLength(body),
+  });
   response.end(body);
 }
 
@@ -149,11 +151,20 @@ before(async () => {
         return send(
           response,
           404,
-          JSON.stringify({ error: "media not found for provided imdb_id", code: "media_not_found" }),
+          JSON.stringify({
+            error: "media not found for provided imdb_id",
+            code: "media_not_found",
+          }),
           "application/json",
         );
       }
-      if (id === "tt0000002") return send(response, 429, JSON.stringify({ code: "rate_limit_exceeded" }), "application/json");
+      if (id === "tt0000002")
+        return send(
+          response,
+          429,
+          JSON.stringify({ code: "rate_limit_exceeded" }),
+          "application/json",
+        );
       if (id === "tt0000003") {
         // What a proxy in front of the API does to an address it has blocked.
         return send(response, 403, "<html>Sorry, you have been blocked</html>", "text/html");
@@ -184,7 +195,12 @@ before(async () => {
     // A source that only routes the percent-encoded episode id, like Stremio sends.
     if (path.startsWith("/upstream-encoded/stream/")) {
       if (path.includes("%3A")) return send(response, 200, streamsBody(), "application/json");
-      return send(response, 400, JSON.stringify({ error: "id must be encoded" }), "application/json");
+      return send(
+        response,
+        400,
+        JSON.stringify({ error: "id must be encoded" }),
+        "application/json",
+      );
     }
 
     if (path === "/hls/master.m3u8") {
@@ -192,33 +208,66 @@ before(async () => {
     }
     if (path === "/hls/720p/video.m3u8" || path === "/hls/media.m3u8" || path === "/hls/odd") {
       // `/hls/odd` is served with a content type that does not say "playlist".
-      const contentType = path === "/hls/odd" ? "application/octet-stream" : "application/vnd.apple.mpegurl";
+      const contentType =
+        path === "/hls/odd" ? "application/octet-stream" : "application/vnd.apple.mpegurl";
       return send(response, 200, mediaPlaylistBody(LONG_PLAYLIST_SEGMENTS), contentType);
     }
     if (path === "/hls/media-short.m3u8" || path === "/hls/audio/eng.m3u8") {
-      return send(response, 200, mediaPlaylistBody(SHORT_PLAYLIST_SEGMENTS), "application/vnd.apple.mpegurl");
+      return send(
+        response,
+        200,
+        mediaPlaylistBody(SHORT_PLAYLIST_SEGMENTS),
+        "application/vnd.apple.mpegurl",
+      );
     }
     if (path === "/hls/key.bin" || path === "/hls/init.mp4") {
       return send(response, 200, "BINARY", "application/octet-stream");
     }
     if (path === "/hls/movie.mp4" || path === "/blob") {
-      return send(response, 200, "NOT-A-PLAYLIST-AT-ALL".padEnd(64, "."), "application/octet-stream");
+      return send(
+        response,
+        200,
+        "NOT-A-PLAYLIST-AT-ALL".padEnd(64, "."),
+        "application/octet-stream",
+      );
     }
     if (path === "/rotating/manifest.json") {
-      return send(response, 200, JSON.stringify({
-        id: "org.rotating", version: "1.0.0", name: "Rotating", resources: ["stream"],
-        types: ["series"], idPrefixes: ["tt"],
-      }), "application/json");
+      return send(
+        response,
+        200,
+        JSON.stringify({
+          id: "org.rotating",
+          version: "1.0.0",
+          name: "Rotating",
+          resources: ["stream"],
+          types: ["series"],
+          idPrefixes: ["tt"],
+        }),
+        "application/json",
+      );
     }
     if (path.startsWith("/rotating/stream/")) {
       // A fresh token in the path on every request, exactly like a debrid source.
       rotatingTokens += 1;
-      return send(response, 200, JSON.stringify({
-        streams: [
-          { name: "Comet 2160p", title: "Some.Release.2160p.WEB", url: `/playback/token-${rotatingTokens}` },
-          { name: "Comet 1080p", title: "Some.Release.1080p.WEB", url: `/playback/token-${rotatingTokens}-b` },
-        ],
-      }), "application/json");
+      return send(
+        response,
+        200,
+        JSON.stringify({
+          streams: [
+            {
+              name: "Comet 2160p",
+              title: "Some.Release.2160p.WEB",
+              url: `/playback/token-${rotatingTokens}`,
+            },
+            {
+              name: "Comet 1080p",
+              title: "Some.Release.1080p.WEB",
+              url: `/playback/token-${rotatingTokens}-b`,
+            },
+          ],
+        }),
+        "application/json",
+      );
     }
     if (path === "/echo") {
       // Answers with what it was asked for, so a forwarded range header is visible.
@@ -235,7 +284,7 @@ before(async () => {
   const address = server.address() as AddressInfo;
   base = `http://127.0.0.1:${address.port}`;
 
-  // The API host is a constant in src/constants.ts, not a binding, so the only way
+  // The API host is a constant in src/addon/constants.ts, not a binding, so the only way
   // to answer it deterministically is to stand in front of the network: requests to
   // the real API base are redirected to the stub, everything else is untouched.
   const realFetch = globalThis.fetch;
@@ -243,8 +292,8 @@ before(async () => {
   globalThis.fetch = ((input: FetchInput, init?: RequestInit) => {
     const url =
       typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-    if (url.startsWith(INTRODB_API_BASE)) {
-      return realFetch(url.replace(INTRODB_API_BASE, `${base}/api`), init);
+    if (url.startsWith("https://api.theintrodb.org")) {
+      return realFetch(url.replace("https://api.theintrodb.org", `${base}/api`), init);
     }
     return realFetch(input, init);
   }) as typeof fetch;
@@ -297,14 +346,14 @@ function testSettings(overrides: Partial<Settings> = {}): Settings {
     // runs real ffmpeg (test/packages.test.ts).
     // The production default: the sources people use are debrid files, so everything is relayed.
     proxy: relaying,
-subtitles: false,
-subtitlesGenerate: true,
-subtitlesLanguage: "en",
-subtitlesChunkSeconds: 300,
-subtitlesTtlHours: 24,
-subtitlesIdleSeconds: 120,
-subtitlesAudioLanguage: "en",
-drainSecret: "",
+    subtitles: false,
+    subtitlesGenerate: true,
+    subtitlesLanguage: "en",
+    subtitlesChunkSeconds: 300,
+    subtitlesTtlHours: 24,
+    subtitlesIdleSeconds: 120,
+    subtitlesAudioLanguage: "en",
+    drainSecret: "",
     skipMarginSeconds: 0,
     splash: false,
     prerollSeconds: 10,
@@ -362,7 +411,11 @@ test("the Worker serves a config page, a health check and a bare manifest", asyn
   assert.equal(healthBody.site, "https://theintrodb.org");
   assert.equal(healthBody.apiKeyConfigured, true);
   // No deployment-wide cutting mode: it is the install's choice, and /health does not report one.
-  assert.equal(healthBody.cuts, undefined, "the cutting mode is per install, not a deployment setting");
+  assert.equal(
+    healthBody.cuts,
+    undefined,
+    "the cutting mode is per install, not a deployment setting",
+  );
   assert.ok(healthBody.cutsStatus);
 
   // The page knows whether this deployment has a key, and says so.
@@ -380,7 +433,7 @@ test("the Worker serves a config page, a health check and a bare manifest", asyn
   }
   assert.ok(!body.includes('id="proxy"'), "relaying is a deployment setting, not an install one");
   // The cutting mode is a per-install choice, so the page has to offer it.
-  assert.match(body, /<select id="cuts">/);
+  assert.match(body, /<select id="cuts"[^>]*>/);
   // Two choices, not three: cut files with no playlist as well, or only splice playlists.
   for (const mode of ["mkv", "hls"]) {
     assert.ok(body.includes(`value="${mode}"`), `the page offers the ${mode} mode`);
@@ -388,7 +441,11 @@ test("the Worker serves a config page, a health check and a bare manifest", asyn
   assert.ok(body.includes('"cuts":{"proxy"'), "the page reports the deployment's own settings");
   assert.equal(parsed.cuts.mode, undefined, "and no cutting mode: that belongs to the install");
   assert.ok(body.includes('"skipMarginSeconds":0'), "including its margin");
-  assert.match(body, /<select id="margin"><\/select>/, "the page offers the margin as a dropdown");
+  assert.match(
+    body,
+    /<select id="margin"[^>]*><\/select>/,
+    "the page offers the margin as a dropdown",
+  );
   for (const id of ["cuts-mode", "cuts-cache", "cuts-margin", "cuts-ffmpeg", "api", "origin"]) {
     assert.ok(body.includes(`id="${id}"`), `the page has the #${id} element the script writes to`);
   }
@@ -407,7 +464,11 @@ test("an install URL opens the settings for that install, not a not-found page",
   // settings that produced an install: it has to come back with them in the form.
   const response = await call(`/${amplified}/`);
   assert.equal(response.status, 200);
-  assert.equal(response.headers.get("cache-control"), "no-store", "an install link is not cacheable");
+  assert.equal(
+    response.headers.get("cache-control"),
+    "no-store",
+    "an install link is not cacheable",
+  );
   const body = await response.text();
 
   const blob = /<script id="config-data" type="application\/json">(.*?)<\/script>/s.exec(body)?.[1];
@@ -435,11 +496,15 @@ test("an install URL opens the settings for that install, not a not-found page",
 test("an install link with a character lost explains itself", async () => {
   // Long enough to be an install link (a real one is hundreds of characters), so it
   // gets an explanation rather than a 404 -- and a short path is still a 404.
-  const response = await call("/" + "z".repeat(60) + "/");
+  const response = await call(`/${"z".repeat(60)}/`);
   assert.equal(response.status, 200);
   const body = await response.text();
-  const blob = /<script id="config-data" type="application\/json">(.*?)<\/script>/s.exec(body)?.[1] ?? "";
-  const data = JSON.parse(blob.replace(/\\u003c/g, "<")) as { config: unknown; configError: string | null };
+  const blob =
+    /<script id="config-data" type="application\/json">(.*?)<\/script>/s.exec(body)?.[1] ?? "";
+  const data = JSON.parse(blob.replace(/\\u003c/g, "<")) as {
+    config: unknown;
+    configError: string | null;
+  };
   assert.equal(data.config, null);
   assert.match(String(data.configError), /could not be read/);
   // It still serves the page, so the form below it can build a fresh install.
@@ -587,7 +652,10 @@ test("a stream list is a menu: nothing is cut, probed or packaged for it", async
   const probed: string[] = [];
   const engine = new PackageEngine(testSettings());
   const realSchedule = engine.schedule.bind(engine);
-  engine.schedule = ((url: string, ...rest: Parameters<typeof realSchedule> extends never ? never : unknown[]) => {
+  engine.schedule = ((
+    url: string,
+    ...rest: Parameters<typeof realSchedule> extends never ? never : unknown[]
+  ) => {
     scheduled.push(url);
     return (realSchedule as (...args: unknown[]) => unknown)(url, ...rest);
   }) as typeof engine.schedule;
@@ -597,7 +665,12 @@ test("a stream list is a menu: nothing is cut, probed or packaged for it", async
     return realDuration(key, target);
   }) as typeof engine.rememberDuration;
 
-  const response = await call(`/${amplified}/stream/series/tt0903747:1:1.json`, testSettings(), undefined, engine);
+  const response = await call(
+    `/${amplified}/stream/series/tt0903747:1:1.json`,
+    testSettings(),
+    undefined,
+    engine,
+  );
   assert.equal(response.status, 200, "the list is served");
   const body = (await response.json()) as { streams: unknown[] };
   assert.ok(body.streams.length > 0, "with the sources on it");
@@ -621,8 +694,16 @@ test("a cut is keyed on the stream, not on the source's rotating link", async ()
   const target = (stream: { url: string }) => new URL(stream.url).searchParams.get("u");
   const key = (stream: { url: string }) => new URL(stream.url).searchParams.get("k");
 
-  assert.notEqual(target(first.streams[0]!), target(second.streams[0]!), "the source re-minted the link");
-  assert.equal(key(first.streams[0]!), key(second.streams[0]!), "and the cut identity is unchanged");
+  assert.notEqual(
+    target(first.streams[0]!),
+    target(second.streams[0]!),
+    "the source re-minted the link",
+  );
+  assert.equal(
+    key(first.streams[0]!),
+    key(second.streams[0]!),
+    "and the cut identity is unchanged",
+  );
   assert.ok(key(first.streams[0]!), "the play URL carries the identity");
 
   // Two different releases of the same episode are two different cuts.
@@ -644,7 +725,11 @@ test("the title TheIntroDB has no timings for is passed through untouched", asyn
   const body = (await response.json()) as { streams: Array<Record<string, unknown>> };
   assert.equal(body.streams.length, 4);
   assert.equal(body.streams[0]!.url, `${base}/hls/master.m3u8`);
-  assert.equal(body.streams[1]!.url, "/hls/movie.mp4", "an untouched stream keeps what the source sent");
+  assert.equal(
+    body.streams[1]!.url,
+    "/hls/movie.mp4",
+    "an untouched stream keeps what the source sent",
+  );
   assert.equal(body.streams[0]!.name, "StubSource");
   assert.equal(response.headers.get("x-tidb-lookup"), "media_not_found");
   assert.equal(response.headers.get("x-tidb-windows"), "0");
@@ -666,7 +751,9 @@ test("with proxying on, a title with no timings is still relayed", async () => {
   // Relay is about reachability, not cutting: a source that binds its link to the
   // requesting address stops working completely if the stream is handed over raw, so a
   // lookup that finds nothing (or fails) must cost the cut, not the playback.
-  const relayed = (await (await call(`/${proxyConfig}/stream/series/tt0000001:1:1.json`)).json()) as {
+  const relayed = (await (
+    await call(`/${proxyConfig}/stream/series/tt0000001:1:1.json`)
+  ).json()) as {
     streams: Array<{ url: string; description?: string }>;
   };
   assert.equal(new URL(relayed.streams[0]!.url).origin, "https://worker.example");
@@ -688,13 +775,23 @@ test("a lookup the API refuses is reported on /health", async () => {
   const health = (await (await call("/health")).json()) as {
     lastLookupFailure: { reason: string; at: string } | null;
   };
-  assert.equal(health.lastLookupFailure?.reason, "http_403", "/health says why nothing is being cut");
+  assert.equal(
+    health.lastLookupFailure?.reason,
+    "http_403",
+    "/health says why nothing is being cut",
+  );
   assert.ok(health.lastLookupFailure?.at);
 
   // A title TheIntroDB simply has nothing for is not a failure.
   await call(`/${amplified}/stream/series/tt0000001:1:1.json`);
-  const after = (await (await call("/health")).json()) as { lastLookupFailure: { reason: string } | null };
-  assert.equal(after.lastLookupFailure?.reason, "http_403", "a missing title does not overwrite it");
+  const after = (await (await call("/health")).json()) as {
+    lastLookupFailure: { reason: string } | null;
+  };
+  assert.equal(
+    after.lastLookupFailure?.reason,
+    "http_403",
+    "a missing title does not overwrite it",
+  );
 });
 
 test("a rate-limited lookup is passed through too, never guessed at", async () => {
@@ -747,7 +844,10 @@ test("a media playlist comes back with the intro and the credits gone", async ()
   assert.equal(response.headers.get("x-tidb-cuts"), "intro 3:48-4:06, credits 57:12-end");
   assert.equal(response.headers.get("x-tidb-dropped-segments"), "32");
   assert.equal(response.headers.get("x-tidb-dropped-ms"), "192000");
-  assert.equal(response.headers.get("x-tidb-duration-ms"), String(LONG_PLAYLIST_SEGMENTS * SEGMENT_SECONDS * 1000));
+  assert.equal(
+    response.headers.get("x-tidb-duration-ms"),
+    String(LONG_PLAYLIST_SEGMENTS * SEGMENT_SECONDS * 1000),
+  );
 
   const text = await response.text();
   const kept = segmentNumbers(text);
@@ -763,8 +863,8 @@ test("a media playlist comes back with the intro and the credits gone", async ()
 
   // Header, key and init segment survive, resolved to the origin.
   assert.ok(text.startsWith("#EXTM3U\n"));
-  assert.ok(text.includes('#EXT-X-MAP:URI="' + base + '/hls/init.mp4"'));
-  assert.ok(text.includes('#EXT-X-KEY:METHOD=AES-128,URI="' + base + '/hls/key.bin"'));
+  assert.ok(text.includes(`#EXT-X-MAP:URI="${base}/hls/init.mp4"`));
+  assert.ok(text.includes(`#EXT-X-KEY:METHOD=AES-128,URI="${base}/hls/key.bin"`));
   assert.ok(text.includes("#EXT-X-ENDLIST"));
   assert.ok(text.includes(`#EXTINF:${SEGMENT_SECONDS}.000,`));
   // The segments are addressed directly: no Worker bandwidth is spent on video.
@@ -817,8 +917,16 @@ test("an install can choose its own cutting mode", async () => {
     types: ["intro"] as SegmentType[],
     cuts: "mkv",
   });
-  await call(playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1", always), settings, undefined, waiting);
-  assert.ok(waits.length > 0, "this install's link says cut files, so the play waited for a segment");
+  await call(
+    playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1", always),
+    settings,
+    undefined,
+    waiting,
+  );
+  assert.ok(
+    waits.length > 0,
+    "this install's link says cut files, so the play waited for a segment",
+  );
   assert.equal(waits[0], 5000, "and it waited the deployment's window, not zero");
 
   const never = new PackageEngine(settings);
@@ -833,7 +941,12 @@ test("an install can choose its own cutting mode", async () => {
     types: ["intro"] as SegmentType[],
     cuts: "hls",
   });
-  const response = await call(playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1", off), settings, undefined, never);
+  const response = await call(
+    playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1", off),
+    settings,
+    undefined,
+    never,
+  );
   assert.equal(asked, 0, "an install that turned cutting off does not copy anything");
   assert.equal(response.headers.get("x-tidb-play"), "proxied_file");
 });
@@ -853,7 +966,11 @@ test("a link that says nothing about cutting gets the default: files are cut too
 
   const bare = encodeConfig({ src: [`${base}/upstream`], types: ["intro"] as SegmentType[] });
   await call(playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1", bare), settings, undefined, engine);
-  assert.equal(scheduled.length, 1, "an unset mode means cut, which is what the page's first option is");
+  assert.equal(
+    scheduled.length,
+    1,
+    "an unset mode means cut, which is what the page's first option is",
+  );
 });
 
 test("a proxied file waits for its first segment instead of streaming the original", async () => {
@@ -893,7 +1010,11 @@ test("with proxying on, files are streamed through this service", async () => {
   assert.equal(file.headers.get("x-tidb-play"), "proxied_file");
   assert.equal(file.headers.get("x-tidb-proxy"), "streamed");
   assert.equal(file.headers.get("x-tidb-upstream-status"), "200");
-  assert.equal(file.headers.get("cache-control"), "no-store", "a token-bound stream is not cacheable");
+  assert.equal(
+    file.headers.get("cache-control"),
+    "no-store",
+    "a token-bound stream is not cacheable",
+  );
   assert.match(await file.text(), /^NOT-A-PLAYLIST-AT-ALL/);
 
   // A URL with no extension is what a debrid playback link looks like: still sniffed
@@ -904,15 +1025,23 @@ test("with proxying on, files are streamed through this service", async () => {
 
   // A HEAD probe and a range request are answered here too, so nothing the player
   // does sends it to the source on its own address.
-  const head = await call(playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1", proxyConfig), testSettings(), {
-    method: "HEAD",
-  });
+  const head = await call(
+    playPath(`${base}/hls/movie.mp4`, "tt0903747:1:1", proxyConfig),
+    testSettings(),
+    {
+      method: "HEAD",
+    },
+  );
   assert.equal(head.status, 200);
   assert.equal(await head.text(), "");
 
-  const ranged = await call(playPath(`${base}/echo`, "tt0903747:1:1", proxyConfig), testSettings(), {
-    headers: { range: "bytes=100-200" },
-  });
+  const ranged = await call(
+    playPath(`${base}/echo`, "tt0903747:1:1", proxyConfig),
+    testSettings(),
+    {
+      headers: { range: "bytes=100-200" },
+    },
+  );
   assert.equal(await ranged.text(), "range=bytes=100-200", "the range is relayed to the source");
 
   // The same file without proxying is still handed to the player untouched.
@@ -1109,7 +1238,11 @@ test("a package that is ready is served as a seekable playlist", async () => {
   const body = await response.text();
   assert.ok(body.includes("#EXT-X-PLAYLIST-TYPE:VOD"));
   assert.ok(body.includes("#EXT-X-ENDLIST"), "a finished package is a plain VOD playlist");
-  assert.equal((body.match(/^#EXT-X-DISCONTINUITY$/gm) ?? []).length, 1, "one jump, where the gap is");
+  assert.equal(
+    (body.match(/^#EXT-X-DISCONTINUITY$/gm) ?? []).length,
+    1,
+    "one jump, where the gap is",
+  );
   assert.ok(body.includes("#EXTINF:10.000,"));
   assert.ok(body.includes(`seg?f=${key}/seg00000.ts`), "a relative URI, so it comes back here");
   assert.ok(!body.includes("seg00002.ts"), "a segment past the end of its stretch is not offered");
@@ -1122,7 +1255,12 @@ test("a package that is ready is served as a seekable playlist", async () => {
   assert.equal(await segment.text(), "TS-BYTES");
 
   // A name that is not one of ours is refused rather than read.
-  const traversal = await call(`/${amplified}/seg?f=${key}/../../plan.json`, settings, undefined, engine);
+  const traversal = await call(
+    `/${amplified}/seg?f=${key}/../../plan.json`,
+    settings,
+    undefined,
+    engine,
+  );
   assert.equal(traversal.status, 400);
 });
 
@@ -1195,7 +1333,10 @@ test("a package that is already cut still offers its subtitle track", async () =
     body.includes('#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID="subs"'),
     "the film declares a subtitle rendition, so a player lists it",
   );
-  assert.ok(body.includes(`f=${key}.a1`), "keyed by the package and the audio stream it is made from");
+  assert.ok(
+    body.includes(`f=${key}.a1`),
+    "keyed by the package and the audio stream it is made from",
+  );
   assert.ok(body.includes('SUBTITLES="subs"'), "and the variant points at it");
 });
 
@@ -1215,7 +1356,8 @@ test("the deployment's margin trims every window, and an install can override it
   );
   assert.equal(untrimmed.headers.get("x-tidb-cuts"), "intro 3:48-4:06, credits 57:12-end");
 
-  const dropped = (response: Response): number => Number(response.headers.get("x-tidb-dropped-segments"));
+  const dropped = (response: Response): number =>
+    Number(response.headers.get("x-tidb-dropped-segments"));
   assert.ok(
     dropped(trimmed) < dropped(untrimmed),
     `a margin drops fewer segments (${dropped(trimmed)} < ${dropped(untrimmed)})`,
@@ -1231,7 +1373,11 @@ test("the deployment's margin trims every window, and an install can override it
     playPath(`${base}/hls/media.m3u8`, "tt0903747:1:1", own),
     testSettings({ skipMarginSeconds: 3 }),
   );
-  assert.equal(wider.headers.get("x-tidb-cuts"), "intro 3:56-3:58", "8s off both ends of a 17.8s intro");
+  assert.equal(
+    wider.headers.get("x-tidb-cuts"),
+    "intro 3:56-3:58",
+    "8s off both ends of a 17.8s intro",
+  );
 });
 
 test("the debug page reports what the process is doing, and the drain is gated", async () => {
@@ -1264,10 +1410,15 @@ test("the debug page reports what the process is doing, and the drain is gated",
 test("draining stops the engines and empties the working cache", async () => {
   const settings = testSettings();
   const packages = new PackageEngine(settings);
-  const drained = await call("/drain", settings, {
-    method: "POST",
-    headers: { "x-tidb-drain": "1", "x-tidb-drain-secret": "" },
-  }, packages);
+  const drained = await call(
+    "/drain",
+    settings,
+    {
+      method: "POST",
+      headers: { "x-tidb-drain": "1", "x-tidb-drain-secret": "" },
+    },
+    packages,
+  );
   assert.equal(drained.status, 200);
   const result = (await drained.json()) as {
     stopped: { jobs: number; packages: number };
@@ -1279,10 +1430,15 @@ test("draining stops the engines and empties the working cache", async () => {
   assert.ok(Date.parse(result.at) > 0, "with a timestamp");
 
   // The next play must package from scratch: the engine forgot the key entirely.
-  const again = await call("/drain", settings, {
-    method: "POST",
-    headers: { "x-tidb-drain": "1" },
-  }, packages);
+  const again = await call(
+    "/drain",
+    settings,
+    {
+      method: "POST",
+      headers: { "x-tidb-drain": "1" },
+    },
+    packages,
+  );
   assert.equal(again.status, 200, "and it can be drained twice");
   assert.equal(
     ((await again.json()) as { stopped: { packages: number } }).stopped.packages,

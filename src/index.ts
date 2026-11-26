@@ -24,34 +24,31 @@
  * is the only place a Stremio addon can keep per-user settings.
  */
 
-import { decodeConfig, parseStremioId } from "./config.js";
-import { INTRODB_API_BASE, INTRODB_API_VERSION, INTRODB_SITE } from "./constants.js";
-import type { PackageEngine } from "./packages.js";
-import { describeSettings, type Settings } from "./env.js";
-import { describeCuts } from "./format.js";
-import { corsPreflight, errorResponse, html, json, text } from "./http.js";
-import { lastLookupFailure, lookupSkipWindows } from "./introdb.js";
-import { ADDON_VERSION, buildManifest } from "./manifest.js";
-import { renderDebugJson, renderDebugPage, type DebugOptions } from "./debug.js";
-import { diagnostics } from "./diagnostics.js";
-import { cacheReport, formatBytes, purgeCache } from "./drain.js";
-import { renderConfigPage } from "./page.js";
-import { knownCodecs } from "./known.js";
-import { handlePlay, handleSegment, looksLikeProgressiveFile } from "./play.js";
-import { handleSubtitleChunk, handleSubtitlePlaylist, SubtitleEngine } from "./subtitles.js";
-import { cardSeconds } from "./splash.js";
-import { Transcriber } from "./transcribe.js";
-import { DEFAULT_CUT_MODE, type AddonConfig, type UpstreamStream } from "./types.js";
+import { decodeConfig, parseStremioId } from "./addon/config.js";
+import { INTRODB_API_VERSION } from "./addon/constants.js";
+import { describeSettings, type Settings } from "./addon/env.js";
+import { corsPreflight, errorResponse, html, json, text } from "./addon/http.js";
+import { ADDON_VERSION, buildManifest } from "./addon/manifest.js";
+import { type AddonConfig, DEFAULT_CUT_MODE, type UpstreamStream } from "./addon/types.js";
+import { playUrl } from "./addon/urls.js";
+import { diagnostics } from "./ops/diagnostics.js";
+import { cacheReport, formatBytes, purgeCache } from "./ops/drain.js";
+import { describeCuts } from "./streams/format.js";
+import { knownCodecs } from "./streams/known.js";
+import type { PackageEngine } from "./streams/packages.js";
+import { handlePlay, handleSegment, looksLikeProgressiveFile } from "./streams/play.js";
+import { cardSeconds } from "./streams/splash.js";
+import { fetchStreams, labelledHevc, sourceLabel, wrapStream } from "./streams/upstream.js";
 import {
-  fetchStreams,
-  isFetchableByWorker,
-  resolveTarget,
-  sourceLabel,
-  streamIdentity,
-  wrapStream,
-  labelledHevc,
-} from "./upstream.js";
-import { playUrl } from "./urls.js";
+  handleSubtitleChunk,
+  handleSubtitlePlaylist,
+  SubtitleEngine,
+} from "./subtitles/subtitles.js";
+import { Transcriber } from "./subtitles/transcribe.js";
+import { lastLookupFailure, lookupSkipWindows } from "./theintrodb/theintrodb.js";
+import { renderConfigPage } from "./web/config-page.js";
+import { type DebugOptions, renderDebugJson, renderDebugPage } from "./web/debug-page.js";
+import { notFoundPage } from "./web/not-found-page.js";
 
 /**
  * Every route an install can reach, and the reason this is a whitelist rather than a
@@ -79,7 +76,8 @@ export async function handleRequest(
   subtitles: SubtitleEngine | null = null,
   // One engine per process, whether or not the host wired one: its jobs and the models they use
   // outlive a request, so it cannot be built per call.
-  engine: SubtitleEngine = subtitles ?? new SubtitleEngine(settings, new Transcriber(settings), () => packages.lastActivity),
+  engine: SubtitleEngine = subtitles ??
+    new SubtitleEngine(settings, new Transcriber(settings), () => packages.lastActivity),
 ): Promise<Response> {
   const url = new URL(request.url);
   const origin = url.origin;
@@ -104,8 +102,8 @@ export async function handleRequest(
       status: "ok",
       name: "TheIntroDB Skip",
       version: ADDON_VERSION,
-      site: INTRODB_SITE,
-      api: `${INTRODB_API_BASE}/${INTRODB_API_VERSION}/media`,
+      site: "https://theintrodb.org",
+      api: `https://api.theintrodb.org/${INTRODB_API_VERSION}/media`,
       ...describeSettings(settings),
       subtitles: engine.status(),
       lastLookupFailure: lastLookupFailure(),
@@ -160,12 +158,24 @@ export async function handleRequest(
     if (route === "manifest.json") return json(buildManifest(config, encoded));
     if (route === "play") {
       return handlePlay({
-        request, settings, packages, subtitles: engine, config, encodedConfig: encoded, origin,
+        request,
+        settings,
+        packages,
+        subtitles: engine,
+        config,
+        encodedConfig: encoded,
+        origin,
       });
     }
     if (route === "seg") {
       return handleSegment({
-        request, settings, packages, subtitles: engine, config, encodedConfig: encoded, origin,
+        request,
+        settings,
+        packages,
+        subtitles: engine,
+        config,
+        encodedConfig: encoded,
+        origin,
       });
     }
     // The subtitle rendition a master playlist points a player at, and its chunks. The playlist
@@ -196,7 +206,15 @@ export async function handleRequest(
     // stream/<type>/<id>.json
     const streamMatch = /^stream\/([^/]+)\/(.+)\.json$/.exec(route);
     if (streamMatch) {
-      return handleStreams(settings, packages, config, encoded, origin, streamMatch[1]!, streamMatch[2]!);
+      return handleStreams(
+        settings,
+        packages,
+        config,
+        encoded,
+        origin,
+        streamMatch[1]!,
+        streamMatch[2]!,
+      );
     }
   }
 
@@ -249,7 +267,7 @@ async function handleStreams(
     );
   }
 
-  const upstream = await fetchStreams(settings, config, type, id);
+  const upstream = await fetchStreams(config, type, id);
 
   const label = `TheIntroDB Skip · ${sourceLabel(upstream.used ?? config.src[0] ?? "")}`;
   const cutSummary = lookup.windows.length > 0 ? `${describeCuts(lookup.windows)}.` : null;
@@ -260,7 +278,9 @@ async function handleStreams(
   // handed over raw. A lookup failure (`403`, a block on this deployment's address,
   // an outage) must therefore cost the cut, not the playback.
   const relay = cutSummary !== null || settings.proxy === true;
-  const note = cutSummary ?? "TheIntroDB has no timings for this title yet, so this stream is relayed but not cut.";
+  const note =
+    cutSummary ??
+    "TheIntroDB has no timings for this title yet, so this stream is relayed but not cut.";
 
   // A stream that will be packaged without the processing card in front of it starts slowly and
   // shows nothing while it does: an HEVC file (most 4K releases) is written as fMP4, and the card
@@ -316,8 +336,9 @@ async function handleStreams(
   );
 }
 
-
-function describeWindowsHeader(windows: readonly { type: string; startMs: number; endMs: number | null }[]): string {
+function describeWindowsHeader(
+  windows: readonly { type: string; startMs: number; endMs: number | null }[],
+): string {
   return windows
     .map((window) => `${window.type} ${window.startMs}-${window.endMs ?? "end"}`)
     .join(", ");
@@ -345,9 +366,9 @@ function configPage(
   return html(
     renderConfigPage({
       origin,
-      siteUrl: INTRODB_SITE,
+      siteUrl: "https://theintrodb.org",
       audioLanguage: settings.subtitlesAudioLanguage,
-      serverKeyConfigured: Boolean(settings.TIDB_API_KEY && settings.TIDB_API_KEY.trim()),
+      serverKeyConfigured: Boolean(settings.TIDB_API_KEY?.trim()),
       insecure: url.protocol === "http:" && local,
       cuts: packages.stats(),
       editing: extra.editing ?? null,
@@ -359,17 +380,6 @@ function configPage(
     200,
     extra.editing || extra.configError ? { "cache-control": "no-store" } : {},
   );
-}
-
-function notFoundPage(origin: string): string {
-  return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Not found</title>
-<meta name="viewport" content="width=device-width, initial-scale=1"></head>
-<body style="font:15px/1.5 system-ui, sans-serif; background:#0b0d0c; color:#e7ece9; margin:0">
-<main style="max-width:600px;margin:0 auto;padding:60px 20px">
-<h1 style="font-size:20px">Not found</h1>
-<p>This is a Stremio addon, not a website. Start at <a style="color:#22c55e" href="${origin}/">${origin}/</a> to build an install link.</p>
-</main></body></html>`;
 }
 
 /**

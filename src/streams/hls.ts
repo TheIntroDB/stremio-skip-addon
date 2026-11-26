@@ -16,7 +16,7 @@
  * typical VOD playlists): a cut lands on a segment boundary, never inside one.
  */
 
-import type { SkipWindow } from "./types.js";
+import type { SkipWindow } from "../addon/types.js";
 
 export interface HlsSegment {
   /** Every tag that belongs to this segment, in file order, including `#EXTINF`. */

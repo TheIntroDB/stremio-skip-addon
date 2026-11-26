@@ -15,7 +15,7 @@
 
 A Stremio addon that automatically skips/removes **intros, recaps, credits and previews** from your movies and tv shows using timings from [TheIntroDB](https://theintrodb.org). It uses HLS proxying to rewrite `.mkv` videos to HLS and cuts out the segments you choose.
 
-This addon does **not add skip buttons to Stremio**, it removes the segments from the stream *before* it gets to your device. Try the official [Stremio Enhanced Plugin](https://github.com/TheIntroDB/stremio-enhanced-plugin) if you want buttons instead.
+This addon does **not add skip buttons to Stremio**, it removes the segments from the stream _before_ it gets to your device. Try the official [Stremio Enhanced Plugin](https://github.com/TheIntroDB/stremio-enhanced-plugin) if you want buttons instead.
 
 ---
 
@@ -35,6 +35,7 @@ docker compose up -d
 ```
 
 That is `docker-compose.yml` in this repository: it builds the image, publishes `:8787`, and keeps the segment cache in a named volume. Nothing has to be filled in first — the API key can be pasted on the configuration page instead (see [API key](#api-key)). **Keep the cache mounted** — without the volume, packages live in the container's writable layer and are lost when it is recreated.
+
 > A prebuilt docker image is also available
 
 ### Node, without Docker
@@ -59,10 +60,10 @@ Open the deployment's URL in a browser. The page builds your install link:
 
 1. **Paste your stream addon URL(s)** — AIOStreams, Torrentio, Comet, MediaFusion, anything that serves Stremio streams. One per line; they are tried in order and the first that answers with streams is used, so a second URL is a fallback.
 2. **Pick the segments to cut.** Intro, recap and credits are on by default; preview is off.
-3. **Pick the cutting mode** — *cut .mkv files too* (default, also splices HLS) or *only cut HLS playlists* (never copies a file). It lives in the install link, so each install can differ.
+3. **Pick the cutting mode** — _cut .mkv files too_ (default, also splices HLS) or _only cut HLS playlists_ (never copies a file). It lives in the install link, so each install can differ.
 4. **Set the margin** — the seconds left alone at each end of every window (0–5, 2 by default). If an intro cut feels too aggressive, this is the dial.
-5. **The API key** — paste yours here unless the service already holds one in its environment; the field is marked *optional* when it does, and *required* when it does not. See [API key](#api-key).
-6. **Install** — the `stremio://` link opens the desktop or mobile app; *Open in Stremio Web* handles the browser player.
+5. **The API key** — paste yours here unless the service already holds one in its environment; the field is marked _optional_ when it does, and _required_ when it does not. See [API key](#api-key).
+6. **Install** — the `stremio://` link opens the desktop or mobile app; _Open in Stremio Web_ handles the browser player.
 
 Your settings live in the install URL itself (a base64url-encoded JSON object) — the only place a Stremio addon can keep per-user settings. **Keep that URL private:** anyone who has it can use your deployment.
 
@@ -89,7 +90,7 @@ Worth reading before installing, because these are properties of the approach ra
 
 ## Development
 
-`npm ci`, then `npm run typecheck`, `npm test`, and `npm run build`. The full configuration table, the development and testing notes and the source structure live in [AGENTS.md](AGENTS.md).
+`npm ci`, then `npm run lint`, `npm run typecheck`, `npm test`, and `npm run build`. The full configuration table, the development and testing notes and the source structure live in [AGENTS.md](AGENTS.md).
 
 ---
 

@@ -16,12 +16,11 @@
  * it into a failure, which is what the Silo Tiny Subtitles plugin hit in production.
  */
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { availableParallelism } from "node:os";
-
+import type { Settings } from "../addon/env.js";
 import type { Word } from "./cues.js";
-import type { Settings } from "./env.js";
 
 /**
  * What the engine needs from the models, whoever owns them.
@@ -238,7 +237,9 @@ export function alignDir(settings: Settings): string {
 }
 
 /** A RIFF/WAVE file as the mono float samples Align wants, plus its rate. */
-export async function readWav(path: string): Promise<{ samples: Float32Array; sampleRate: number }> {
+export async function readWav(
+  path: string,
+): Promise<{ samples: Float32Array; sampleRate: number }> {
   const buffer = await readFile(path);
   if (buffer.length < 44 || buffer.toString("ascii", 0, 4) !== "RIFF") {
     throw new Error(`not a RIFF/WAVE file: ${path}`);
@@ -301,15 +302,19 @@ export class ProcessTranscriber {
   lastError: string | null = null;
   private child: ChildProcess | null = null;
   private nextId = 1;
-  private pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
+  private pending = new Map<
+    number,
+    { resolve: (value: unknown) => void; reject: (error: Error) => void }
+  >();
   private buffer = "";
-
-  constructor(private readonly settings: Settings) {}
 
   /** Whether the models are loaded in the child. Starts it if it is not running. */
   async available(): Promise<boolean> {
     try {
-      const reply = (await this.send({ cmd: "available" })) as { available?: boolean; error?: string | null };
+      const reply = (await this.send({ cmd: "available" })) as {
+        available?: boolean;
+        error?: string | null;
+      };
       this.lastError = reply.error ?? null;
       return reply.available === true;
     } catch (error) {
@@ -344,7 +349,8 @@ export class ProcessTranscriber {
   cancel(): void {
     const child = this.child;
     this.child = null;
-    for (const waiter of this.pending.values()) waiter.reject(new Error("the recogniser was stopped"));
+    for (const waiter of this.pending.values())
+      waiter.reject(new Error("the recogniser was stopped"));
     this.pending.clear();
     this.buffer = "";
     if (child) {

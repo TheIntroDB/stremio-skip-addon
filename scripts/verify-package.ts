@@ -15,15 +15,13 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import type { Settings } from "../src/env.js";
-import { run } from "../src/ffmpeg.js";
-import { PackageEngine } from "../src/packages.js";
+import type { Settings } from "../src/addon/env.js";
+import { run } from "../src/streams/ffmpeg.js";
+import { PackageEngine } from "../src/streams/packages.js";
 
 const [url, startArg, endArg] = process.argv.slice(2);
 if (!url) {
-  console.error(
-    "usage: npm run verify:package -- <url> [startSeconds [endSeconds]]",
-  );
+  console.error("usage: npm run verify:package -- <url> [startSeconds [endSeconds]]");
   process.exit(2);
 }
 
@@ -40,14 +38,14 @@ const settings: Settings = {
   cacheMaxBytes: 10 * 1024 ** 3,
   skipMarginSeconds: 3,
   proxy: true,
-subtitles: false,
+  subtitles: false,
   subtitlesGenerate: false,
-subtitlesLanguage: "en",
-subtitlesChunkSeconds: 300,
-subtitlesTtlHours: 24,
-subtitlesIdleSeconds: 120,
-subtitlesAudioLanguage: "en",
-drainSecret: "",
+  subtitlesLanguage: "en",
+  subtitlesChunkSeconds: 300,
+  subtitlesTtlHours: 24,
+  subtitlesIdleSeconds: 120,
+  subtitlesAudioLanguage: "en",
+  drainSecret: "",
   splash: true,
   prerollSeconds: 10,
   cutWaitSeconds: 120,
@@ -99,15 +97,28 @@ if (state?.error) console.log(`last error    ${state.error}`);
 // The playlist a player would get, minus the round trip.
 const dir = path.join(cacheDir, "hls", key);
 await writeFile(path.join(dir, "index.m3u8"), view.body.replaceAll(`seg?f=${key}/`, ""));
-const probe = await run("ffprobe", [
-  "-v", "error",
-  "-show_entries", "format=duration,format_name",
-  "-of", "default=nw=1",
-  path.join(dir, "index.m3u8"),
-], 120_000);
+const probe = await run(
+  "ffprobe",
+  [
+    "-v",
+    "error",
+    "-show_entries",
+    "format=duration,format_name",
+    "-of",
+    "default=nw=1",
+    path.join(dir, "index.m3u8"),
+  ],
+  120_000,
+);
 console.log(`playlist      ${probe.stdout.trim().split("\n").join(", ")}`);
-const decode = await run("ffmpeg", ["-v", "error", "-i", path.join(dir, "index.m3u8"), "-f", "null", "-"], 30 * 60_000);
-console.log(`decodes       ${decode.code === 0 && !decode.stderr.trim() ? "yes, end to end" : `no: ${decode.stderr.slice(-300)}`}`);
+const decode = await run(
+  "ffmpeg",
+  ["-v", "error", "-i", path.join(dir, "index.m3u8"), "-f", "null", "-"],
+  30 * 60_000,
+);
+console.log(
+  `decodes       ${decode.code === 0 && !decode.stderr.trim() ? "yes, end to end" : `no: ${decode.stderr.slice(-300)}`}`,
+);
 
 console.log("\n--- the playlist it serves ---");
 console.log(view.body.split("\n").slice(0, 24).join("\n"));

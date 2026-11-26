@@ -10,17 +10,17 @@
  */
 
 import assert from "node:assert/strict";
-import { createServer, type Server } from "node:http";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
 
-import type { Settings } from "../src/env.js";
-import { hasRoomFor, keptRanges, run } from "../src/ffmpeg.js";
-import { PackageEngine, audioMap } from "../src/packages.js";
-import type { StreamInfo } from "../src/streaminfo.js";
+import type { Settings } from "../src/addon/env.js";
+import { hasRoomFor, keptRanges, run } from "../src/streams/ffmpeg.js";
+import { audioMap, PackageEngine } from "../src/streams/packages.js";
+import type { StreamInfo } from "../src/streams/streaminfo.js";
 
 const SAMPLE_SECONDS = 30;
 const LONG_SECONDS = 180;
@@ -44,13 +44,13 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     cacheMaxBytes: 10 * 1024 ** 3,
     proxy: true,
     subtitles: false,
-  subtitlesGenerate: false,
+    subtitlesGenerate: false,
     subtitlesLanguage: "en",
     subtitlesChunkSeconds: 300,
-  subtitlesTtlHours: 24,
-  subtitlesIdleSeconds: 120,
-  subtitlesAudioLanguage: "en",
-  drainSecret: "",
+    subtitlesTtlHours: 24,
+    subtitlesIdleSeconds: 120,
+    subtitlesAudioLanguage: "en",
+    drainSecret: "",
     skipMarginSeconds: 0,
     splash: false,
     prerollSeconds: 10,
@@ -65,22 +65,32 @@ function settings(overrides: Partial<Settings> = {}): Settings {
 
 /** Probe a media file (or a playlist) for its duration in ms. */
 async function durationOf(file: string): Promise<number> {
-  const result = await run("ffprobe", [
-    "-v", "error",
-    "-show_entries", "format=duration",
-    "-of", "default=nw=1:nk=1",
-    file,
-  ], 60_000);
+  const result = await run(
+    "ffprobe",
+    ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", file],
+    60_000,
+  );
   assert.equal(result.code, 0, `ffprobe failed: ${result.stderr}`);
   return Math.round(Number(result.stdout.trim()) * 1000);
 }
 
 /** The first video timestamp in a file, in seconds: what a demuxer sees first. */
 async function firstVideoPts(file: string): Promise<number> {
-  const result = await run("ffprobe", [
-    "-v", "error", "-select_streams", "v",
-    "-show_entries", "packet=pts_time", "-of", "csv=p=0", file,
-  ], 60_000);
+  const result = await run(
+    "ffprobe",
+    [
+      "-v",
+      "error",
+      "-select_streams",
+      "v",
+      "-show_entries",
+      "packet=pts_time",
+      "-of",
+      "csv=p=0",
+      file,
+    ],
+    60_000,
+  );
   const first = Number(result.stdout.split("\n")[0]?.replace(",", "").trim());
   assert.ok(Number.isFinite(first), `no timestamp in ${file}: ${result.stdout} ${result.stderr}`);
   return first;
@@ -104,28 +114,78 @@ before(async () => {
   // a package can be made.
   const subPath = path.join(workDir, "sample.vtt");
   await writeFile(subPath, "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\nhello\n");
-  const generated = await run("ffmpeg", [
-    "-nostdin", "-hide_banner", "-v", "error",
-    "-f", "lavfi", "-i", `testsrc=size=320x240:rate=10:duration=${SAMPLE_SECONDS}`,
-    "-f", "lavfi", "-i", `sine=frequency=440:duration=${SAMPLE_SECONDS}`,
-    "-i", subPath,
-    "-map", "0:v:0", "-map", "1:a:0", "-map", "2:s:0",
-    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "30", "-g", "10",
-    "-c:a", "aac", "-b:a", "64k", "-c:s", "webvtt",
-    "-y", samplePath,
-  ], 120_000);
+  const generated = await run(
+    "ffmpeg",
+    [
+      "-nostdin",
+      "-hide_banner",
+      "-v",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      `testsrc=size=320x240:rate=10:duration=${SAMPLE_SECONDS}`,
+      "-f",
+      "lavfi",
+      "-i",
+      `sine=frequency=440:duration=${SAMPLE_SECONDS}`,
+      "-i",
+      subPath,
+      "-map",
+      "0:v:0",
+      "-map",
+      "1:a:0",
+      "-map",
+      "2:s:0",
+      "-c:v",
+      "libx264",
+      "-preset",
+      "ultrafast",
+      "-crf",
+      "30",
+      "-g",
+      "10",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "64k",
+      "-c:s",
+      "webvtt",
+      "-y",
+      samplePath,
+    ],
+    120_000,
+  );
   assert.equal(generated.code, 0, `could not generate the sample: ${generated.stderr}`);
 
   // Three minutes of the same thing, in a file small enough to generate quickly but
   // served slowly: packaging it then takes long enough that "a playlist is ready
   // before the file is" is an interval rather than a race.
   longPath = path.join(workDir, "long.mkv");
-  const long = await run("ffmpeg", [
-    "-nostdin", "-hide_banner", "-v", "error",
-    "-f", "lavfi", "-i", `testsrc=size=160x120:rate=5:duration=${LONG_SECONDS}`,
-    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "35", "-g", "5",
-    "-y", longPath,
-  ], 300_000);
+  const long = await run(
+    "ffmpeg",
+    [
+      "-nostdin",
+      "-hide_banner",
+      "-v",
+      "error",
+      "-f",
+      "lavfi",
+      "-i",
+      `testsrc=size=160x120:rate=5:duration=${LONG_SECONDS}`,
+      "-c:v",
+      "libx264",
+      "-preset",
+      "ultrafast",
+      "-crf",
+      "35",
+      "-g",
+      "5",
+      "-y",
+      longPath,
+    ],
+    300_000,
+  );
   assert.equal(long.code, 0, `could not generate the long sample: ${long.stderr}`);
 
   // Serve it the way a CDN does: byte ranges, 206.
@@ -248,7 +308,11 @@ test("a copy is refused when the source does not fit on the disk", () => {
 
 test("a stream identity keeps a package findable when the source re-mints its link", () => {
   const engine = new PackageEngine(settings());
-  const withIdentity = engine.keyFor(`${base}/playback/abc?token=1`, [INTRO], "stream:tt0903747:1:1");
+  const withIdentity = engine.keyFor(
+    `${base}/playback/abc?token=1`,
+    [INTRO],
+    "stream:tt0903747:1:1",
+  );
   const reMinted = engine.keyFor(`${base}/playback/abc?token=2`, [INTRO], "stream:tt0903747:1:1");
   const withoutIdentity = engine.keyFor(`${base}/playback/abc?token=1`, [INTRO]);
   const alsoWithout = engine.keyFor(`${base}/playback/abc?token=2`, [INTRO]);
@@ -337,7 +401,7 @@ test("the playlist a player is given decodes, with the window's video absent", a
 
   const deadline = Date.now() + 120_000;
   let view = await engine.manifest(key);
-  while ((!view || !view.complete) && Date.now() < deadline) {
+  while (!view?.complete && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 250));
     view = (await engine.manifest(key)) ?? view;
   }
@@ -414,9 +478,15 @@ test("a package left behind by a killed run is cleaned up at boot", async () => 
   const stale = path.join(value.cacheDir, "hls", "deadbeefdeadbeef1234");
   const finished = path.join(value.cacheDir, "hls", "cafebabecafebabe1234");
   await mkdir(stale, { recursive: true });
-  await writeFile(path.join(stale, "plan.json"), JSON.stringify({ key: "x", windows: [], ranges: [{ startMs: 0, endMs: 1000 }] }));
+  await writeFile(
+    path.join(stale, "plan.json"),
+    JSON.stringify({ key: "x", windows: [], ranges: [{ startMs: 0, endMs: 1000 }] }),
+  );
   await mkdir(finished, { recursive: true });
-  await writeFile(path.join(finished, "plan.json"), JSON.stringify({ key: "y", windows: [], ranges: [{ startMs: 0, endMs: 1000 }] }));
+  await writeFile(
+    path.join(finished, "plan.json"),
+    JSON.stringify({ key: "y", windows: [], ranges: [{ startMs: 0, endMs: 1000 }] }),
+  );
   await writeFile(path.join(finished, "done"), "");
   // A package from the version that copied files instead of segmenting them.
   const legacy = path.join(value.cacheDir, ".parts-old");
@@ -439,7 +509,10 @@ test("eviction keeps the cache under its budget, oldest package first", async ()
   const oldKey = "aaaaaaaabbbbbbbb1234";
   const oldDir = path.join(cacheDir, "hls", oldKey);
   await mkdir(oldDir, { recursive: true });
-  await writeFile(path.join(oldDir, "plan.json"), JSON.stringify({ key: oldKey, windows: [], ranges: [{ startMs: 0, endMs: 1000 }] }));
+  await writeFile(
+    path.join(oldDir, "plan.json"),
+    JSON.stringify({ key: oldKey, windows: [], ranges: [{ startMs: 0, endMs: 1000 }] }),
+  );
   await writeFile(path.join(oldDir, "done"), "");
   await writeFile(path.join(oldDir, "seg00000.ts"), Buffer.alloc(8192));
   const longAgo = new Date(Date.now() - 86_400_000);
@@ -455,7 +528,10 @@ test("eviction keeps the cache under its budget, oldest package first", async ()
   for (;;) {
     const left = await readdir(path.join(cacheDir, "hls"));
     if (!left.includes(oldKey)) break;
-    assert.ok(Date.now() < deadline, `the old package was evicted (still there: ${left.join(", ")})`);
+    assert.ok(
+      Date.now() < deadline,
+      `the old package was evicted (still there: ${left.join(", ")})`,
+    );
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   assert.ok((await readdir(path.join(cacheDir, "hls"))).includes(key), "the new one is kept");
@@ -471,7 +547,10 @@ test("a package that was just served is not evicted out from under the player", 
   const busyKey = "dddddddd00000000abcd";
   const busyDir = path.join(cacheDir, "hls", busyKey);
   await mkdir(busyDir, { recursive: true });
-  await writeFile(path.join(busyDir, "plan.json"), JSON.stringify({ key: busyKey, windows: [], ranges: [{ startMs: 0, endMs: 1000 }] }));
+  await writeFile(
+    path.join(busyDir, "plan.json"),
+    JSON.stringify({ key: busyKey, windows: [], ranges: [{ startMs: 0, endMs: 1000 }] }),
+  );
   await writeFile(path.join(busyDir, "done"), "");
   await writeFile(path.join(busyDir, "seg00000.ts"), Buffer.alloc(8192));
   await writeFile(path.join(busyDir, "pass-0.csv"), "seg00000.ts,0.000000,1.000000\n");
@@ -485,7 +564,10 @@ test("a package that was just served is not evicted out from under the player", 
   await engine.waitForFirstSegment(key, 60_000);
 
   const left = await readdir(path.join(cacheDir, "hls"));
-  assert.ok(left.includes(busyKey), `the package in use survived eviction (left: ${left.join(", ")})`);
+  assert.ok(
+    left.includes(busyKey),
+    `the package in use survived eviction (left: ${left.join(", ")})`,
+  );
   assert.ok(left.includes(key), "and the new one is there");
 });
 
@@ -516,7 +598,7 @@ test("the segments of a stretch share one timeline, so a player's clock does not
 
   const deadline = Date.now() + 120_000;
   let view = await engine.manifest(key);
-  while ((!view || !view.complete) && Date.now() < deadline) {
+  while (!view?.complete && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 200));
     view = (await engine.manifest(key)) ?? view;
   }
@@ -526,18 +608,30 @@ test("the segments of a stretch share one timeline, so a player's clock does not
   // which is what the tag declares.
   const stretches = view.body
     .split(/^#EXT-X-DISCONTINUITY$/m)
-    .map((part) =>
-      [...part.matchAll(/^seg\?f=[^/]+\/(seg\d{5}\.ts)$/gm)].map((match) => match[1]!),
-    )
+    .map((part) => [...part.matchAll(/^seg\?f=[^/]+\/(seg\d{5}\.ts)$/gm)].map((match) => match[1]!))
     .filter((names) => names.length > 0);
-  assert.ok(stretches.length >= 2, `a window in the middle makes two stretches (${stretches.length})`);
+  assert.ok(
+    stretches.length >= 2,
+    `a window in the middle makes two stretches (${stretches.length})`,
+  );
 
   const dir = path.join(workDir, "cache-timeline", "hls", key);
   const firstAudioPts = async (file: string): Promise<number> => {
-    const result = await run("ffprobe", [
-      "-v", "error", "-select_streams", "a",
-      "-show_entries", "packet=pts_time", "-of", "csv=p=0", file,
-    ], 60_000);
+    const result = await run(
+      "ffprobe",
+      [
+        "-v",
+        "error",
+        "-select_streams",
+        "a",
+        "-show_entries",
+        "packet=pts_time",
+        "-of",
+        "csv=p=0",
+        file,
+      ],
+      60_000,
+    );
     return Number(result.stdout.split("\n")[0]?.replace(",", "").trim());
   };
 
@@ -553,14 +647,11 @@ test("the segments of a stretch share one timeline, so a player's clock does not
       // Audio must sit on the same clock, or the player drifts and speeds the video up
       // to catch up.
       const audio = await firstAudioPts(path.join(dir, name));
-      assert.ok(
-        Math.abs(audio - video) < 0.5,
-        `${name}: video at ${video}s, audio at ${audio}s`,
-      );
+      assert.ok(Math.abs(audio - video) < 0.5, `${name}: video at ${video}s, audio at ${audio}s`);
     }
     // Every stretch begins at the beginning of its own timeline.
     assert.ok(
-      Math.abs(await firstVideoPts(path.join(dir, stretch[0]!)) - 0) < 0.5,
+      Math.abs((await firstVideoPts(path.join(dir, stretch[0]!))) - 0) < 0.5,
       "a stretch starts at zero",
     );
   }
@@ -604,7 +695,11 @@ test("a cold play gets the processing card, and hands over as soon as the episod
   assert.ok(first, "a piece is servable by name");
   const pieceMs = await durationOf(first!);
   assert.ok(pieceMs > 1200 && pieceMs < 3_000, `a piece runs ${pieceMs}ms`);
-  assert.equal(await engine.cardMs(key), 2_000, "and the card is exactly the buffer it was asked for");
+  assert.equal(
+    await engine.cardMs(key),
+    2_000,
+    "and the card is exactly the buffer it was asked for",
+  );
 
   // Then the episode can play: the card stops, and what the player already holds is the card
   // followed by the film.
@@ -631,7 +726,9 @@ test("the card is drawn once, as long as the buffer, even when nothing can play 
   // A source that never produces a segment is the case where the old card kept being redrawn:
   // the player watched "Processing…" move while the episode's start time moved with it.
   const window = { type: "intro" as const, startMs: 30_000, endMs: 36_000 };
-  const engine = new PackageEngine(settings({ cacheDir: path.join(workDir, "cache-moving"), splash: true }));
+  const engine = new PackageEngine(
+    settings({ cacheDir: path.join(workDir, "cache-moving"), splash: true }),
+  );
   await engine.start();
   const url = "http://127.0.0.1:1/never.mkv";
   const key = engine.keyFor(url, [window], "stream:moving");
@@ -642,13 +739,16 @@ test("the card is drawn once, as long as the buffer, even when nothing can play 
   assert.equal(first?.segments, 0, "and nothing of the episode, because there is none");
   assert.ok(first?.body.includes("#EXT-X-PLAYLIST-TYPE:EVENT"), "a playlist that keeps growing");
   assert.ok(!first?.body.includes("#EXT-X-ENDLIST"), "with no end while the work goes on");
-  assert.ok(await firstVideoPts(engine.segmentPath(key, "splash00000.ts")!) >= 0, "and it decodes");
+  assert.ok(
+    (await firstVideoPts(engine.segmentPath(key, "splash00000.ts")!)) >= 0,
+    "and it decodes",
+  );
 
   await new Promise((resolve) => setTimeout(resolve, 1200));
   const second = await engine.advanceCard(key);
   assert.equal(second?.card, 1, "still one piece, however long the work goes on");
   assert.equal(await engine.cardMs(key), 10_000, "and it is the buffer's length");
-  assert.equal((await engine.splashView("deadbeefdeadbeef0000")), null, "no package, no card");
+  assert.equal(await engine.splashView("deadbeefdeadbeef0000"), null, "no package, no card");
 });
 
 test("the playlist declares the whole episode from its first response", async () => {
@@ -657,7 +757,9 @@ test("the playlist declares the whole episode from its first response", async ()
   // few seconds. The remainder is padded with the card, so the declared length is the episode's
   // from the very first response, however little of it has actually been cut.
   const window = { type: "intro" as const, startMs: 30_000, endMs: 36_000 };
-  const engine = new PackageEngine(settings({ cacheDir: path.join(workDir, "cache-full"), splash: true }));
+  const engine = new PackageEngine(
+    settings({ cacheDir: path.join(workDir, "cache-full"), splash: true }),
+  );
   await engine.start();
   const url = `${base}/long.mkv`;
   const key = engine.keyFor(url, [window], "stream:full");
@@ -669,7 +771,11 @@ test("the playlist declares the whole episode from its first response", async ()
 
   const card = await engine.splashView(key, [window]);
   assert.ok(card, "the card is served");
-  assert.equal(card.expectedMs, LONG_SECONDS * 1000 - 6_000, "the episode's length less the window");
+  assert.equal(
+    card.expectedMs,
+    LONG_SECONDS * 1000 - 6_000,
+    "the episode's length less the window",
+  );
   assert.ok(card.padding > 0, "with the remainder padded");
   // The presentation is the card and then the episode, so its length is both together.
   const cardMs = await engine.cardMs(key);
@@ -739,7 +845,10 @@ test("an fMP4 package is described with its initialisation section", async () =>
     JSON.stringify({
       key,
       windows,
-      ranges: [{ startMs: 0, endMs: INTRO.startMs }, { startMs: INTRO.endMs, endMs: SAMPLE_SECONDS * 1000 }],
+      ranges: [
+        { startMs: 0, endMs: INTRO.startMs },
+        { startMs: INTRO.endMs, endMs: SAMPLE_SECONDS * 1000 },
+      ],
       createdAt: Date.now(),
     }),
   );
@@ -753,12 +862,18 @@ test("an fMP4 package is described with its initialisation section", async () =>
       codecs: "hvc1.2.4.L153.B0,ec-3",
     }),
   );
-  await writeFile(path.join(dir, "format.json"), JSON.stringify({
-    container: "mp4",
-    inits: ["init-0.mp4", "init-1.mp4"],
-  }));
+  await writeFile(
+    path.join(dir, "format.json"),
+    JSON.stringify({
+      container: "mp4",
+      inits: ["init-0.mp4", "init-1.mp4"],
+    }),
+  );
   await writeFile(path.join(dir, "pass-0.csv"), "seg00000.m4s,0.000000,3.000000\n");
-  await writeFile(path.join(dir, "pass-1.csv"), "seg00001.m4s,0.000000,8.500000\nseg00002.m4s,8.500000,17.000000\n");
+  await writeFile(
+    path.join(dir, "pass-1.csv"),
+    "seg00001.m4s,0.000000,8.500000\nseg00002.m4s,8.500000,17.000000\n",
+  );
   await writeFile(path.join(dir, "done"), "");
   await writeFile(path.join(dir, "init-0.mp4"), "INIT");
 
@@ -801,9 +916,21 @@ test("the package keeps the audio the install asked for", () => {
       { index: 2, language: "en", isDefault: false },
     ],
   } as unknown as StreamInfo;
-  assert.deepEqual(audioMap(info, "en"), ["-map", "0:v:0", "-map", "0:a:2"], "the English track, not the dub");
-  assert.deepEqual(audioMap(info, "es"), ["-map", "0:v:0", "-map", "0:a:1"], "or the one asked for");
-  assert.deepEqual(audioMap(info, "de"), ["-map", "0:v:0", "-map", "0:a:2"], "and English when it is absent");
+  assert.deepEqual(
+    audioMap(info, "en"),
+    ["-map", "0:v:0", "-map", "0:a:2"],
+    "the English track, not the dub",
+  );
+  assert.deepEqual(
+    audioMap(info, "es"),
+    ["-map", "0:v:0", "-map", "0:a:1"],
+    "or the one asked for",
+  );
+  assert.deepEqual(
+    audioMap(info, "de"),
+    ["-map", "0:v:0", "-map", "0:a:2"],
+    "and English when it is absent",
+  );
   assert.deepEqual(audioMap(null, "en"), [], "without a probe ffmpeg still decides");
 });
 
@@ -840,15 +967,27 @@ test("the processing card goes away once the film has been ready for a while", a
     JSON.stringify({
       key,
       windows,
-      ranges: [{ startMs: 0, endMs: INTRO.startMs }, { startMs: INTRO.endMs, endMs: SAMPLE_SECONDS * 1000 }],
+      ranges: [
+        { startMs: 0, endMs: INTRO.startMs },
+        { startMs: INTRO.endMs, endMs: SAMPLE_SECONDS * 1000 },
+      ],
       createdAt: Date.now(),
     }),
   );
   await writeFile(
     path.join(dir, "duration.json"),
-    JSON.stringify({ durationMs: SAMPLE_SECONDS * 1000, bitrate: 1000, width: 320, height: 180, codecs: "" }),
+    JSON.stringify({
+      durationMs: SAMPLE_SECONDS * 1000,
+      bitrate: 1000,
+      width: 320,
+      height: 180,
+      codecs: "",
+    }),
   );
-  await writeFile(path.join(dir, "pass-0.csv"), "seg00000.ts,0.000000,5.000000\nseg00001.ts,5.000000,10.000000\n");
+  await writeFile(
+    path.join(dir, "pass-0.csv"),
+    "seg00000.ts,0.000000,5.000000\nseg00001.ts,5.000000,10.000000\n",
+  );
   await writeFile(
     path.join(dir, "pass-1.csv"),
     "seg00002.ts,0.000000,8.500000\nseg00003.ts,8.500000,17.000000\n",
@@ -872,7 +1011,11 @@ test("the processing card goes away once the film has been ready for a while", a
   assert.equal(settled.complete, true, "the film is still declared complete");
 
   const entries = (body: string): string[] => body.match(/#EXTINF:[\d.]+,/g) ?? [];
-  assert.deepEqual(entries(settled.body), entries(fresh.body).slice(1), "exactly the card's entry went");
+  assert.deepEqual(
+    entries(settled.body),
+    entries(fresh.body).slice(1),
+    "exactly the card's entry went",
+  );
   const total = entries(settled.body).reduce((sum, entry) => sum + Number(entry.slice(8, -1)), 0);
   assert.equal(Math.round(total), 27, "and what is left is the film that survives the intro");
 });

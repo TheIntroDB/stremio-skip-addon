@@ -7,7 +7,7 @@
  * The recogniser is stubbed here on purpose: what matters is not whether a model heard a word but
  * whether the *track* is delivered, and that is the part that failed in the field -- a finished
  * file offered through the addon's subtitles menu can never arrive mid-playback, so the track is
- * delivered as a growing HLS subtitle rendition instead (see `src/subtitles.ts`). The audio
+ * delivered as a growing HLS subtitle rendition instead (see `src/subtitles/subtitles.ts`). The audio
  * extraction is real, so the path from source to segments is exercised end to end.
  */
 
@@ -17,14 +17,24 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { encodeConfig } from "../src/config.js";
-import { run } from "../src/ffmpeg.js";
+import { encodeConfig } from "../src/addon/config.js";
+import type { Settings } from "../src/addon/env.js";
 import { handleRequest } from "../src/index.js";
-import { PackageEngine } from "../src/packages.js";
-import { chooseAudio, chooseSourceTrack, masterPlaylist, parseProbe, variantAttributes } from "../src/streaminfo.js";
-import { handleSubtitleChunk, handleSubtitlePlaylist, SubtitleEngine } from "../src/subtitles.js";
-import type { Transcriber } from "../src/transcribe.js";
-import type { Settings } from "../src/env.js";
+import { run } from "../src/streams/ffmpeg.js";
+import { PackageEngine } from "../src/streams/packages.js";
+import {
+  chooseAudio,
+  chooseSourceTrack,
+  masterPlaylist,
+  parseProbe,
+  variantAttributes,
+} from "../src/streams/streaminfo.js";
+import {
+  handleSubtitleChunk,
+  handleSubtitlePlaylist,
+  SubtitleEngine,
+} from "../src/subtitles/subtitles.js";
+import type { Transcriber } from "../src/subtitles/transcribe.js";
 
 const CARD_MS = 10_000;
 const SECONDS = 70;
@@ -50,11 +60,26 @@ const stubTranscriber = (): Transcriber =>
 async function fixture(): Promise<{ cacheDir: string; audio: string; settings: Settings }> {
   const dir = await mkdtemp(path.join(tmpdir(), "tidb-subs-"));
   const audio = path.join(dir, "source.wav");
-  const made = await run("ffmpeg", [
-    "-nostdin", "-hide_banner", "-v", "error", "-y",
-    "-f", "lavfi", "-i", `sine=frequency=220:duration=${SECONDS}`,
-    "-ac", "1", "-ar", "16000", audio,
-  ], 120_000);
+  const made = await run(
+    "ffmpeg",
+    [
+      "-nostdin",
+      "-hide_banner",
+      "-v",
+      "error",
+      "-y",
+      "-f",
+      "lavfi",
+      "-i",
+      `sine=frequency=220:duration=${SECONDS}`,
+      "-ac",
+      "1",
+      "-ar",
+      "16000",
+      audio,
+    ],
+    120_000,
+  );
   assert.equal(made.code, 0, `could not make the fixture: ${made.stderr}`);
   return {
     cacheDir: dir,
@@ -108,12 +133,11 @@ test("the playlist grows chunk by chunk, and only then closes", async () => {
   const total = durations.reduce((sum, part) => sum + part, 0);
   assert.equal(total, (CARD_MS + SECONDS * 1000) / 1000, "which is exactly the video's length");
   const uris = [...done.body.matchAll(/^subs\/[^\n]+$/gm)].map((m) => m[0]);
-  assert.deepEqual(uris, [
-    "subs/card.vtt?f=key1",
-    "subs/0.vtt?f=key1",
-    "subs/1.vtt?f=key1",
-    "subs/2.vtt?f=key1",
-  ], "and every position points at its own segment, in order");
+  assert.deepEqual(
+    uris,
+    ["subs/card.vtt?f=key1", "subs/0.vtt?f=key1", "subs/1.vtt?f=key1", "subs/2.vtt?f=key1"],
+    "and every position points at its own segment, in order",
+  );
   // Every URI in this playlist has to end in an extension ffmpeg's HLS demuxer accepts for a
   // subtitle segment: it refuses one with no extension at all (`av_match_ext` returns 0), and a
   // refused segment takes the whole rendition playlist down -- which an ffmpeg-8 client reads as
@@ -200,16 +224,48 @@ async function peakAmplitude(file: string): Promise<number> {
 async function twoAudioFixture(): Promise<{ file: string; cacheDir: string; settings: Settings }> {
   const dir = await mkdtemp(path.join(tmpdir(), "tidb-two-audio-"));
   const file = path.join(dir, "two-audio.mkv");
-  const made = await run("ffmpeg", [
-    "-nostdin", "-hide_banner", "-v", "error", "-y",
-    "-f", "lavfi", "-i", "testsrc2=size=160x120:rate=5:duration=24",
-    "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono",
-    "-f", "lavfi", "-i", "sine=frequency=440:duration=24",
-    "-t", "24", "-map", "0:v", "-map", "1:a", "-map", "2:a",
-    "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac",
-    "-metadata:s:a:0", "language=spa", "-metadata:s:a:1", "language=eng",
-    file,
-  ], 120_000);
+  const made = await run(
+    "ffmpeg",
+    [
+      "-nostdin",
+      "-hide_banner",
+      "-v",
+      "error",
+      "-y",
+      "-f",
+      "lavfi",
+      "-i",
+      "testsrc2=size=160x120:rate=5:duration=24",
+      "-f",
+      "lavfi",
+      "-i",
+      "anullsrc=r=48000:cl=mono",
+      "-f",
+      "lavfi",
+      "-i",
+      "sine=frequency=440:duration=24",
+      "-t",
+      "24",
+      "-map",
+      "0:v",
+      "-map",
+      "1:a",
+      "-map",
+      "2:a",
+      "-c:v",
+      "libx264",
+      "-preset",
+      "ultrafast",
+      "-c:a",
+      "aac",
+      "-metadata:s:a:0",
+      "language=spa",
+      "-metadata:s:a:1",
+      "language=eng",
+      file,
+    ],
+    120_000,
+  );
   assert.equal(made.code, 0, `could not make the fixture: ${made.stderr}`);
   return {
     file,
@@ -231,14 +287,20 @@ async function twoAudioFixture(): Promise<{ file: string; cacheDir: string; sett
 
 test("the audio track is chosen by language, and English is the fallback", async () => {
   const { file } = await twoAudioFixture();
-  const probe = await run("ffprobe", [
-    "-v", "error",
-    "-show_entries",
-    "format=duration,bit_rate:stream=index,codec_type,codec_name,profile,level,width,height" +
-      ":stream_tags=language:stream_disposition=default",
-    "-of", "json",
-    file,
-  ], 30_000);
+  const probe = await run(
+    "ffprobe",
+    [
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration,bit_rate:stream=index,codec_type,codec_name,profile,level,width,height" +
+        ":stream_tags=language:stream_disposition=default",
+      "-of",
+      "json",
+      file,
+    ],
+    30_000,
+  );
   const info = parseProbe(probe.stdout)!;
   assert.deepEqual(
     info.audio?.map((track) => track.language),
@@ -247,13 +309,20 @@ test("the audio track is chosen by language, and English is the fallback", async
   );
 
   assert.equal(chooseAudio(info.audio, "en")!.language, "en", "what the model is trained on");
-  assert.equal(chooseAudio(info.audio, "spa")!.language, "es", "a three-letter request still matches");
+  assert.equal(
+    chooseAudio(info.audio, "spa")!.language,
+    "es",
+    "a three-letter request still matches",
+  );
   assert.equal(chooseAudio(info.audio, "de")!.language, "en", "missing: English instead");
   // No English in the file at all: the file's own default track, then its first.
   const german = [{ index: 7, language: "de", isDefault: true }];
   assert.equal(chooseAudio(german, "en")!.index, 7, "no English: the file's default track");
-  assert.equal(chooseAudio([{ index: 9, language: "fr", isDefault: false }], "en")!.index, 9,
-    "no English and no default: its first track");
+  assert.equal(
+    chooseAudio([{ index: 9, language: "fr", isDefault: false }], "en")!.index,
+    9,
+    "no English and no default: its first track",
+  );
   assert.equal(chooseAudio(undefined, "en"), null, "an unreadable probe leaves it to ffmpeg");
 });
 
@@ -265,7 +334,15 @@ test("a 4K HEVC source is described as HEVC, not left for the player to guess", 
     JSON.stringify({
       format: { duration: "1500.0", bit_rate: "5359114" },
       streams: [
-        { index: 0, codec_type: "video", codec_name: "hevc", profile: "Main 10", level: 153, width: 3840, height: 2160 },
+        {
+          index: 0,
+          codec_type: "video",
+          codec_name: "hevc",
+          profile: "Main 10",
+          level: 153,
+          width: 3840,
+          height: 2160,
+        },
         { index: 1, codec_type: "audio", codec_name: "eac3" },
       ],
     }),
@@ -280,7 +357,9 @@ test("a 4K HEVC source is described as HEVC, not left for the player to guess", 
   const unnamed = parseProbe(
     JSON.stringify({
       format: { duration: "10.0" },
-      streams: [{ index: 0, codec_type: "video", codec_name: "hevc", profile: "Main 4:4:4", level: 120 }],
+      streams: [
+        { index: 0, codec_type: "video", codec_name: "hevc", profile: "Main 4:4:4", level: 120 },
+      ],
     }),
   )!;
   assert.equal(unnamed.codecs, "", "no spelling rather than a wrong one");
@@ -294,16 +373,33 @@ test("a source's own text subtitles are found, and image ones are not", () => {
     JSON.stringify({
       format: { duration: "60.0" },
       streams: [
-        { index: 0, codec_type: "video", codec_name: "h264", profile: "High", level: 40, width: 1920, height: 1080 },
+        {
+          index: 0,
+          codec_type: "video",
+          codec_name: "h264",
+          profile: "High",
+          level: 40,
+          width: 1920,
+          height: 1080,
+        },
         { index: 1, codec_type: "audio", codec_name: "aac" },
         { index: 2, codec_type: "subtitle", codec_name: "subrip", tags: { language: "eng" } },
-        { index: 3, codec_type: "subtitle", codec_name: "hdmv_pgs_subtitle", tags: { language: "eng" } },
+        {
+          index: 3,
+          codec_type: "subtitle",
+          codec_name: "hdmv_pgs_subtitle",
+          tags: { language: "eng" },
+        },
         { index: 4, codec_type: "subtitle", codec_name: "ass", tags: { language: "spa" } },
       ],
     }),
   )!;
   // A picture track needs OCR, so it is not something this can copy: only text is listed.
-  assert.deepEqual(info.subtitles!.map((track) => track.index), [2, 4], "text tracks only");
+  assert.deepEqual(
+    info.subtitles!.map((track) => track.index),
+    [2, 4],
+    "text tracks only",
+  );
   const tracks = info.subtitles!;
   assert.equal(chooseSourceTrack(tracks, "es")!.index, 4, "the language the install asked for");
   assert.equal(chooseSourceTrack(tracks, "de")!.index, 2, "then English");
@@ -333,7 +429,10 @@ test("generation is off unless the deployment asks for it", async () => {
 
   // The file's own track is still taken: that is the whole point of shipping this.
   assert.ok(
-    quiet.ensure("pkg", "http://source/film.mkv", plan, true, undefined, { index: 2, language: "en" }),
+    quiet.ensure("pkg", "http://source/film.mkv", plan, true, undefined, {
+      index: 2,
+      language: "en",
+    }),
     "a text track is planned even with generation off",
   );
 });
@@ -370,7 +469,10 @@ test("a source's subtitles are cut and shifted onto the film", async () => {
   );
 
   assert.ok(
-    engine.ensure("pkg", "http://source/film.mkv", plan, true, undefined, { index: 2, language: "eng" }),
+    engine.ensure("pkg", "http://source/film.mkv", plan, true, undefined, {
+      index: 2,
+      language: "eng",
+    }),
     "a track is planned",
   );
   const track = engine.trackFor("pkg")!;
@@ -378,7 +480,8 @@ test("a source's subtitles are cut and shifted onto the film", async () => {
   assert.equal(engine.languageOf(track), "eng", "and knows what language it is");
 
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const progress = (engine.status() as { progress: Array<{ done: number; chunks: number }> }).progress;
+    const progress = (engine.status() as { progress: Array<{ done: number; chunks: number }> })
+      .progress;
     if (progress[0] && progress[0].chunks === 0) break;
     if (progress[0] && progress[0].done >= progress[0].chunks && progress[0].chunks > 0) break;
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -400,21 +503,32 @@ test("a source's subtitles are cut and shifted onto the film", async () => {
   assert.ok(!first.includes("inside the intro"), "the dropped window takes its cues with it");
   const second = await chunk(1);
   assert.ok(second.includes("after the intro"), "a cue from after the cut");
-  assert.ok(second.includes("00:00:02.000 --> 00:00:05.000"), "moved back by the ten seconds removed");
+  assert.ok(
+    second.includes("00:00:02.000 --> 00:00:05.000"),
+    "moved back by the ten seconds removed",
+  );
   assert.ok(!second.includes("inside the intro"), "and nothing from the window");
 });
 
 test("the recogniser is fed the chosen stream, not ffmpeg's own preference", async () => {
   const { file, settings } = await twoAudioFixture();
   const info = parseProbe(
-    (await run("ffprobe", [
-      "-v", "error",
-      "-show_entries",
-      "format=duration,bit_rate:stream=index,codec_type,codec_name,profile,level,width,height" +
-        ":stream_tags=language:stream_disposition=default",
-      "-of", "json",
-      file,
-    ], 30_000)).stdout,
+    (
+      await run(
+        "ffprobe",
+        [
+          "-v",
+          "error",
+          "-show_entries",
+          "format=duration,bit_rate:stream=index,codec_type,codec_name,profile,level,width,height" +
+            ":stream_tags=language:stream_disposition=default",
+          "-of",
+          "json",
+          file,
+        ],
+        30_000,
+      )
+    ).stdout,
   )!;
   const englishTrack = chooseAudio(info.audio, "en")!;
   const spanishTrack = chooseAudio(info.audio, "spa")!;
@@ -491,7 +605,11 @@ test("the playlist is never cached, the segments are", async () => {
   while (chunk.status !== 200 && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 200));
     chunk = await handleSubtitleChunk(
-      { settings, subtitles: engine, request: new Request("http://localhost/cfg/subs/0.vtt?f=key3") },
+      {
+        settings,
+        subtitles: engine,
+        request: new Request("http://localhost/cfg/subs/0.vtt?f=key3"),
+      },
       "key3",
       "0",
     );
@@ -500,7 +618,11 @@ test("the playlist is never cached, the segments are", async () => {
   assert.match(chunk.headers.get("content-type") ?? "", /text\/vtt/);
   assert.equal(chunk.headers.get("cache-control"), "public, max-age=86400", "and kept for the day");
   const missing = await handleSubtitleChunk(
-    { settings, subtitles: engine, request: new Request("http://localhost/cfg/subs/99.vtt?f=key3") },
+    {
+      settings,
+      subtitles: engine,
+      request: new Request("http://localhost/cfg/subs/99.vtt?f=key3"),
+    },
     "key3",
     "99",
   );
@@ -522,7 +644,11 @@ test("nothing is planned without the source's length or an install that asked", 
     engine.ensure("k2", audio, { durationMs: 60_000, windows, cardMs: CARD_MS }, false),
     null,
   );
-  assert.equal(await engine.playlist("k", CARD_MS), null, "and no playlist for a track nobody wanted");
+  assert.equal(
+    await engine.playlist("k", CARD_MS),
+    null,
+    "and no playlist for a track nobody wanted",
+  );
 });
 
 test("a player that asks too early gets a valid playlist, not a 404", async () => {
@@ -532,7 +658,11 @@ test("a player that asks too early gets a valid playlist, not a 404", async () =
   const { settings } = await fixture();
   const engine = new SubtitleEngine(settings, stubTranscriber());
   const response = await handleSubtitlePlaylist(
-    { settings, subtitles: engine, request: new Request("http://localhost/cfg/subs.m3u8?f=nothing") },
+    {
+      settings,
+      subtitles: engine,
+      request: new Request("http://localhost/cfg/subs.m3u8?f=nothing"),
+    },
     CARD_MS,
   );
   assert.equal(response.status, 200);
@@ -552,7 +682,11 @@ test("a rendition with nothing in it yet still carries a segment", async () => {
   const { settings } = await fixture();
   const engine = new SubtitleEngine(settings, stubTranscriber());
   const empty = await handleSubtitlePlaylist(
-    { settings, subtitles: engine, request: new Request("http://localhost/cfg/subs.m3u8?f=nothing") },
+    {
+      settings,
+      subtitles: engine,
+      request: new Request("http://localhost/cfg/subs.m3u8?f=nothing"),
+    },
     0,
   );
   const body = await empty.text();
@@ -561,7 +695,11 @@ test("a rendition with nothing in it yet still carries a segment", async () => {
   assert.match(body, /subs\/placeholder\.vtt\?f=nothing/, "pointing at the placeholder");
 
   const placeholder = await handleSubtitleChunk(
-    { settings, subtitles: engine, request: new Request("http://localhost/cfg/subs/placeholder.vtt?f=nothing") },
+    {
+      settings,
+      subtitles: engine,
+      request: new Request("http://localhost/cfg/subs/placeholder.vtt?f=nothing"),
+    },
     "nothing",
     "placeholder",
   );
@@ -582,7 +720,11 @@ test("the rendition and its chunks are reachable through the router", async () =
     types: ["intro"],
     subtitles: true,
   });
-  const routerSettings = { ...settings, splash: true, prerollSeconds: CARD_MS / 1000 } as unknown as Settings;
+  const routerSettings = {
+    ...settings,
+    splash: true,
+    prerollSeconds: CARD_MS / 1000,
+  } as unknown as Settings;
   const packages = new PackageEngine(routerSettings);
 
   const list = await handleRequest(
@@ -611,16 +753,22 @@ test("the master's rendition line is one a strict parser accepts", async () => {
   // `LANGUAGE=en` is a quoted-string attribute, and unquoted it makes the whole `#EXT-X-MEDIA`
   // line unparseable -- a real bug that is fixed here. It is *not* why IINA (mpv) showed no
   // subtitle track: mpv's demuxer refuses a subtitle rendition outright below ffmpeg 8, and no
-  // attribute can fix that (see the note on `masterPlaylist` in src/streaminfo.ts).
+  // attribute can fix that (see the note on `masterPlaylist` in src/streams/streaminfo.ts).
   const master = masterPlaylist({
     mediaUri: "/cfg/play?u=x&m=1",
     subtitleUri: "subs.m3u8?f=key",
     language: "en",
     name: "TheIntroDB",
-    info: { durationMs: 60_000, bitrate: 5_300_000, width: 1920, height: 1080, codecs: "avc1.640028,mp4a.40.2" },
+    info: {
+      durationMs: 60_000,
+      bitrate: 5_300_000,
+      width: 1920,
+      height: 1080,
+      codecs: "avc1.640028,mp4a.40.2",
+    },
   });
   const media = master.split("\n").find((line) => line.startsWith("#EXT-X-MEDIA"))!;
-  assert.ok(media.includes('TYPE=SUBTITLES'), "a subtitle rendition");
+  assert.ok(media.includes("TYPE=SUBTITLES"), "a subtitle rendition");
   assert.ok(media.includes('GROUP-ID="subs"'), "in the group the variant claims");
   assert.ok(media.includes('LANGUAGE="en"'), "with its language quoted, as HLS requires");
   assert.ok(media.includes('URI="subs.m3u8?f=key"'), "and a URI to read");

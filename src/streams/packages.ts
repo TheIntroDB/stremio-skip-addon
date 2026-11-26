@@ -30,10 +30,12 @@
  */
 
 import { createHash } from "node:crypto";
-import { appendFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { Settings } from "./env.js";
+import type { Settings } from "../addon/env.js";
+import type { SkipWindow } from "../addon/types.js";
+import { delay, errorText, inputOptions, type KeptRange, keptRanges, run } from "./ffmpeg.js";
 import {
   cardSeconds,
   generatePadPiece,
@@ -44,16 +46,7 @@ import {
   SPLASH_RE,
   splashAvailable,
 } from "./splash.js";
-import {
-  delay,
-  errorText,
-  inputOptions,
-  keptRanges,
-  run,
-  type KeptRange,
-} from "./ffmpeg.js";
 import { chooseAudio, parseProbe, type StreamInfo } from "./streaminfo.js";
-import type { SkipWindow } from "./types.js";
 
 export type PackageStatus = "queued" | "generating" | "ready" | "failed";
 
@@ -370,7 +363,9 @@ export class PackageEngine {
       bytes: 0,
     };
     this.states.set(key, state);
-    const task = this.enqueue(() => this.perform(state, sourceUrl, windows, durationMs ?? null, audioLanguage));
+    const task = this.enqueue(() =>
+      this.perform(state, sourceUrl, windows, durationMs ?? null, audioLanguage),
+    );
     this.running.set(key, task);
     void task.finally(() => this.running.delete(key));
     return state;
@@ -425,7 +420,8 @@ export class PackageEngine {
   ): Promise<Array<{ segments: Array<{ name: string; ms: number }>; init: string | null }>> {
     const dir = this.dirFor(key);
     const format = await this.formatFor(key);
-    const stretches: Array<{ segments: Array<{ name: string; ms: number }>; init: string | null }> = [];
+    const stretches: Array<{ segments: Array<{ name: string; ms: number }>; init: string | null }> =
+      [];
     for (let i = 0; i < plan.ranges.length; i++) {
       const range = plan.ranges[i];
       if (!range) continue;
@@ -795,11 +791,13 @@ export class PackageEngine {
     const probe = await run(
       this.settings.ffprobePath,
       [
-        "-v", "error",
+        "-v",
+        "error",
         "-show_entries",
         "format=duration,bit_rate:stream=index,codec_type,codec_name,profile,level,width,height" +
           ":stream_tags=language:stream_disposition=default",
-        "-of", "json",
+        "-of",
+        "json",
         target,
       ],
       30_000,
@@ -934,7 +932,9 @@ export class PackageEngine {
   /** Whether this key's segments are fMP4, and what starts each pass. */
   async formatFor(key: string): Promise<PackageFormat> {
     try {
-      const parsed = JSON.parse(await readFile(path.join(this.dirFor(key), FORMAT), "utf8")) as PackageFormat;
+      const parsed = JSON.parse(
+        await readFile(path.join(this.dirFor(key), FORMAT), "utf8"),
+      ) as PackageFormat;
       if (parsed.container === "mp4" && Array.isArray(parsed.inits)) return parsed;
       return { container: "ts", inits: [] };
     } catch {
@@ -953,7 +953,9 @@ export class PackageEngine {
         inits: (plan?.ranges ?? []).map((_, index) => `init-${index}.mp4`),
       };
       await mkdir(this.dirFor(key), { recursive: true }).catch(() => undefined);
-      await writeFile(path.join(this.dirFor(key), FORMAT), JSON.stringify(chosen)).catch(() => undefined);
+      await writeFile(path.join(this.dirFor(key), FORMAT), JSON.stringify(chosen)).catch(
+        () => undefined,
+      );
       return chosen;
     }
   }
@@ -977,7 +979,9 @@ export class PackageEngine {
     if (rows.length > 0) await writeFile(csv, `${rows.join("\n")}\n`);
   }
 
-  private async readCsv(file: string): Promise<Array<{ name: string; startMs: number; endMs: number }>> {
+  private async readCsv(
+    file: string,
+  ): Promise<Array<{ name: string; startMs: number; endMs: number }>> {
     let text: string;
     try {
       text = await readFile(file, "utf8");
@@ -1056,63 +1060,102 @@ export class PackageEngine {
         this.settings.ffmpegPath,
         format.container === "mp4"
           ? [
-              "-nostdin", "-hide_banner", "-v", "error", "-y",
+              "-nostdin",
+              "-hide_banner",
+              "-v",
+              "error",
+              "-y",
               ...inputOptions(),
-              "-ss", seconds(range.startMs),
-              "-i", sourceUrl,
-              "-t", seconds(wanted),
+              "-ss",
+              seconds(range.startMs),
+              "-i",
+              sourceUrl,
+              "-t",
+              seconds(wanted),
               ...audioMap(await this.sourceInfo(state.key), audioLanguage ?? ""),
               // Only the picture and the sound. A source with an embedded WebVTT track is common,
               // and copying it makes the HLS muxer refuse the whole output ("Exactly one WebVTT
               // stream is needed"), which is a package that never gets made at all.
-              "-sn", "-dn",
-              "-c", "copy",
+              "-sn",
+              "-dn",
+              "-c",
+              "copy",
               // `hvc1` is the sample entry Apple's spec asks for and the one browsers accept.
-              "-tag:v", "hvc1",
-              "-avoid_negative_ts", "make_zero",
-              "-f", "hls",
-              "-hls_time", String(SEGMENT_SECONDS),
-              "-hls_list_size", "0",
-              "-hls_segment_type", "fmp4",
-              "-hls_fmp4_init_filename", init,
-              "-hls_segment_filename", path.join(state.dir, "seg%05d.m4s"),
-              "-start_number", String(recorded),
+              "-tag:v",
+              "hvc1",
+              "-avoid_negative_ts",
+              "make_zero",
+              "-f",
+              "hls",
+              "-hls_time",
+              String(SEGMENT_SECONDS),
+              "-hls_list_size",
+              "0",
+              "-hls_segment_type",
+              "fmp4",
+              "-hls_fmp4_init_filename",
+              init,
+              "-hls_segment_filename",
+              path.join(state.dir, "seg%05d.m4s"),
+              "-start_number",
+              String(recorded),
               path.join(state.dir, "perpass.m3u8"),
             ]
           : [
-          "-nostdin", "-hide_banner", "-v", "error", "-y",
-          ...inputOptions(),
-          "-ss", seconds(range.startMs),
-          "-i", sourceUrl,
-          "-t", seconds(wanted),
-          ...audioMap(await this.sourceInfo(state.key), audioLanguage ?? ""),
-          // See above: the segments carry the picture and the sound, nothing else.
-          "-sn", "-dn",
-          "-c", "copy",
-          "-f", "segment",
-          "-segment_time", String(SEGMENT_SECONDS),
-          "-segment_format", "mpegts",
-          // The timestamps must *run* across the segments of a stretch. Resetting
-          // them per segment (`-reset_timestamps 1`) stamps every segment with the
-          // same clock, so a player sees a ten-second item that restarts at every
-          // segment: the bar loops, the duration is one segment long, and audio and
-          // video — reset on different frame boundaries — drift apart.
-          "-muxdelay", "0", "-muxpreload", "0",
-          // Keep the first frame of a stretch at zero rather than negative: ffmpeg
-          // starts a copy at the keyframe *before* the requested point.
-          "-avoid_negative_ts", "make_zero",
-          "-segment_list", csv,
-          "-segment_list_type", "csv",
-          "-segment_start_number", String(recorded),
-          path.join(state.dir, "seg%05d.ts"),
-        ],
+              "-nostdin",
+              "-hide_banner",
+              "-v",
+              "error",
+              "-y",
+              ...inputOptions(),
+              "-ss",
+              seconds(range.startMs),
+              "-i",
+              sourceUrl,
+              "-t",
+              seconds(wanted),
+              ...audioMap(await this.sourceInfo(state.key), audioLanguage ?? ""),
+              // See above: the segments carry the picture and the sound, nothing else.
+              "-sn",
+              "-dn",
+              "-c",
+              "copy",
+              "-f",
+              "segment",
+              "-segment_time",
+              String(SEGMENT_SECONDS),
+              "-segment_format",
+              "mpegts",
+              // The timestamps must *run* across the segments of a stretch. Resetting
+              // them per segment (`-reset_timestamps 1`) stamps every segment with the
+              // same clock, so a player sees a ten-second item that restarts at every
+              // segment: the bar loops, the duration is one segment long, and audio and
+              // video — reset on different frame boundaries — drift apart.
+              "-muxdelay",
+              "0",
+              "-muxpreload",
+              "0",
+              // Keep the first frame of a stretch at zero rather than negative: ffmpeg
+              // starts a copy at the keyframe *before* the requested point.
+              "-avoid_negative_ts",
+              "make_zero",
+              "-segment_list",
+              csv,
+              "-segment_list_type",
+              "csv",
+              "-segment_start_number",
+              String(recorded),
+              path.join(state.dir, "seg%05d.ts"),
+            ],
         this.timeoutFor(wanted),
         this.signal,
       );
       // The fMP4 arm has no segment list of its own: the playlist ffmpeg wrote is the record, so
       // the same CSV is written from it and everything downstream reads one shape.
       if (format.container === "mp4" && result.code === 0) {
-        await this.writeCsvFromPlaylist(path.join(state.dir, "perpass.m3u8"), csv).catch(() => undefined);
+        await this.writeCsvFromPlaylist(path.join(state.dir, "perpass.m3u8"), csv).catch(
+          () => undefined,
+        );
       }
       const rows = await this.readCsv(csv);
       recorded += rows.length;

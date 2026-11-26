@@ -14,16 +14,23 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build:css": "node --import tsx scripts/build-styles.ts",
+    "build": "npm run build:css && tsc -p tsconfig.build.json",
     "start": "node dist/server.js",
-    "dev": "tsx watch src/server.ts",
-    "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/*.test.ts",
-    "check": "npm run typecheck && npm test",
+    "dev": "npm run build:css && tsx watch src/server.ts",
+    "typecheck": "npm run build:css && tsc --noEmit",
+    "test": "npm run build:css && node --import tsx --test test/*.test.ts",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "format": "biome format --write .",
+    "check": "npm run lint && npm run typecheck && npm test",
     "verify:package": "node --import tsx scripts/verify-package.ts"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.6.9",
+    "@tailwindcss/cli": "^4.3.5",
     "@types/node": "^22.10.2",
+    "tailwindcss": "^4.3.5",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }

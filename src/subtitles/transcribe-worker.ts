@@ -24,9 +24,9 @@
 
 import { createInterface } from "node:readline";
 
-import { loadSettings } from "./env.js";
-import { Transcriber } from "./transcribe.js";
+import { loadSettings } from "../addon/env.js";
 import type { Word } from "./cues.js";
+import { Transcriber } from "./transcribe.js";
 
 interface Request {
   id: number;
@@ -77,7 +77,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     try {
       await handle(request);
     } catch (error) {
-      reply({ id: request.id, ok: false, error: error instanceof Error ? error.message : String(error) });
+      reply({
+        id: request.id,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   });
 });

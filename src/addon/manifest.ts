@@ -46,7 +46,10 @@ export function buildManifest(config: AddonConfig | null, encodedConfig?: string
   const configured = config !== null && Boolean(encodedConfig);
   const extra = configured
     ? {
-        "Skip:": config!.types.length > 0 ? config!.types.join(", ") : "nothing (no segment type selected)",
+        "Skip:":
+          config!.types.length > 0
+            ? config!.types.join(", ")
+            : "nothing (no segment type selected)",
         "Source:": config!.src.map((url) => url.replace(/^https?:\/\//, "")).join(", "),
         "Docs:": REPO_URL,
       }
@@ -57,7 +60,9 @@ export function buildManifest(config: AddonConfig | null, encodedConfig?: string
   );
 
   return {
-    id: configured ? `org.theintrodb.stremio.skip.${configIdSuffix(encodedConfig!)}` : "org.theintrodb.stremio.skip",
+    id: configured
+      ? `org.theintrodb.stremio.skip.${configIdSuffix(encodedConfig!)}`
+      : "org.theintrodb.stremio.skip",
     version: ADDON_VERSION,
     name: config?.name || "TheIntroDB Skip",
     description,

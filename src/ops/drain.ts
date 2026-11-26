@@ -60,7 +60,9 @@ export async function cacheReport(cacheDir: string): Promise<CacheEntry[]> {
   }
   for (const name of names) {
     const dir = path.join(cacheDir, name);
-    const entries = await readdir(dir).then((list) => list.length).catch(() => 0);
+    const entries = await readdir(dir)
+      .then((list) => list.length)
+      .catch(() => 0);
     report.push({
       name,
       cleared: (DRAINED as readonly string[]).includes(name),

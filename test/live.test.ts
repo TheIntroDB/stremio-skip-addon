@@ -14,10 +14,9 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-
-import { spliceMediaPlaylist, type UriRewriters } from "../src/hls.js";
-import { lookupSkipWindows } from "../src/introdb.js";
-import type { Env, SkipWindow } from "../src/types.js";
+import type { Env, SkipWindow } from "../src/addon/types.js";
+import { spliceMediaPlaylist, type UriRewriters } from "../src/streams/hls.js";
+import { lookupSkipWindows } from "../src/theintrodb/theintrodb.js";
 
 const apiKey = (process.env.TIDB_API_KEY ?? "").trim();
 const live = process.env.TIDB_LIVE === "1" && apiKey.length > 0;
@@ -25,7 +24,9 @@ const liveEnv: Env = { TIDB_API_KEY: apiKey, skipMarginSeconds: 0 };
 
 const identity: UriRewriters = { playlistUri: (uri) => uri, resourceUri: (uri) => uri };
 
-test("the live API answers for a known episode, and the answer cuts that episode", { skip: !live }, async () => {
+test("the live API answers for a known episode, and the answer cuts that episode", {
+  skip: !live,
+}, async () => {
   const result = await lookupSkipWindows(
     liveEnv,
     { types: ["intro", "recap", "credits", "preview"] },

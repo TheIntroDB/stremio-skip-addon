@@ -1,6 +1,8 @@
 node_modules/
 dist/
 cache/
+# Compiled from src/web/app.css by scripts/build-styles.ts.
+src/web/styles.generated.ts
 .env
 .env.*
 !.env.example

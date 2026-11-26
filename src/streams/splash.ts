@@ -20,9 +20,9 @@ import { mkdir, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { Settings } from "./env.js";
+import type { Settings } from "../addon/env.js";
+import type { SkipWindow } from "../addon/types.js";
 import { run } from "./ffmpeg.js";
-import type { SkipWindow } from "./types.js";
 
 /** Every piece of the card is this long. */
 /**
@@ -58,6 +58,7 @@ const FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf";
 /** The org's own badge, vendored so drawing a card never needs the network. */
 export const BADGE_PATH = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
+  "..",
   "..",
   "assets",
   "badge.png",
@@ -152,19 +153,12 @@ export const CARD_FILES = {
 
 /** The ffmpeg arguments that draw one piece of the card. */
 export function splashArgs(
-  card: SplashCard,
   out: string,
   offsetSeconds: number,
   seconds: number,
   dir: string,
 ): string[] {
-  const draw = (
-    file: string,
-    font: string,
-    size: number,
-    color: string,
-    y: number,
-  ): string =>
+  const draw = (file: string, font: string, size: number, color: string, y: number): string =>
     `drawtext=fontfile=${font}:textfile=${path.join(dir, file)}:fontsize=${size}:fontcolor=${color}:x=(w-text_w)/2:y=${y}`;
 
   const graph = [
@@ -178,29 +172,60 @@ export function splashArgs(
   ].join(";");
 
   return [
-    "-nostdin", "-hide_banner", "-v", "error", "-y",
-    "-f", "lavfi", "-i", `color=c=${BACKDROP}:s=${WIDTH}x${HEIGHT}:r=${FPS}`,
+    "-nostdin",
+    "-hide_banner",
+    "-v",
+    "error",
+    "-y",
+    "-f",
+    "lavfi",
+    "-i",
+    `color=c=${BACKDROP}:s=${WIDTH}x${HEIGHT}:r=${FPS}`,
     // A silent track, so the card has the same stream layout as the episode that follows it.
-    "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
-    "-loop", "1", "-i", BADGE_PATH,
-    "-filter_complex", graph,
-    "-map", "[out]", "-map", "1:a",
-    "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-g", String(FPS * 2),
-    "-c:a", "aac", "-b:a", "48k",
+    "-f",
+    "lavfi",
+    "-i",
+    "anullsrc=r=48000:cl=stereo",
+    "-loop",
+    "1",
+    "-i",
+    BADGE_PATH,
+    "-filter_complex",
+    graph,
+    "-map",
+    "[out]",
+    "-map",
+    "1:a",
+    "-c:v",
+    "libx264",
+    "-preset",
+    "ultrafast",
+    "-pix_fmt",
+    "yuv420p",
+    "-g",
+    String(FPS * 2),
+    "-c:a",
+    "aac",
+    "-b:a",
+    "48k",
     // The offset is what makes the pieces one timeline, and the delay makes a piece start
     // at exactly its offset rather than a second and a half later.
-    "-muxdelay", "0", "-muxpreload", "0",
-    "-output_ts_offset", offsetSeconds.toFixed(3),
-    "-t", String(seconds),
-    "-f", "mpegts",
+    "-muxdelay",
+    "0",
+    "-muxpreload",
+    "0",
+    "-output_ts_offset",
+    offsetSeconds.toFixed(3),
+    "-t",
+    String(seconds),
+    "-f",
+    "mpegts",
     out,
   ];
 }
 
 /** Draw one piece. Returns its name and size, or null when ffmpeg could not make it. */
-export type SplashResult =
-  | { ok: true; name: string; bytes: number }
-  | { ok: false; error: string };
+export type SplashResult = { ok: true; name: string; bytes: number } | { ok: false; error: string };
 
 export async function generateSplashPiece(
   settings: Settings,
@@ -224,7 +249,7 @@ export async function generateSplashPiece(
   }
   const result = await run(
     settings.ffmpegPath,
-    splashArgs(card, out, index * seconds, cardSeconds(settings), dir),
+    splashArgs(out, index * seconds, cardSeconds(settings), dir),
     60_000,
   );
   if (result.code !== 0) {
@@ -260,14 +285,37 @@ export async function generatePadPiece(
   const result = await run(
     settings.ffmpegPath,
     [
-      "-nostdin", "-hide_banner", "-v", "error", "-y",
-      "-f", "lavfi", "-i", `color=c=${BACKDROP}:s=${WIDTH}x${HEIGHT}:r=${FPS}`,
-      "-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",
-      "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
-      "-c:a", "aac", "-b:a", "48k",
-      "-muxdelay", "0", "-muxpreload", "0",
-      "-t", String(PAD_SECONDS),
-      "-f", "mpegts",
+      "-nostdin",
+      "-hide_banner",
+      "-v",
+      "error",
+      "-y",
+      "-f",
+      "lavfi",
+      "-i",
+      `color=c=${BACKDROP}:s=${WIDTH}x${HEIGHT}:r=${FPS}`,
+      "-f",
+      "lavfi",
+      "-i",
+      "anullsrc=r=48000:cl=stereo",
+      "-c:v",
+      "libx264",
+      "-preset",
+      "ultrafast",
+      "-pix_fmt",
+      "yuv420p",
+      "-c:a",
+      "aac",
+      "-b:a",
+      "48k",
+      "-muxdelay",
+      "0",
+      "-muxpreload",
+      "0",
+      "-t",
+      String(PAD_SECONDS),
+      "-f",
+      "mpegts",
       out,
     ],
     60_000,
@@ -281,7 +329,9 @@ export async function generatePadPiece(
 }
 
 /** Whether the card can be drawn at all: ffmpeg, a font and the badge. */
-export async function splashAvailable(settings: Settings): Promise<{ ok: boolean; detail: string }> {
+export async function splashAvailable(
+  settings: Settings,
+): Promise<{ ok: boolean; detail: string }> {
   for (const [what, file] of [
     ["font", FONT_REGULAR],
     ["bold font", FONT_BOLD],
@@ -295,7 +345,10 @@ export async function splashAvailable(settings: Settings): Promise<{ ok: boolean
   }
   const probe = await run(settings.ffmpegPath, ["-hide_banner", "-h", "filter=drawtext"], 10_000);
   if (probe.code !== 0 || !/drawtext/.test(probe.stdout + probe.stderr)) {
-    return { ok: false, detail: "this ffmpeg has no drawtext filter, so the processing card cannot be drawn" };
+    return {
+      ok: false,
+      detail: "this ffmpeg has no drawtext filter, so the processing card cannot be drawn",
+    };
   }
   return { ok: true, detail: `card -> ${BADGE_PATH}` };
 }

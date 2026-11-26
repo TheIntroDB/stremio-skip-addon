@@ -32,11 +32,7 @@ export function json(
   });
 }
 
-export function html(
-  body: string,
-  status = 200,
-  headers: Record<string, string> = {},
-): Response {
+export function html(body: string, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(body, {
     status,
     headers: {

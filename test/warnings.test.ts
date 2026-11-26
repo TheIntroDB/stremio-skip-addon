@@ -14,13 +14,17 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-
-import { KnownCodecs } from "../src/known.js";
-import { labelledHevc, wrapStream } from "../src/upstream.js";
-import type { UpstreamStream } from "../src/types.js";
+import type { UpstreamStream } from "../src/addon/types.js";
+import { KnownCodecs } from "../src/streams/known.js";
+import { labelledHevc, wrapStream } from "../src/streams/upstream.js";
 
 function item(overrides: Partial<UpstreamStream> = {}): UpstreamStream {
-  return { name: "Source", title: "Some.Release", url: "https://cdn.example/film.mkv", ...overrides };
+  return {
+    name: "Source",
+    title: "Some.Release",
+    url: "https://cdn.example/film.mkv",
+    ...overrides,
+  };
 }
 
 test("a release's own labels say whether it is HEVC", () => {
@@ -61,18 +65,21 @@ test("the map stays small, keeping what was learnt most recently", async () => {
 
 test("the warning goes on the item, beneath what the release is", () => {
   const wrapped = wrapStream(item({ title: "Some.Release.2160p.HEVC" }), {
-    playUrl: (target, identity) => `https://addon.example/play?u=${encodeURIComponent(target)}&k=${identity}`,
+    playUrl: (target, identity) =>
+      `https://addon.example/play?u=${encodeURIComponent(target)}&k=${identity}`,
     label: "TheIntroDB",
     cutSummary: "intro 0:10-0:40",
     allowPrivateHosts: true,
     sourceBase: "https://cdn.example",
-    warningFor: (_identity, stream) => (labelledHevc(stream) ? "⚠ HEVC: the first play can take a minute." : null),
+    warningFor: (_identity, stream) =>
+      labelledHevc(stream) ? "⚠ HEVC: the first play can take a minute." : null,
   });
   assert.match(wrapped.description ?? "", /intro 0:10-0:40/, "what will be cut");
   assert.match(wrapped.description ?? "", /HEVC/, "and why it is slow");
 
   const plain = wrapStream(item({ title: "Some.Release.1080p.WEB" }), {
-    playUrl: (target, identity) => `https://addon.example/play?u=${encodeURIComponent(target)}&k=${identity}`,
+    playUrl: (target, identity) =>
+      `https://addon.example/play?u=${encodeURIComponent(target)}&k=${identity}`,
     label: "TheIntroDB",
     cutSummary: null,
     allowPrivateHosts: true,

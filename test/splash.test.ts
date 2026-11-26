@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { cardText, clock, splashArgs, SPLASH_RE } from "../src/splash.js";
+import { cardText, clock, SPLASH_RE, splashArgs } from "../src/streams/splash.js";
 
 test("a clock reads as minutes and seconds, and as hours when it has to", () => {
   assert.equal(clock(0), "0:00");
@@ -34,7 +34,10 @@ test("the card names the windows it is cutting, in the order they are cut", () =
   );
   assert.ok(text.windows.includes("(1/2)"), "and it says which of the stretches is being written");
   // A window that runs to the end of the file says so rather than naming a time it does not have.
-  assert.ok(text.windows.includes("Credits 57:15-end"), "a window with no end says so rather than inventing one");
+  assert.ok(
+    text.windows.includes("Credits 57:15-end"),
+    "a window with no end says so rather than inventing one",
+  );
   assert.equal(text.footer, "Go to theintrodb.org to submit or report incorrect segments");
 });
 
@@ -60,26 +63,14 @@ test("the count reads naturally, and counts what the card lists", () => {
 
 test("the pieces are drawn from text files, not from filter arguments", () => {
   // A colon cannot be passed through a filter graph at all, so the card's lines are files.
-  const args = splashArgs(
-    { segments: 3, windows: [{ type: "intro", startMs: 0, endMs: 1_000 }], pass: 1, passes: 1 },
-    "/tmp/x/splash00000.ts",
-    0,
-    10,
-    "/tmp/x",
-  );
+  const args = splashArgs("/tmp/x/splash00000.ts", 0, 10, "/tmp/x");
   const graph = args[args.indexOf("-filter_complex") + 1]!;
   assert.ok(graph.includes("textfile=/tmp/x/card.title.txt"));
   assert.ok(graph.includes("card.footer.txt"));
   assert.ok(!/text=[^f]/.test(graph), "no text= argument anywhere");
   // Each piece is offset onto one shared clock, or a player loops on the pieces.
   assert.equal(args[args.indexOf("-output_ts_offset") + 1], "0.000");
-  const second = splashArgs(
-    { segments: 0, windows: [], pass: 1, passes: 1 },
-    "/tmp/x/splash00001.ts",
-    10,
-    10,
-    "/tmp/x",
-  );
+  const second = splashArgs("/tmp/x/splash00001.ts", 10, 10, "/tmp/x");
   assert.equal(second[second.indexOf("-output_ts_offset") + 1], "10.000");
   assert.ok(SPLASH_RE.test("splash00001.ts"));
   assert.ok(!SPLASH_RE.test("splash1.ts"));

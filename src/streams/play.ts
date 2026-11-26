@@ -9,7 +9,7 @@
  * - an HLS playlist with the skip windows removed (masters are rewritten so their
  *   variants come back here, then the variant playlist is spliced);
  * - a cut file, for a progressive `.mkv`/`.mp4` whose intro was remuxed out by
- *   `cut.ts` (see there: the first playback warms it, later ones are cut);
+ *   `packages.ts` (see there: the first playback warms it, later ones are cut);
  * - a `302` to the origin URL, for anything that cannot be cut, or while a cut is
  *   still being prepared.
  *
@@ -17,15 +17,16 @@
  * copying the ranges that survive.
  */
 
-import { getHttpCache } from "./cache.js";
-import { cardSeconds } from "./splash.js";
-import { chooseAudio, chooseSourceTrack, masterPlaylist } from "./streaminfo.js";
-import type { ManifestView, PackageEngine } from "./packages.js";
-import { trackKey, type SubtitleEngine } from "./subtitles.js";
-import type { Settings } from "./env.js";
+import { getHttpCache } from "../addon/cache.js";
+import type { Settings } from "../addon/env.js";
+import { CORS_HEADERS, playlist, redirectTo, text } from "../addon/http.js";
+import type { AddonConfig, CutMode, SkipWindow } from "../addon/types.js";
+import { DEFAULT_CUT_MODE } from "../addon/types.js";
+import { playUrl, segmentUrl } from "../addon/urls.js";
+import { type SubtitleEngine, trackKey } from "../subtitles/subtitles.js";
+import { lookupSkipWindows } from "../theintrodb/theintrodb.js";
 import { serveFile } from "./files.js";
 import { describeWindows } from "./format.js";
-import { knownCodecs } from "./known.js";
 import {
   isMasterPlaylist,
   isPlaylist,
@@ -33,12 +34,11 @@ import {
   spliceMediaPlaylist,
   type UriRewriters,
 } from "./hls.js";
-import { CORS_HEADERS, playlist, redirectTo, text } from "./http.js";
-import { lookupSkipWindows } from "./introdb.js";
+import { knownCodecs } from "./known.js";
+import type { ManifestView, PackageEngine } from "./packages.js";
+import { cardSeconds } from "./splash.js";
+import { chooseAudio, chooseSourceTrack, masterPlaylist } from "./streaminfo.js";
 import { isPrivateHost } from "./upstream.js";
-import type { AddonConfig, CutMode, SkipWindow } from "./types.js";
-import { DEFAULT_CUT_MODE } from "./types.js";
-import { playUrl, segmentUrl } from "./urls.js";
 
 /** Playlists are text and small; anything bigger is not a playlist. */
 const MAX_PLAYLIST_BYTES = 4 * 1024 * 1024;
@@ -50,8 +50,26 @@ const NOT_PLAYLIST_TTL_SECONDS = 60 * 60;
 
 /** Extensions that are never a playlist, so a sniff can be skipped entirely. */
 const MEDIA_EXTENSIONS = [
-  ".mp4", ".m4v", ".mkv", ".webm", ".avi", ".mov", ".flv", ".wmv", ".mpg", ".mpeg", ".m2ts",
-  ".ts", ".iso", ".mp3", ".m4a", ".aac", ".flac", ".srt", ".vtt", ".ass",
+  ".mp4",
+  ".m4v",
+  ".mkv",
+  ".webm",
+  ".avi",
+  ".mov",
+  ".flv",
+  ".wmv",
+  ".mpg",
+  ".mpeg",
+  ".m2ts",
+  ".ts",
+  ".iso",
+  ".mp3",
+  ".m4a",
+  ".aac",
+  ".flac",
+  ".srt",
+  ".vtt",
+  ".ass",
 ];
 
 export interface PlayContext {
@@ -110,12 +128,24 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
   if (cutKey) {
     const card = await context.packages.advanceCard(cutKey);
     if (card) {
-      const audio = await offerTrack(context, target, cutKey, windows, card.card > 0 ? cardSeconds(context.settings) * 1000 : 0);
+      const audio = await offerTrack(
+        context,
+        target,
+        cutKey,
+        windows,
+        card.card > 0 ? cardSeconds(context.settings) * 1000 : 0,
+      );
       return packageResponse(context, card, cutKey, lookup?.reason ?? "", audio);
     }
     const ready = await context.packages.manifest(cutKey);
     if (ready) {
-      const audio = await offerTrack(context, target, cutKey, windows, ready.card > 0 ? cardSeconds(context.settings) * 1000 : 0);
+      const audio = await offerTrack(
+        context,
+        target,
+        cutKey,
+        windows,
+        ready.card > 0 ? cardSeconds(context.settings) * 1000 : 0,
+      );
       return packageResponse(context, ready, cutKey, lookup?.reason ?? "", audio);
     }
   }
@@ -132,7 +162,13 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
     // "this stream link only works on the internet connection that requested it".
     if (looksLikeProgressiveFile(target)) {
       return handleProgressive(
-        context, target, windows, "proxied_file", streamKey, cutMode, lookup?.reason ?? "",
+        context,
+        target,
+        windows,
+        "proxied_file",
+        streamKey,
+        cutMode,
+        lookup?.reason ?? "",
       );
     }
   } else {
@@ -146,11 +182,25 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
       return redirectTo(target, "range_request");
     }
     if (looksLikeProgressiveFile(target)) {
-      return handleProgressive(context, target, windows, "not_hls", streamKey, cutMode, lookup?.reason ?? "");
+      return handleProgressive(
+        context,
+        target,
+        windows,
+        "not_hls",
+        streamKey,
+        cutMode,
+        lookup?.reason ?? "",
+      );
     }
     if (await cache.match(verdictKey)) {
       return handleProgressive(
-        context, target, windows, "not_a_playlist_cached", streamKey, cutMode, lookup?.reason ?? "",
+        context,
+        target,
+        windows,
+        "not_a_playlist_cached",
+        streamKey,
+        cutMode,
+        lookup?.reason ?? "",
       );
     }
   }
@@ -191,7 +241,13 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
     // instance): the prefix read above already had to come from here, so the rest
     // does too -- which `handleProgressive` does, because proxying is on by default.
     return handleProgressive(
-      context, target, windows, "not_a_playlist", streamKey, cutMode, lookup?.reason ?? "",
+      context,
+      target,
+      windows,
+      "not_a_playlist",
+      streamKey,
+      cutMode,
+      lookup?.reason ?? "",
     );
   }
 
@@ -256,7 +312,7 @@ async function handleProgressive(
   lookupReason = "",
 ): Promise<Response> {
   if (windows.length > 0 && mode === "mkv" && context.packages.enabled) {
-    return packageOrProxy(context, target, windows, streamKey, reason, lookupReason);
+    return packageOrProxy(context, target, windows, streamKey, lookupReason);
   }
   return passThrough(context, target, reason, lookupReason);
 }
@@ -354,7 +410,6 @@ async function packageOrProxy(
   target: string,
   windows: readonly SkipWindow[],
   streamKey: string | null,
-  reason: string,
   lookupReason: string,
 ): Promise<Response> {
   const audioLanguage = context.config.audioLang || context.settings.subtitlesAudioLanguage || "";
@@ -366,7 +421,13 @@ async function packageOrProxy(
   const wantsSubtitles = context.subtitles.enabled(context.config);
   const ready = await context.packages.manifest(key);
   if (ready) {
-    const resolved = await offerTrack(context, target, key, windows, ready.card > 0 ? cardSeconds(context.settings) * 1000 : 0);
+    const resolved = await offerTrack(
+      context,
+      target,
+      key,
+      windows,
+      ready.card > 0 ? cardSeconds(context.settings) * 1000 : 0,
+    );
     return packageResponse(context, ready, key, lookupReason, resolved);
   }
 
@@ -380,7 +441,8 @@ async function packageOrProxy(
   // the next playback spends the same minute finding out again.
   if (streamKey) {
     const probed = await context.packages.sourceInfo(key);
-    if (probed?.video) await knownCodecs(context.settings.cacheDir).remember(streamKey, probed.video);
+    if (probed?.video)
+      await knownCodecs(context.settings.cacheDir).remember(streamKey, probed.video);
   }
   // The probe that learnt the length also listed the audio tracks, which is only available now on
   // a key seen for the first time.
@@ -422,7 +484,6 @@ async function audioFor(
   return chosen ? { index: chosen.index, language: chosen.language } : null;
 }
 
-
 /**
  * A package's playlist: the master that carries the subtitle rendition, or the media playlist.
  *
@@ -449,11 +510,9 @@ async function packageResponse(
   // declares no rendition, which a player reads as "no subtitle track" with nothing wrong in the
   // logs to say why.
   const track = context.subtitles!.trackFor(key);
-  if (enabled) context.subtitles!.noteResolved(track ?? trackKey(key, audio), audio ? audio.index : null);
-  const wants =
-    enabled &&
-    track !== null &&
-    url.searchParams.get("m") !== "1";
+  if (enabled)
+    context.subtitles!.noteResolved(track ?? trackKey(key, audio), audio ? audio.index : null);
+  const wants = enabled && track !== null && url.searchParams.get("m") !== "1";
   if (!wants || track === null) return mediaResponse(view, key, lookupReason);
   context.subtitles!.served.masters += 1;
 

@@ -3,11 +3,14 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-
-import { buildApiUrl, lookupSkipWindows, mediaToWindows } from "../src/introdb.js";
-import { MemoryHttpCache } from "../src/cache.js";
-import { applyMargin } from "../src/introdb.js";
-import type { Env, IntroDbMediaResponse } from "../src/types.js";
+import { MemoryHttpCache } from "../src/addon/cache.js";
+import type { Env, IntroDbMediaResponse } from "../src/addon/types.js";
+import {
+  applyMargin,
+  buildApiUrl,
+  lookupSkipWindows,
+  mediaToWindows,
+} from "../src/theintrodb/theintrodb.js";
 
 const env: Env = { TIDB_API_KEY: "unit-test-key", skipMarginSeconds: 0 };
 
@@ -38,7 +41,9 @@ test("a null-end segment starting at 0:00 is dropped: it would cut the whole fil
 
 test("a credits range with an explicit end that starts at 0:00 is kept", () => {
   const media: IntroDbMediaResponse = { credits: [{ start_ms: 0, end_ms: 90000 }] };
-  assert.deepEqual(mediaToWindows(media, ["credits"]), [{ type: "credits", startMs: 0, endMs: 90000 }]);
+  assert.deepEqual(mediaToWindows(media, ["credits"]), [
+    { type: "credits", startMs: 0, endMs: 90000 },
+  ]);
 });
 
 test("only the enabled segment kinds become windows", () => {
@@ -48,7 +53,9 @@ test("only the enabled segment kinds become windows", () => {
     credits: [{ start_ms: 5000, end_ms: 6000 }],
     preview: [{ start_ms: 7000, end_ms: 8000 }],
   };
-  assert.deepEqual(mediaToWindows(media, ["recap"]), [{ type: "recap", startMs: 3000, endMs: 4000 }]);
+  assert.deepEqual(mediaToWindows(media, ["recap"]), [
+    { type: "recap", startMs: 3000, endMs: 4000 },
+  ]);
 });
 
 test("several occurrences of one type all count, and touching windows merge", () => {
@@ -103,17 +110,28 @@ test("without a key nothing is looked up, and no request is made", async () => {
   assert.equal(fromNowhere.reason, "missing_api_key");
 
   // Also when a key is present but blank.
-  const blank = await lookupSkipWindows({ TIDB_API_KEY: "   " }, { types: ["intro"] }, "tt0903747:1:1", {
-    cache,
-    fetchImpl,
-  });
+  const blank = await lookupSkipWindows(
+    { TIDB_API_KEY: "   " },
+    { types: ["intro"] },
+    "tt0903747:1:1",
+    {
+      cache,
+      fetchImpl,
+    },
+  );
   assert.equal(blank.reason, "missing_api_key");
 
   // A key in the install config counts as configured.
-  const configured = await lookupSkipWindows({}, { types: ["intro"], key: "from-url" }, "tt0903747:1:1", {
-    cache,
-    fetchImpl: async () => new Response(JSON.stringify({ intro: [{ start_ms: 1, end_ms: 2 }] }), { status: 200 }),
-  });
+  const configured = await lookupSkipWindows(
+    {},
+    { types: ["intro"], key: "from-url" },
+    "tt0903747:1:1",
+    {
+      cache,
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ intro: [{ start_ms: 1, end_ms: 2 }] }), { status: 200 }),
+    },
+  );
   assert.equal(configured.status, "ok");
 });
 
@@ -145,11 +163,16 @@ test("the API key is sent when the config or the Worker provides one", async () 
   const seen: string[] = [];
   const fetchImpl: typeof fetch = async (_input, init) => {
     seen.push(new Headers(init?.headers).get("authorization") ?? "");
-    return new Response(JSON.stringify({ intro: [{ start_ms: 1000, end_ms: 2000 }] }), { status: 200 });
+    return new Response(JSON.stringify({ intro: [{ start_ms: 1000, end_ms: 2000 }] }), {
+      status: 200,
+    });
   };
   const cache = new MemoryHttpCache();
 
-  await lookupSkipWindows(env, { types: ["intro"], key: "from-config" }, "tt0000001:1:1", { cache, fetchImpl });
+  await lookupSkipWindows(env, { types: ["intro"], key: "from-config" }, "tt0000001:1:1", {
+    cache,
+    fetchImpl,
+  });
   await lookupSkipWindows(env, { types: ["intro"] }, "tt0000002:1:1", { cache, fetchImpl });
 
   // The config wins over the deployment secret, so a user can bring their own key.
@@ -166,12 +189,18 @@ test("a 404 is a clean miss, and is cached as one", async () => {
     });
   };
 
-  const result = await lookupSkipWindows(env, { types: ["intro"] }, "tt0903747:9:9", { cache, fetchImpl });
+  const result = await lookupSkipWindows(env, { types: ["intro"] }, "tt0903747:9:9", {
+    cache,
+    fetchImpl,
+  });
   assert.equal(result.status, "not_found");
   assert.equal(result.reason, "episode_not_found");
   assert.deepEqual(result.windows, []);
 
-  const again = await lookupSkipWindows(env, { types: ["intro"] }, "tt0903747:9:9", { cache, fetchImpl });
+  const again = await lookupSkipWindows(env, { types: ["intro"] }, "tt0903747:9:9", {
+    cache,
+    fetchImpl,
+  });
   assert.equal(again.cached, true);
   assert.equal(calls, 1);
 });
@@ -205,7 +234,10 @@ test("an unsupported id and an empty type list never reach the network", async (
   const bad = await lookupSkipWindows(env, { types: ["intro"] }, "kitsu:1", { cache, fetchImpl });
   assert.equal(bad.reason, "unsupported_id");
 
-  const nothingEnabled = await lookupSkipWindows(env, { types: [] }, "tt0000001:1:1", { cache, fetchImpl });
+  const nothingEnabled = await lookupSkipWindows(env, { types: [] }, "tt0000001:1:1", {
+    cache,
+    fetchImpl,
+  });
   assert.equal(nothingEnabled.status, "ok");
   assert.equal(nothingEnabled.reason, "no_segment_types_enabled");
 });
@@ -234,7 +266,9 @@ test("a margin takes a slice off both ends of every window", () => {
 
 test("a margin leaves a window that runs to the end of the file its end alone", () => {
   const credits = [{ type: "credits" as const, startMs: 3_432_884, endMs: null }];
-  assert.deepEqual(applyMargin(credits, 5000), [{ type: "credits", startMs: 3_437_884, endMs: null }]);
+  assert.deepEqual(applyMargin(credits, 5000), [
+    { type: "credits", startMs: 3_437_884, endMs: null },
+  ]);
 });
 
 test("a window the margin would empty is dropped rather than cut at zero length", () => {

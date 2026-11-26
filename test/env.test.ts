@@ -11,11 +11,10 @@
  */
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { readFile } from "node:fs/promises";
-
-import { DEFAULT_SUBTITLES_CHUNK_SECONDS, loadSettings } from "../src/env.js";
+import { DEFAULT_SUBTITLES_CHUNK_SECONDS, loadSettings } from "../src/addon/env.js";
 
 /** Read the settings with `env` applied, then put the process's environment back as it was. */
 function settingsWith(env: Record<string, string | undefined>) {
@@ -46,12 +45,23 @@ test("a chunk is a subtitle segment, so the value is taken, not raised past it",
 });
 
 test("values the recogniser cannot use faster are clamped, in both directions", () => {
-  assert.equal(settingsWith({ SUBTITLES_CHUNK_SECONDS: "5" }).subtitlesChunkSeconds, 30, "below one window");
-  assert.equal(settingsWith({ SUBTITLES_CHUNK_SECONDS: "100000" }).subtitlesChunkSeconds, 900, "a typo");
+  assert.equal(
+    settingsWith({ SUBTITLES_CHUNK_SECONDS: "5" }).subtitlesChunkSeconds,
+    30,
+    "below one window",
+  );
+  assert.equal(
+    settingsWith({ SUBTITLES_CHUNK_SECONDS: "100000" }).subtitlesChunkSeconds,
+    900,
+    "a typo",
+  );
 });
 
 test("junk falls back to the default rather than to NaN", () => {
-  assert.equal(settingsWith({ SUBTITLES_CHUNK_SECONDS: "half a minute" }).subtitlesChunkSeconds, 30);
+  assert.equal(
+    settingsWith({ SUBTITLES_CHUNK_SECONDS: "half a minute" }).subtitlesChunkSeconds,
+    30,
+  );
   assert.equal(settingsWith({ SUBTITLES_CHUNK_SECONDS: "" }).subtitlesChunkSeconds, 30);
 });
 

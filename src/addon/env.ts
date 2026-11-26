@@ -9,8 +9,8 @@
  * `node --env-file=.env`).
  */
 
-import { INTRODB_API_BASE } from "./constants.js";
-import { MAX_MARGIN_SECONDS, type Env } from "./types.js";
+import { INTRODB_API_VERSION } from "./constants.js";
+import { type Env, MAX_MARGIN_SECONDS } from "./types.js";
 
 /**
  * How much of each window's edge is left alone by default, in seconds.
@@ -164,7 +164,10 @@ export function loadSettings(): Settings {
         Math.round(numberFrom("SUBTITLES_CHUNK_SECONDS", DEFAULT_SUBTITLES_CHUNK_SECONDS)),
       ),
     ),
-    subtitlesTtlHours: Math.min(720, Math.max(1, Math.round(numberFrom("SUBTITLES_TTL_HOURS", 24)))),
+    subtitlesTtlHours: Math.min(
+      720,
+      Math.max(1, Math.round(numberFrom("SUBTITLES_TTL_HOURS", 24))),
+    ),
     subtitlesIdleSeconds: Math.min(
       3600,
       Math.max(0, Math.round(numberFrom("SUBTITLES_IDLE_SECONDS", 120))),
@@ -192,7 +195,7 @@ export function loadSettings(): Settings {
 /** The subset of settings that is safe to print. */
 export function describeSettings(settings: Settings): Record<string, unknown> {
   return {
-    api: `${INTRODB_API_BASE}/v4/media`,
+    api: `https://api.theintrodb.org/${INTRODB_API_VERSION}/media`,
     apiKeyConfigured: Boolean((settings.TIDB_API_KEY ?? "").trim()),
     skipMarginSeconds: settings.skipMarginSeconds,
     proxy: settings.proxy,

@@ -18,6 +18,8 @@ jobs:
       # needs ffmpeg. The published image gets it from Debian (see Dockerfile).
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
       - run: npm ci
+      # Formatting, linting and import order. `biome ci` never writes.
+      - run: npx biome ci .
       - run: npm run typecheck
       - run: npm test
       # Proves the service compiles to dist/ the way the image runs it.

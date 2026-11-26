@@ -44,11 +44,7 @@ export async function freeBytes(dir: string): Promise<number> {
  * An unknown size is allowed through: a debrid link that streams in chunks reports
  * none, and refusing those would remove the feature for the sources that need it.
  */
-export function hasRoomFor(
-  neededBytes: number | null,
-  free: number,
-  headroom = 0.9,
-): boolean {
+export function hasRoomFor(neededBytes: number | null, free: number, headroom = 0.9): boolean {
   if (neededBytes === null || neededBytes <= 0) return true;
   return neededBytes <= free * headroom;
 }
@@ -89,10 +85,14 @@ export function keptRanges(
 /** Options that keep a flaky CDN link from failing a long job. */
 export function inputOptions(): string[] {
   return [
-    "-reconnect", "1",
-    "-reconnect_streamed", "1",
-    "-reconnect_delay_max", "5",
-    "-rw_timeout", "30000000",
+    "-reconnect",
+    "1",
+    "-reconnect_streamed",
+    "1",
+    "-reconnect_delay_max",
+    "5",
+    "-rw_timeout",
+    "30000000",
   ];
 }
 

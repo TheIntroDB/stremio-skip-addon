@@ -11,15 +11,14 @@
  */
 
 import assert from "node:assert/strict";
-import type { AddressInfo } from "node:net";
-import { after, before, test } from "node:test";
 import { mkdtemp, rm } from "node:fs/promises";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
-
-import { PackageEngine } from "../src/packages.js";
-import type { Settings } from "../src/env.js";
+import { after, before, test } from "node:test";
+import type { Settings } from "../src/addon/env.js";
 import { createApp } from "../src/server.js";
+import { PackageEngine } from "../src/streams/packages.js";
 
 let workDir: string;
 let base = "";
@@ -34,13 +33,13 @@ function settings(overrides: Partial<Settings> = {}): Settings {
     cacheMaxBytes: 0,
     proxy: true,
     subtitles: false,
-  subtitlesGenerate: false,
+    subtitlesGenerate: false,
     subtitlesLanguage: "en",
     subtitlesChunkSeconds: 300,
-  subtitlesTtlHours: 24,
-  subtitlesIdleSeconds: 120,
-  subtitlesAudioLanguage: "en",
-  drainSecret: "",
+    subtitlesTtlHours: 24,
+    subtitlesIdleSeconds: 120,
+    subtitlesAudioLanguage: "en",
+    drainSecret: "",
     skipMarginSeconds: 0,
     splash: false,
     prerollSeconds: 10,
@@ -86,12 +85,18 @@ test("the config page is served, and uses the forwarded host and scheme", async 
   assert.ok(html.includes("TheIntroDB Skip"));
   // The install links are built from the request origin, so a reverse proxy or a
   // platform domain must be reflected rather than the local socket.
-  assert.ok(html.includes('"origin":"https://addon.example.com"'), "origin taken from x-forwarded-*");
+  assert.ok(
+    html.includes('"origin":"https://addon.example.com"'),
+    "origin taken from x-forwarded-*",
+  );
 
   // The audio picker is part of what a link says, so it stays; the toggle that turned on speech
   // recognition is gone, because this build does not recognise anything.
   assert.ok(html.includes('id="audio-lang"'), "an install chooses which audio track it keeps");
-  assert.ok(!html.includes('id="subtitles"'), "and there is nothing to turn on: no recognition here");
+  assert.ok(
+    !html.includes('id="subtitles"'),
+    "and there is nothing to turn on: no recognition here",
+  );
 
   // The page's own script has to parse: a broken one is a blank page, and no other test runs it.
   const script = /<script>([\s\S]*?)<\/script>/.exec(html);

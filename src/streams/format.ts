@@ -3,7 +3,7 @@
 
 /** Time formatting shared by the stream list labels and the playlist debug headers. */
 
-import type { SkipWindow } from "./types.js";
+import type { SkipWindow } from "../addon/types.js";
 
 /** `228665` -> `3:48`; an hour or more gets `1:02:33`. */
 export function formatMs(ms: number): string {
