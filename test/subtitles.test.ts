@@ -12,7 +12,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -21,7 +21,7 @@ import { encodeConfig } from "../src/config.js";
 import { run } from "../src/ffmpeg.js";
 import { handleRequest } from "../src/index.js";
 import { PackageEngine } from "../src/packages.js";
-import { chooseAudio, masterPlaylist, parseProbe, variantAttributes } from "../src/streaminfo.js";
+import { chooseAudio, chooseSourceTrack, masterPlaylist, parseProbe, variantAttributes } from "../src/streaminfo.js";
 import { handleSubtitleChunk, handleSubtitlePlaylist, SubtitleEngine } from "../src/subtitles.js";
 import type { Transcriber } from "../src/transcribe.js";
 import type { Settings } from "../src/env.js";
@@ -285,6 +285,98 @@ test("a 4K HEVC source is described as HEVC, not left for the player to guess", 
   // The name is still there for the packaging decision: a HEVC package written as TS is a black
   // picture in every browser, whether or not the codec string could be spelled.
   assert.equal(unnamed.video, "hevc");
+});
+
+test("a source's own text subtitles are found, and image ones are not", () => {
+  const info = parseProbe(
+    JSON.stringify({
+      format: { duration: "60.0" },
+      streams: [
+        { index: 0, codec_type: "video", codec_name: "h264", profile: "High", level: 40, width: 1920, height: 1080 },
+        { index: 1, codec_type: "audio", codec_name: "aac" },
+        { index: 2, codec_type: "subtitle", codec_name: "subrip", tags: { language: "eng" } },
+        { index: 3, codec_type: "subtitle", codec_name: "hdmv_pgs_subtitle", tags: { language: "eng" } },
+        { index: 4, codec_type: "subtitle", codec_name: "ass", tags: { language: "spa" } },
+      ],
+    }),
+  )!;
+  // A picture track needs OCR, so it is not something this can copy: only text is listed.
+  assert.deepEqual(info.subtitles!.map((track) => track.index), [2, 4], "text tracks only");
+  const tracks = info.subtitles!;
+  assert.equal(chooseSourceTrack(tracks, "es")!.index, 4, "the language the install asked for");
+  assert.equal(chooseSourceTrack(tracks, "de")!.index, 2, "then English");
+  assert.equal(
+    chooseSourceTrack([{ index: 4, language: "es", codec: "ass" }], "de")!.index,
+    4,
+    "and any of them is better than none",
+  );
+  assert.equal(chooseSourceTrack(undefined, "en"), null, "nothing to choose from");
+});
+
+test("a source's subtitles are cut and shifted onto the film", async () => {
+  // Every cue has to land where the picture is: the ones inside a dropped window go, and the ones
+  // after it move back by what was removed. This is the same timeline the generated track uses,
+  // so a player cannot tell where the cues came from.
+  const { settings } = await fixture();
+  const engine = new SubtitleEngine(settings, stubTranscriber());
+  const plan = {
+    durationMs: 60_000,
+    windows: [{ type: "intro" as const, startMs: 10_000, endMs: 20_000 }],
+    cardMs: 0,
+  };
+  const dir = path.join(settings.cacheDir, "subs", "pkg.s2");
+  await mkdir(dir, { recursive: true });
+  // What ffmpeg leaves behind after demuxing the source's own track.
+  await writeFile(
+    path.join(dir, "source-2.vtt"),
+    [
+      "WEBVTT",
+      "",
+      "00:00:02.000 --> 00:00:05.000",
+      "before the intro",
+      "",
+      "00:00:14.000 --> 00:00:16.000",
+      "inside the intro",
+      "",
+      "00:00:22.000 --> 00:00:25.000",
+      "after the intro",
+      "",
+    ].join("\n"),
+  );
+
+  assert.ok(
+    engine.ensure("pkg", "http://source/film.mkv", plan, true, undefined, { index: 2, language: "eng" }),
+    "a track is planned",
+  );
+  const track = engine.trackFor("pkg")!;
+  assert.equal(track, "pkg.s2", "keyed by the source track it copied, not by an audio stream");
+  assert.equal(engine.languageOf(track), "eng", "and knows what language it is");
+
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const progress = (engine.status() as { progress: Array<{ done: number; chunks: number }> }).progress;
+    if (progress[0] && progress[0].chunks === 0) break;
+    if (progress[0] && progress[0].done >= progress[0].chunks && progress[0].chunks > 0) break;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+
+  // 0-10s kept, 20-60s kept, 30-second chunks: 10s, 30s, 10s.
+  const list = (await engine.playlist(track, 0))!;
+  assert.ok(list.body.includes("#EXTINF:10.000,"), "the first kept stretch");
+  assert.ok(list.body.includes("#EXTINF:30.000,"), "the long one");
+  assert.equal(list.complete, true, "and it closes, since nothing is being recognised");
+
+  const chunk = async (index: number): Promise<string> => {
+    const name = `chunk-${String(index).padStart(5, "0")}.vtt`;
+    return readFile(path.join(dir, name), "utf8").catch(() => "");
+  };
+  const first = await chunk(0);
+  assert.ok(first.includes("before the intro"), "a cue from the head of the film");
+  assert.ok(first.includes("00:00:02.000 --> 00:00:05.000"), "at the time it always had");
+  assert.ok(!first.includes("inside the intro"), "the dropped window takes its cues with it");
+  const second = await chunk(1);
+  assert.ok(second.includes("after the intro"), "a cue from after the cut");
+  assert.ok(second.includes("00:00:02.000 --> 00:00:05.000"), "moved back by the ten seconds removed");
+  assert.ok(!second.includes("inside the intro"), "and nothing from the window");
 });
 
 test("the recogniser is fed the chosen stream, not ffmpeg's own preference", async () => {

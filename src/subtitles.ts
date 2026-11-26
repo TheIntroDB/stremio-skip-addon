@@ -38,8 +38,18 @@ export interface TrackPlan {
   cardMs: number;
 }
 
-/** A track's identity: the package it is cut from, and the audio stream it is recognised from. */
-export function trackKey(packageKey: string, audio?: { index: number } | null): string {
+/**
+ * A track's identity: the package it is cut from, and what it was made from.
+ *
+ * `.a<n>` is an audio stream that was recognised; `.s<n>` is a subtitle track the source already
+ * carried, which is preferred when there is one -- it is timed to that release and costs nothing.
+ */
+export function trackKey(
+  packageKey: string,
+  audio?: { index: number } | null,
+  text?: { index: number } | null,
+): string {
+  if (text) return `${packageKey}.s${text.index}`;
   return audio ? `${packageKey}.a${audio.index}` : packageKey;
 }
 
@@ -78,6 +88,8 @@ interface Job extends TrackStatus {
   lastSeen: number;
   /** The container stream index to recognise, and what language it is, for /health. */
   audio?: { index: number; language: string };
+  /** The source's own subtitle track, when the track is a copy of one rather than a recognition. */
+  text?: { index: number; language: string };
 }
 
 export class SubtitleEngine {
@@ -142,9 +154,10 @@ export class SubtitleEngine {
     plan: TrackPlan,
     wanted: boolean,
     audio?: { index: number; language: string },
+    text?: { index: number; language: string } | null,
   ): TrackStatus | null {
     if (!this.settings.subtitles) return null;
-    const key = trackKey(packageKey, audio);
+    const key = trackKey(packageKey, audio, text);
     const existing = this.jobs.get(key);
     if (existing) {
       existing.lastAt = Date.now();
@@ -169,7 +182,7 @@ export class SubtitleEngine {
       error: null,
       lastAt: Date.now(),
       lastSeen: Date.now(),
-      ...(audio ? { audio } : {}),
+      ...(text ? { text } : audio ? { audio } : {}),
     };
     job.chunks = job.stretches.reduce((total, stretch) => total + stretch.chunks.length, 0);
     if (job.chunks === 0) return null;
@@ -179,6 +192,14 @@ export class SubtitleEngine {
     void this.sweep();
     void this.pump();
     return job;
+  }
+
+  /** The language a track is in, so the master can declare it. */
+  languageOf(track: string): string | null {
+    const job = this.jobs.get(track);
+    if (!job) return null;
+    if (job.text) return job.text.language || null;
+    return this.settings.subtitlesLanguage || null;
   }
 
   /** Whether a track is being made (or has been made) under this track key. */
@@ -301,6 +322,9 @@ export class SubtitleEngine {
           // Which audio track this track is being made from: the one thing that explains an
           // empty result when everything else looks right.
           audio: job.audio?.language || null,
+          // Which of the source's own subtitle tracks this job is copying, when it is one of those
+          // rather than a recognition: /health should say where a track came from.
+          text: job.text?.index ?? null,
         })),
     };
   }
@@ -388,6 +412,12 @@ export class SubtitleEngine {
       job.error = `the cache is not writable: ${describe(error)}`;
       return;
     }
+    // A track copied from the source needs no models: one demux pass and some arithmetic, so it
+    // neither waits for them nor fails when they are not installed.
+    if (job.text) {
+      await this.writeSourceChunks(job, dir);
+      return;
+    }
     if (!(await this.transcriber.available())) {
       job.error = this.transcriber.lastError ?? "the speech models are not installed";
       return;
@@ -441,6 +471,84 @@ export class SubtitleEngine {
     }
     // Ready means every chunk is on disk: the playlist can be closed and a player may keep it.
     // A track with a hole in it is not ready -- the playlist stops at the hole (see `playlist`).
+    job.ready = job.chunks > 0 && job.done >= job.chunks;
+  }
+
+  /**
+   * Write the track from the source's own subtitles.
+   *
+   * The source is demuxed once (cached beside the chunks, so a later playback costs nothing), and
+   * each chunk gets the cues that fall inside it, clipped to the chunk and shifted to its start.
+   * That is the same shape the generated track has, so the playlist, the cue files and the player
+   * cannot tell the two apart.
+   */
+  private async writeSourceChunks(job: Job, dir: string): Promise<void> {
+    const text = job.text;
+    if (!text) return;
+    const file = path.join(dir, `source-${text.index}.vtt`);
+    if (!(await this.written(file))) {
+      const result = await run(
+        this.settings.ffmpegPath,
+        [
+          "-nostdin", "-hide_banner", "-v", "error", "-y",
+          "-i", job.target,
+          // The stream index rather than "the first subtitle": a release whose first track is a
+          // forced one would otherwise give a track with almost nothing in it.
+          "-map", `0:${text.index}`,
+          "-f", "webvtt",
+          file,
+        ],
+        900_000,
+        this.controller.signal,
+      );
+      if (result.code !== 0 || !(await this.written(file))) {
+        job.error = `the source's subtitles could not be read: ${result.stderr.trim().slice(-200)}`;
+        return;
+      }
+    }
+    let cues: Cue[];
+    try {
+      cues = parseVtt(await readFile(file, "utf8"));
+    } catch (error) {
+      job.error = `the source's subtitles could not be read: ${describe(error)}`;
+      return;
+    }
+    if (cues.length === 0) {
+      job.error = "the source's subtitle track is empty";
+      return;
+    }
+    const epoch = this.epoch;
+    let index = 0;
+    for (const stretch of job.stretches) {
+      for (const chunk of stretch.chunks) {
+        const name = this.chunkName(index);
+        const vtt = path.join(dir, `${name}.vtt`);
+        index += 1;
+        if (epoch !== this.epoch) return;
+        if (await this.written(vtt)) {
+          job.done += 1;
+          continue;
+        }
+        const from = chunk.sourceStartMs / 1000;
+        const to = chunk.sourceEndMs / 1000;
+        const inside: Cue[] = [];
+        for (const cue of cues) {
+          const start = Math.max(cue.start, from);
+          const end = Math.min(cue.end, to);
+          if (end - start <= 0.001) continue;
+          inside.push({ text: cue.text, start: start - from, end: end - from });
+        }
+        try {
+          await writeFile(vtt, toVtt(inside));
+        } catch (error) {
+          job.error = `cannot write the track: ${describe(error)}`;
+          return;
+        }
+        job.cues += inside.length;
+        job.done += 1;
+        job.lastAt = Date.now();
+      }
+    }
     job.ready = job.chunks > 0 && job.done >= job.chunks;
   }
 
@@ -688,4 +796,42 @@ export async function handleSubtitleChunk(
       ...CORS_HEADERS,
     },
   });
+}
+
+/**
+ * Read a WebVTT file into cues.
+ *
+ * Only what ffmpeg writes is supported -- a header, optional identifiers, `start --> end` and one
+ * or more lines of text -- because that is all this is ever given. Markup inside the text is
+ * stripped: a player shows plain text, and a `<font>` tag is not text.
+ */
+export function parseVtt(text: string): Cue[] {
+  const cues: Cue[] = [];
+  for (const block of text.replace(/\r/g, "").split("\n\n")) {
+    const lines = block.split("\n").filter((line) => line.trim() !== "");
+    if (lines.length === 0) continue;
+    const arrow = lines.findIndex((line) => line.includes("-->"));
+    if (arrow === -1) continue;
+    const [left, right] = lines[arrow]!.split("-->");
+    const start = clock((left ?? "").trim());
+    const end = clock(((right ?? "").trim().split(/\s+/)[0] ?? ""));
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
+    const body = lines
+      .slice(arrow + 1)
+      .join("\n")
+      .replace(/<[^>]+>/g, "")
+      .trim();
+    if (body === "") continue;
+    cues.push({ text: body, start, end });
+  }
+  return cues;
+}
+
+/** `00:01:02.345`, `01:02.345` or `2.345` to seconds. */
+function clock(stamp: string): number {
+  const parts = stamp.replace(",", ".").split(":").map(Number);
+  if (parts.length === 0 || parts.some((part) => !Number.isFinite(part))) return Number.NaN;
+  if (parts.length === 3) return (parts[0] ?? 0) * 3600 + (parts[1] ?? 0) * 60 + (parts[2] ?? 0);
+  if (parts.length === 2) return (parts[0] ?? 0) * 60 + (parts[1] ?? 0);
+  return parts[0] ?? Number.NaN;
 }

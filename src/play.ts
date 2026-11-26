@@ -19,7 +19,7 @@
 
 import { getHttpCache } from "./cache.js";
 import { cardSeconds } from "./splash.js";
-import { chooseAudio, masterPlaylist } from "./streaminfo.js";
+import { chooseAudio, chooseSourceTrack, masterPlaylist } from "./streaminfo.js";
 import type { ManifestView, PackageEngine } from "./packages.js";
 import { trackKey, type SubtitleEngine } from "./subtitles.js";
 import type { Settings } from "./env.js";
@@ -104,12 +104,12 @@ export async function handlePlay(context: PlayContext): Promise<Response> {
   if (cutKey) {
     const card = await context.packages.advanceCard(cutKey);
     if (card) {
-      const audio = await offerTrack(context, target, cutKey, windows, card);
+      const audio = await offerTrack(context, target, cutKey, windows, card.card > 0 ? cardSeconds(context.settings) * 1000 : 0);
       return packageResponse(context, card, cutKey, lookup?.reason ?? "", audio);
     }
     const ready = await context.packages.manifest(cutKey);
     if (ready) {
-      const audio = await offerTrack(context, target, cutKey, windows, ready);
+      const audio = await offerTrack(context, target, cutKey, windows, ready.card > 0 ? cardSeconds(context.settings) * 1000 : 0);
       return packageResponse(context, ready, cutKey, lookup?.reason ?? "", audio);
     }
   }
@@ -311,14 +311,19 @@ async function offerTrack(
   target: string,
   key: string,
   windows: readonly SkipWindow[],
-  view: ManifestView,
+  cardMs: number,
 ): Promise<{ index: number; language?: string } | null> {
   const audio = await audioFor(context, key);
-  if (!context.subtitles.enabled(context.config)) return audio;
   const info = await context.packages.sourceInfo(key);
   // Without the source's own length there is no timeline to place cues on. The film still plays;
   // it is the track that cannot be offered until a play has probed the source.
   if (!info) return audio;
+  // The source's own subtitles come first. They are timed to that release and cost one demux pass,
+  // so a file that has them needs no recognition at all -- and, since nothing is being spent, they
+  // are offered whether or not the install asked for generated ones. Only a file without a usable
+  // text track needs the toggle.
+  const source = chooseSourceTrack(info.subtitles, context.settings.subtitlesLanguage);
+  if (!source && !context.subtitles.enabled(context.config)) return audio;
   context.subtitles.ensure(
     key,
     target,
@@ -327,10 +332,11 @@ async function offerTrack(
       windows,
       // The offset the track is timed from has to match the playlist this playback gets: when the
       // card was dropped as stale, the film starts at zero and so must the cues.
-      cardMs: view.card > 0 ? cardSeconds(context.settings) * 1000 : 0,
+      cardMs,
     },
     true,
-    audio ?? undefined,
+    source ? undefined : (audio ?? undefined),
+    source,
   );
   const track = context.subtitles.trackFor(key);
   if (track && context.episodeId) context.subtitles.note(context.episodeId, track);
@@ -353,7 +359,7 @@ async function packageOrProxy(
   const wantsSubtitles = context.subtitles.enabled(context.config);
   const ready = await context.packages.manifest(key);
   if (ready) {
-    const resolved = await offerTrack(context, target, key, windows, ready);
+    const resolved = await offerTrack(context, target, key, windows, ready.card > 0 ? cardSeconds(context.settings) * 1000 : 0);
     return packageResponse(context, ready, key, lookupReason, resolved);
   }
 
@@ -367,19 +373,15 @@ async function packageOrProxy(
   // a key seen for the first time.
   if (!audio) audio = await audioFor(context, key);
   context.packages.schedule(target, windows, streamKey, durationMs);
-  if (context.episodeId) context.subtitles.note(context.episodeId, trackKey(key, audio));
   // The card is the pre-roll the deployment configured, and the film starts after it, so that is
-  // the offset a generated track is timed from. (With the card off, the film starts at zero.)
-  context.subtitles.ensure(
-    key,
+  // the offset a track is timed from. (With the card off, the film starts at zero.) The same
+  // choice as a warm play makes: the source's own subtitles if it has any, recognition otherwise.
+  await offerTrack(
+    context,
     target,
-    {
-      durationMs,
-      windows,
-      cardMs: context.settings.splash ? cardSeconds(context.settings) * 1000 : 0,
-    },
-    wantsSubtitles,
-    audio ?? undefined,
+    key,
+    windows,
+    context.settings.splash ? cardSeconds(context.settings) * 1000 : 0,
   );
   // Nothing of the episode is ready yet, so show the processing card rather than holding
   // the request: a player handed a playlist starts at once and sees what is happening,
@@ -451,7 +453,7 @@ async function packageResponse(
   const master = masterPlaylist({
     mediaUri: `${media.pathname}${media.search}`,
     subtitleUri: `subs.m3u8?${subtitleQuery}`,
-    language: context.settings.subtitlesLanguage || "en",
+    language: context.subtitles.languageOf(track) ?? context.settings.subtitlesLanguage ?? "en",
     name: "TheIntroDB",
     info,
   });

@@ -758,7 +758,12 @@ export class PackageEngine {
     // that list the recogniser falls back to ffmpeg's own stream choice (which is what made a
     // dubbed file produce an empty track), and the subtitle key it derives would not match the job
     // that was made with one. The probe is one ffprobe, paid once, and only for old entries.
-    if (cached && Array.isArray(cached.audio)) return cached.durationMs;
+    // A package probed before the source's own subtitle tracks were recorded is probed again:
+    // otherwise a cached title never offers them, and the viewer gets a generated track (or none)
+    // for a release that had a perfectly good one all along.
+    if (cached && Array.isArray(cached.audio) && Array.isArray(cached.subtitles)) {
+      return cached.durationMs;
+    }
     if (!KEY_RE.test(key)) return cached?.durationMs ?? null;
     const probe = await run(
       this.settings.ffprobePath,

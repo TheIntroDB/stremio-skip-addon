@@ -27,6 +27,24 @@ export interface AudioStream {
 }
 
 /** The parts of a probe a master playlist needs. */
+/**
+ * A subtitle track the source already carries, in a form that can be turned into WebVTT.
+ *
+ * Image tracks (PGS, VobSub) are deliberately absent: they cannot be converted without OCR, so a
+ * release that only has those still needs the generated track.
+ */
+export interface SourceTrack {
+  index: number;
+  language: string;
+  codec: string;
+}
+
+/** The subtitle codecs that are text, and therefore convertible without recognising anything. */
+const TEXT_SUBTITLES = new Set([
+  "subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text", "sami", "subviewer",
+  "subviewer1", "microdvd", "jacosub", "realtext", "stl", "mpl2", "pjs", "vplayer",
+]);
+
 export interface StreamInfo {
   /** The film's length, which the playlist also declares as its own. */
   durationMs: number;
@@ -39,6 +57,8 @@ export interface StreamInfo {
   /** The video codec's name as ffprobe reports it (`hevc`, `h264`, ...), so the packaging does
    *  not have to infer it from a codec string it may not have been able to spell. */
   video?: string;
+  /** The source's own text subtitle tracks, in the order the container lists them. */
+  subtitles?: SourceTrack[];
   /** Every audio track, in container order. Absent on a package probed before this existed. */
   audio?: AudioStream[];
 }
@@ -160,6 +180,14 @@ export function parseProbe(text: string): StreamInfo | null {
     height: Number(video?.height) || 0,
     codecs: codecsFor(video, audio),
     video: (video?.codec_name ?? "").toLowerCase(),
+    subtitles: streams
+      .filter((stream) => stream.codec_type === "subtitle" && Number.isInteger(stream.index))
+      .map((stream) => ({
+        index: Number(stream.index),
+        language: normalizeLanguage(stream.tags?.language),
+        codec: (stream.codec_name ?? "").toLowerCase(),
+      }))
+      .filter((track) => TEXT_SUBTITLES.has(track.codec)),
     audio: streams
       .filter((stream) => stream.codec_type === "audio" && Number.isInteger(stream.index))
       .map((stream) => ({
@@ -271,4 +299,28 @@ export function masterPlaylist(options: MasterOptions): string {
     options.mediaUri,
     "",
   ].join("\n");
+}
+
+/**
+ * Which of the source's own subtitle tracks to use.
+ *
+ * Unlike the audio choice there is no "leave it to ffmpeg" answer here -- any text track is better
+ * than none -- so the order is: the language the install asked for, then English, then whatever
+ * the container lists first. A release's own subtitles are timed to that release and cost nothing
+ * to produce, which makes them worth having even when the install never asked for subtitles.
+ */
+export function chooseSourceTrack(
+  tracks: SourceTrack[] | undefined,
+  preferred: string,
+  fallback = "en",
+): SourceTrack | null {
+  if (!Array.isArray(tracks) || tracks.length === 0) return null;
+  const want = normalizeLanguage(preferred);
+  const first = normalizeLanguage(fallback);
+  return (
+    (want ? tracks.find((track) => track.language === want) : undefined) ??
+    tracks.find((track) => track.language === first) ??
+    tracks[0] ??
+    null
+  );
 }
