@@ -18,6 +18,42 @@ const CONFIG_PAGE_SCRIPT = `
   var data = JSON.parse(document.getElementById("config-data").textContent);
   var SEGMENTS = ["intro", "recap", "credits", "preview"];
 
+  // Is this deployment older than the repository? The page asks for the one file that says what a
+  // fresh deployment gets, and compares it with the version this one is running. Numbers, so 0.10.0
+  // is newer than 0.9.0 rather than less; a prerelease or an unreachable GitHub is not an update.
+  function isNewer(upstream, current) {
+    function parse(value) {
+      var text = String(value || "").trim().replace(/^v/i, "");
+      if (text.indexOf("-") !== -1 || !/^\\d+(\\.\\d+)*$/.test(text)) return null;
+      return text.split(".").map(Number);
+    }
+    var next = parse(upstream);
+    var now = parse(current);
+    if (!next || !now) return false;
+    for (var i = 0; i < Math.max(next.length, now.length); i++) {
+      var a = next[i] || 0;
+      var b = now[i] || 0;
+      if (a !== b) return a > b;
+    }
+    return false;
+  }
+
+  function checkForUpdate() {
+    if (!data.updateUrl) return;
+    fetch(data.updateUrl, { cache: "no-store" })
+      .then(function (response) { return response.ok ? response.json() : null; })
+      .then(function (body) {
+        if (!body || !isNewer(body.version, data.version)) return;
+        var banner = document.getElementById("out-of-date");
+        banner.textContent =
+          "This addon is out of date — v" + body.version + " is available. Update and restart it to get the newest fixes.";
+        banner.hidden = false;
+      })
+      .catch(function () {
+        // Offline, or GitHub is not reachable: say nothing rather than claim an update.
+      });
+  }
+
   function b64url(text) {
     var bytes = new TextEncoder().encode(text);
     var binary = "";
@@ -102,6 +138,7 @@ const CONFIG_PAGE_SCRIPT = `
   document.getElementById("origin").textContent = data.origin;
   document.getElementById("api").textContent = data.cuts.api;
   document.getElementById("version").textContent = "v" + data.version;
+  checkForUpdate();
 
   var cuts = data.cuts;
   // No deployment-wide default: the first option is what a new install gets, and every link
@@ -214,6 +251,7 @@ export function configPageHtml(view: ConfigPageView): string {
 </head>
 <body>
 <main class="mx-auto max-w-190 px-5 pt-10 pb-20">
+  <p id="out-of-date" class="mb-4.5 rounded-lg px-3.5 py-3 text-sm" style="border:1px solid rgba(245,182,10,.4);background:rgba(245,182,10,.1);color:#f5b60a" hidden></p>
   <header class="mb-2 flex items-center gap-3.5">
     <img class="size-14" src="https://raw.githubusercontent.com/TheIntroDB/theintrodb-assets/main/badge.png" alt="TheIntroDB">
     <div>

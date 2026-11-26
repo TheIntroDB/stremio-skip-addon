@@ -261,6 +261,13 @@ export class PackageEngine {
    */
   onIdle?: (key: string) => void;
   private reaper?: ReturnType<typeof setInterval>;
+  /**
+   * A line for the card when this deployment is older than the release.
+   *
+   * Answered from the version check's cache, so drawing a piece never waits on GitHub; a check that
+   * has not answered yet simply means no notice.
+   */
+  notice?: () => string | null;
   private readonly tasks: Array<() => void> = [];
   private active = 0;
   private available: boolean | null = null;
@@ -759,6 +766,7 @@ export class PackageEngine {
         pass: Math.min(passes, stretches.length + 1),
         passes,
         subtitles,
+        notice: this.notice?.() ?? null,
       },
     );
     if (piece.ok) {
@@ -809,6 +817,8 @@ export class PackageEngine {
           passes: plan.ranges.length || 1,
           state: "done",
           waitMs: totalMs,
+          // The done card is drawn later than the processing pieces, so it may carry a fresher answer.
+          notice: this.notice?.() ?? null,
         },
       );
       if (piece.ok) return;

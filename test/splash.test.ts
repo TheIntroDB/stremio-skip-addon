@@ -109,3 +109,34 @@ test("a placeholder speaks the film's audio codec, so a player never changes dec
   const args = splashArgs("/tmp/x/splash00000.ts", 0, 2, "/tmp/x", "eac3");
   assert.equal(args[args.indexOf("-c:a") + 1], "eac3");
 });
+
+test("the card carries the out-of-date notice, and nothing when it is current", () => {
+  // The viewer is the person who would update this deployment, so the card is where it goes -- but only
+  // when there is something to say: an empty line would be a gap between the windows and the footer.
+  const card = {
+    segments: 0,
+    windows: [{ type: "intro" as const, startMs: 60_000, endMs: 90_000 }],
+    pass: 1,
+    passes: 2,
+  };
+  const current = cardText(card);
+  assert.equal(current.notice, "", "a current deployment says nothing");
+  assert.equal(
+    splashArgs("/tmp/x/splash00000.ts", 0, 2, "/tmp/x", "aac", null).some((arg) =>
+      arg.includes("card.notice.txt"),
+    ),
+    false,
+    "and it is not drawn",
+  );
+
+  const behind = cardText({ ...card, notice: "This addon is out of date — v0.2.0 is available" });
+  assert.equal(behind.notice, "This addon is out of date — v0.2.0 is available");
+  const args = splashArgs("/tmp/x/splash00000.ts", 0, 2, "/tmp/x", "aac", behind.notice);
+  const graph = args[args.indexOf("-filter_complex") + 1] ?? "";
+  assert.ok(graph.includes("card.notice.txt"), "the line is drawn on the card");
+  assert.ok(graph.includes("0xF5B60A"), "in the accent colour, not the grey of the rest");
+  assert.ok(
+    graph.indexOf("card.notice.txt") < graph.indexOf("card.footer.txt"),
+    "above the footer",
+  );
+});
