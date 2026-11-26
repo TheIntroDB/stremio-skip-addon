@@ -136,13 +136,11 @@ export function cardText(card: SplashCard): {
         }`,
     )
     .join("  ·  ");
-  // A ticker that advances with the work: each piece is drawn a couple of seconds after the
-  // last, so this is what makes the card move rather than sit still.
-  const dots = "·".repeat(card.segments % 9);
   // How many segments are being cut at all: the windows below are the segments, so saying
   // "0 segments" over a list of two read as a broken counter rather than as progress.
   const count = card.windows.length;
-  const where = card.passes > 1 ? `   (${card.pass}/${card.passes})` : "";
+  // Nothing that counts work a viewer cannot see: "(1/2)" is the packager's two kept stretches, not
+  // two intros being removed, and it read as though the same segment were being cut twice.
   const done = card.state === "done";
   return {
     title: done ? "Segments removed" : "Processing…",
@@ -154,7 +152,7 @@ export function cardText(card: SplashCard): {
         ? "TheIntroDB is cutting the segments from your stream and generating subtitles"
         : "TheIntroDB is currently cutting the segments from your stream",
     count: `${count} ${count === 1 ? "segment" : "segments"}`,
-    windows: done ? windows : windows ? `${windows}${where}   ${dots}`.trimEnd() : dots,
+    windows,
     footer: "Go to theintrodb.org to submit or report incorrect segments",
   };
 }
@@ -181,6 +179,7 @@ export function splashArgs(
   offsetSeconds: number,
   seconds: number,
   dir: string,
+  audio = "aac",
 ): string[] {
   const draw = (file: string, font: string, size: number, color: string, y: number): string =>
     `drawtext=fontfile=${font}:textfile=${path.join(dir, file)}:fontsize=${size}:fontcolor=${color}:x=(w-text_w)/2:y=${y}`;
@@ -229,9 +228,10 @@ export function splashArgs(
     "-g",
     String(FPS * 2),
     "-c:a",
-    "aac",
+    audio,
     "-b:a",
-    "48k",
+    // Silent either way; loud enough that a player does not treat the track as something to drop.
+    audio === "aac" ? "48k" : "128k",
     // The offset is what makes the pieces one timeline, and the delay makes a piece start
     // at exactly its offset rather than a second and a half later.
     "-muxdelay",
@@ -262,7 +262,7 @@ export type SplashResult = { ok: true; name: string; bytes: number } | { ok: fal
 export async function generateCardPiece(
   settings: Settings,
   dir: string,
-  piece: { name: string; offsetMs: number; seconds: number },
+  piece: { name: string; offsetMs: number; seconds: number; audio?: string },
   card: SplashCard,
 ): Promise<SplashResult> {
   const out = path.join(dir, piece.name);
@@ -279,7 +279,7 @@ export async function generateCardPiece(
   }
   const result = await run(
     settings.ffmpegPath,
-    splashArgs(out, piece.offsetMs / 1000, piece.seconds, dir),
+    splashArgs(out, piece.offsetMs / 1000, piece.seconds, dir, piece.audio),
     60_000,
   );
   if (result.code !== 0) {
@@ -311,6 +311,7 @@ export async function generatePadPiece(
   dir: string,
   container: "ts" | "mp4" = "ts",
   codec?: string,
+  audio = "aac",
 ): Promise<{ name: string; init: string | null } | null> {
   const fmp4 = container === "mp4";
   const name = fmp4 ? "pad00000.m4s" : "pad00000.ts";
@@ -344,9 +345,9 @@ export async function generatePadPiece(
     "-pix_fmt",
     "yuv420p",
     "-c:a",
-    "aac",
+    audio,
     "-b:a",
-    "48k",
+    audio === "aac" ? "48k" : "128k",
     "-t",
     String(PAD_SECONDS),
   ];

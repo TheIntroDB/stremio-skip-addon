@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { cardText, clock, SPLASH_RE, splashArgs } from "../src/streams/splash.js";
+import { placeholderAudio } from "../src/streams/streaminfo.js";
 
 test("a clock reads as minutes and seconds, and as hours when it has to", () => {
   assert.equal(clock(0), "0:00");
@@ -32,7 +33,9 @@ test("the card names the windows it is cutting, in the order they are cut", () =
     text.windows.startsWith("Intro 3:51-4:04  ·  Credits 57:15-end"),
     `windows line: ${text.windows}`,
   );
-  assert.ok(text.windows.includes("(1/2)"), "and it says which of the stretches is being written");
+  // No "(1/2)": those are the packager's two kept stretches, not two segments being removed, and it
+  // read as though the same intro were being cut twice.
+  assert.ok(!/\(\d+\/\d+\)/.test(text.windows), "and no counter of stretches nobody can see");
   // A window that runs to the end of the file says so rather than naming a time it does not have.
   assert.ok(
     text.windows.includes("Credits 57:15-end"),
@@ -49,8 +52,8 @@ test("the count reads naturally, and counts what the card lists", () => {
     passes: 1,
   });
   assert.equal(one.count, "1 segment");
-  // Nothing written yet, so the ticker is empty while the count still says what is coming.
-  assert.equal(one.windows.endsWith("·"), false);
+  // No ticker: a stray "·" at the end of the line read as a typo, and nothing on the card moves now.
+  assert.equal(one.windows, "Intro 0:00-0:30");
   const later = cardText({
     segments: 4,
     windows: [{ type: "intro", startMs: 0, endMs: 30_000 }],
@@ -58,7 +61,7 @@ test("the count reads naturally, and counts what the card lists", () => {
     passes: 1,
   });
   assert.equal(later.count, "1 segment", "the count does not change as the work goes on");
-  assert.ok(later.windows.endsWith("····"), "the ticker is what moves");
+  assert.equal(later.windows, "Intro 0:00-0:30", "and it reads the same however much has been cut");
 });
 
 test("the finished card says what went and where the film starts", () => {
@@ -92,4 +95,17 @@ test("the pieces are drawn from text files, not from filter arguments", () => {
   assert.equal(second[second.indexOf("-output_ts_offset") + 1], "10.000");
   assert.ok(SPLASH_RE.test("splash00001.ts"));
   assert.ok(!SPLASH_RE.test("splash1.ts"));
+});
+
+test("a placeholder speaks the film's audio codec, so a player never changes decoder", () => {
+  // hls.js builds its audio buffer from the first segment it parses: silent AAC in front of an E-AC-3
+  // film hands it an AAC buffer and the film's sound is then refused -- picture, no audio.
+  assert.equal(placeholderAudio({ codec: "eac3" }), "eac3");
+  assert.equal(placeholderAudio({ codec: "ac3" }), "ac3");
+  assert.equal(placeholderAudio({ codec: "aac" }), "aac");
+  assert.equal(placeholderAudio({ codec: "dts" }), "aac", "anything unencodable falls back to AAC");
+  assert.equal(placeholderAudio(null), "aac");
+  // And the encoder it names is the one ffmpeg is given.
+  const args = splashArgs("/tmp/x/splash00000.ts", 0, 2, "/tmp/x", "eac3");
+  assert.equal(args[args.indexOf("-c:a") + 1], "eac3");
 });

@@ -282,6 +282,31 @@ export class SubtitleEngine {
     return stopped;
   }
 
+  /**
+   * Forget one package: its jobs, their chunks, and whatever they were writing.
+   *
+   * This deployment serves one viewer, so a film nobody has asked for in five minutes is dead weight
+   * — the cut segments, the card, the subtitle chunks and the ffmpeg that is making them. Dropping the
+   * job from the map stops the loop before its next chunk; the chunk directory goes with it.
+   */
+  async forget(packageKey: string): Promise<number> {
+    let dropped = 0;
+    for (const [key, job] of [...this.jobs]) {
+      if (job.key !== packageKey && !job.key.startsWith(`${packageKey}.`)) continue;
+      // `idle` is how a track is told to stop: the loop stops before its next chunk and the
+      // extraction ffmpeg is killed, so nothing is still writing into a directory that is going.
+      job.idle = true;
+      this.jobs.delete(key);
+      this.byPackage.delete(packageKey);
+      for (const [episode, owner] of [...this.byEpisode]) {
+        if (owner === packageKey) this.byEpisode.delete(episode);
+      }
+      await rm(this.dirFor(job.key), { recursive: true, force: true }).catch(() => undefined);
+      dropped += 1;
+    }
+    return dropped;
+  }
+
   /** Counters for /health: what playbacks asked for, and what was served. */
   readonly served: {
     wanted: number;
