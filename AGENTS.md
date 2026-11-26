@@ -313,9 +313,9 @@ actually runs — never publish a build from a branch that is not `main`.
 **Cutting a release is two version numbers and a tag.** `.github/workflows/release.yml` fails if they
 disagree, because a deployment would then report the wrong version for ever:
 
-1. `src/addon/manifest.ts` — `ADDON_VERSION` (this is what the addon *reports*: manifest, `/health`, the
+1. `src/addon/manifest.ts` — `ADDON_VERSION` (this is what the addon _reports_: manifest, `/health`, the
    update check).
-2. `package.json` — `version` (this is what npm *publishes*, and what the registry's `latest` answers
+2. `package.json` — `version` (this is what npm _publishes_, and what the registry's `latest` answers
    with).
 3. `git tag v0.1.0 && git push origin v0.1.0` — publishes to npm with provenance and opens a GitHub
    Release with generated notes. `NPM_TOKEN` must be a repository secret with publish rights to the
