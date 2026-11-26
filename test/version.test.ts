@@ -2,9 +2,10 @@
 // Copyright (C) 2026 TheIntroDB
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { isNewer, UpstreamVersion } from "../src/addon/version.js";
+import { ADDON_VERSION, isNewer, UpstreamVersion } from "../src/addon/version.js";
 
 const repositorySays = (version: string, calls: string[] = []) =>
   (async (url: string | URL | Request) => {
@@ -14,6 +15,16 @@ const repositorySays = (version: string, calls: string[] = []) =>
       headers: { "content-type": "application/json" },
     });
   }) as typeof fetch;
+
+test("the version is whatever package.json says, read from the file", () => {
+  // One place, no constant to forget: the manifest, /health, the user-agent, the page's footer and the
+  // out-of-date comparison all report this, so a release is a bump to `package.json` and nothing else.
+  const manifest = JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  ) as { version: string };
+  assert.equal(ADDON_VERSION, manifest.version);
+  assert.match(ADDON_VERSION, /^\d+\.\d+\.\d+$/, "and it is a version, not a placeholder");
+});
 
 test("a bigger version in the repository is newer, whatever the digits are", () => {
   assert.equal(isNewer("0.2.0", "0.1.0"), true);

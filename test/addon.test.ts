@@ -9,12 +9,20 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { after, before, beforeEach, test } from "node:test";
+
+/** The one version: `package.json`'s, which is what `/health` and the page have to report. */
+const MANIFEST_VERSION = (
+  JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as {
+    version: string;
+  }
+).version;
 
 import { resetMemoryCache } from "../src/addon/cache.js";
 import { encodeConfig } from "../src/addon/config.js";
@@ -406,7 +414,8 @@ test("the Worker serves a config page, a health check and a bare manifest", asyn
   const healthBody = (await health.json()) as Record<string, unknown>;
   assert.equal(healthBody.status, "ok");
   assert.equal(healthBody.name, "TheIntroDB Skip");
-  assert.equal(healthBody.version, "1.0.0");
+  // Whatever `package.json` says: there is no second place a version is written.
+  assert.equal(healthBody.version, MANIFEST_VERSION);
   assert.equal(healthBody.api, "https://api.theintrodb.org/v4/media");
   assert.equal(healthBody.site, "https://theintrodb.org");
   assert.equal(healthBody.apiKeyConfigured, true);

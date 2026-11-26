@@ -13,8 +13,7 @@
 import { createServer, type IncomingMessage } from "node:http";
 import { Readable } from "node:stream";
 import { loadSettings, type Settings } from "./addon/env.js";
-import { ADDON_VERSION } from "./addon/manifest.js";
-import { UpstreamVersion } from "./addon/version.js";
+import { ADDON_VERSION, UpstreamVersion } from "./addon/version.js";
 import { handleRequest } from "./index.js";
 import { recordFailure } from "./ops/diagnostics.js";
 import { PackageEngine } from "./streams/packages.js";
