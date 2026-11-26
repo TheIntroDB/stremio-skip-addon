@@ -690,16 +690,39 @@ async function readPlaylist(
   }
 
   // A generic content type on a playlist is common (proxies serve `.m3u8` as
-  // `application/octet-stream`), but so is a video file. Read a prefix and decide.
-  const prefix = await readPrefix(response, SNIFF_BYTES);
-  if (!isPlaylist(prefix)) return null;
-
-  const full = await fetch(target, {
-    redirect: "follow",
-    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-  });
-  const body = await readCapped(full, MAX_PLAYLIST_BYTES);
-  return body === null ? null : { text: body };
+  // `application/octet-stream`), but so is a video file. So the first bytes are read and the rest of
+  // the *same* response is kept: the old shape threw the prefix away and fetched the target again,
+  // which is a second round trip and a second range read for the bytes already in hand -- real money
+  // against a debrid link that bills for both.
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  let total = 0;
+  let decided = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_PLAYLIST_BYTES) {
+        await reader.cancel();
+        return null;
+      }
+      text += decoder.decode(value, { stream: true });
+      if (!decided && text.length >= SNIFF_BYTES) {
+        decided = true;
+        if (!isPlaylist(text)) {
+          await reader.cancel();
+          return null;
+        }
+      }
+    }
+  } catch {
+    // A truncated read still says what the first bytes were, which is all a sniff is.
+    return isPlaylist(text) ? { text } : null;
+  }
+  text += decoder.decode();
+  return isPlaylist(text) ? { text } : null;
 }
 
 /** Read at most `maxBytes` of a body, cancelling the rest. Null when it overflows. */
