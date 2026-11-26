@@ -178,7 +178,7 @@ before(async () => {
         200,
         JSON.stringify({
           id: "org.example.stub",
-          version: "1.0.0",
+          version: "0.1.0",
           name: "Stub Source",
           resources: ["stream"],
           types: ["movie", "series"],
@@ -237,7 +237,7 @@ before(async () => {
         200,
         JSON.stringify({
           id: "org.rotating",
-          version: "1.0.0",
+          version: "0.1.0",
           name: "Rotating",
           resources: ["stream"],
           types: ["series"],
@@ -406,7 +406,7 @@ test("the Worker serves a config page, a health check and a bare manifest", asyn
   const healthBody = (await health.json()) as Record<string, unknown>;
   assert.equal(healthBody.status, "ok");
   assert.equal(healthBody.name, "TheIntroDB Skip");
-  assert.equal(healthBody.version, "1.0.0");
+  assert.equal(healthBody.version, "0.1.0");
   assert.equal(healthBody.api, "https://api.theintrodb.org/v4/media");
   assert.equal(healthBody.site, "https://theintrodb.org");
   assert.equal(healthBody.apiKeyConfigured, true);

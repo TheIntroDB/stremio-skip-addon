@@ -14,7 +14,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import { Readable } from "node:stream";
 import { loadSettings, type Settings } from "./addon/env.js";
 import { ADDON_VERSION } from "./addon/manifest.js";
-import { handleRequest } from "./index.js";
+import { handleRequest, updates } from "./index.js";
 import { recordFailure } from "./ops/diagnostics.js";
 import { PackageEngine } from "./streams/packages.js";
 import { SubtitleEngine } from "./subtitles/subtitles.js";
@@ -94,6 +94,11 @@ export async function main(): Promise<void> {
   // A package nobody has asked for in five minutes is deleted, and so is its subtitle track: this is
   // one viewer's addon, not a cache for a crowd.
   packages.onIdle = (key) => void subtitles.forget(key);
+  // Is this deployment behind? Asked now and every six hours after, off the request path; the answer
+  // is on /health and on the configuration page. Never fatal: a deployment with no route to npm just
+  // says nothing.
+  updates.refresh();
+  setInterval(() => updates.refresh(), 60 * 60_000).unref();
   // A TTL is only real if something sweeps: expired tracks at boot, and then hourly while the
   // process lives. Unref'd, so it never keeps the process up on its own.
   void subtitles.sweep();

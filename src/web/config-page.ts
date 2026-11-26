@@ -26,6 +26,8 @@ export interface PageOptions {
   insecure: boolean;
   /** What /health reports about the cut cache and ffmpeg. */
   cuts: Record<string, unknown>;
+  /** Whether this deployment is behind the published release, and where to read about it. */
+  update?: { current: string; latest: string | null; behind: boolean; url: string } | null;
   /** The configuration of the install URL this page was opened with, if any. */
   editing?: AddonConfig | null;
   /** Why that URL could not be read, so a mangled link gets an explanation. */
@@ -41,6 +43,7 @@ export function renderConfigPage(options: PageOptions): string {
     siteUrl: options.siteUrl,
     serverKeyConfigured: options.serverKeyConfigured,
     version: ADDON_VERSION,
+    update: options.update ?? null,
     repo: REPO,
     insecure: options.insecure,
     cuts: options.cuts,
